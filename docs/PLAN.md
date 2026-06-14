@@ -116,12 +116,11 @@ root never lets stale link state survive: a folder with no skillm link is pruned
 ```
 skillm add <url> [skill_id] [--as <name>] [--ref <ref>] [--global|--local]
 skillm add <local-path>      [--as <name>]              [--global|--local]
-skillm link    <skill_id> [--global|--local]
-skillm unlink  <skill_id> [--global|--local]
+skillm install   [skill_id...] [--all] [--global|--local]   # no id = interactive multiselect
+skillm uninstall [skill_id...] [--all]                      # no id = interactive multiselect
 skillm list
 skillm check
 skillm update [skill_id]            # no arg = all outdated
-skillm remove  <skill_id>
 skillm agent                        # interactive multiselect of Enabled agents
 ```
 
@@ -139,26 +138,41 @@ Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (overrid
 - `<local-path>` (a directory containing `SKILL.md`) → copy into Home as `kind=local`.
 - `--as <name>` overrides the Skill ID (resolves collisions). `--ref <ref>` pins a
   branch/tag/sha (default: repo's default branch).
-- `--global` / `--local` → after adding, also **link** at that scope (see link). Bare `add`
-  is fetch-only.
+- `--global` / `--local` → after adding, also **install** at that scope (see install). Bare
+  `add` is fetch-only.
 - **Collision:** if the target ID already exists in Home → error suggesting `update` or `--as`.
 
-### link / unlink
-- Symlink (or remove the symlink for) `<skill_id>` into **every Enabled agent** at the chosen
-  Scope, using each agent's location for that scope from `config.toml`. `--global`/`--local`
-  selects scope explicitly; with neither flag, skillm asks interactively — **Global**,
-  **Local** (the current directory), or a **custom path** typed with Tab path-completion (on a
-  non-TTY it refuses and requires a flag). `--local` and the custom path join that directory
-  to each agent's `local` location (created if missing).
+### install
+- Symlink the selected skills into **every Enabled agent** at the chosen Scope, using each
+  agent's location for that scope from `config.toml`.
+- **Selection:** one or more `skill_id` args act on exactly those skills; `--all` acts on every
+  skill in Home; with neither, skillm shows an interactive **huh** multiselect over the skills
+  in Home (refused on a non-TTY, which names the `skill_id` / `--all` escape hatch). An explicit
+  id that is not in Home is an **atomic error** — nothing is installed.
+- **Scope:** `--global`/`--local` selects scope explicitly; with neither flag skillm asks
+  interactively — **Global**, **Local** (the current directory), or a **custom path** typed with
+  Tab path-completion (on a non-TTY it refuses and requires a flag). A single chosen Scope
+  applies to **every** selected skill. `--local` and the custom path join that directory to each
+  agent's `local` location (created if missing).
 - **Missing scope:** an Enabled agent that defines no location for the chosen scope is
   **skipped with a notice** (it simply has no folder there). If *no* Enabled agent defines a
   location for that scope, the command errors.
-- **Safe by default:** `link` refuses to overwrite any existing entry skillm didn't create
-  (i.e. not a symlink into Home) — it errors and leaves your own skill untouched.
-- Re-linking an already-correct symlink is a no-op.
+- **Safe by default:** `install` refuses to overwrite any existing entry skillm didn't create
+  (i.e. not a symlink into Home) — it errors and leaves your own skill untouched. Re-installing
+  an already-correct symlink is a no-op.
+
+### uninstall
+- Removes skills **entirely** — the inverse of `add`, not of `install`. For each selected skill
+  it auto-unlinks from **all** agents/scopes (the global folder and every tracked local root,
+  across all *defined* agents — even disabled ones, so nothing dangles), then deletes the Home
+  copy and its registry entry. There is **no per-scope uninstall**.
+- **Selection:** same model as install — one or more `skill_id` args, `--all`, or an interactive
+  multiselect; an unknown explicit id is an atomic error (nothing is removed).
+- On a TTY it confirms once for the whole batch (skip with `--yes`/`--force`); a non-TTY run
+  proceeds without prompting.
 
 ### list
-- Table (lipgloss): `ID | Source | Linked (scopes×agents, read from disk) | Status`.
+- Table (lipgloss): `ID | Source | Installed (scopes×agents, read from disk) | Status`.
 - Status ∈ `up-to-date`, `update available`, `local`, `untracked` (git skill whose subdir
   vanished upstream).
 
@@ -170,19 +184,15 @@ Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (overrid
 ### update
 - Default (no arg): update **all** outdated git skills; `update <id>` does one. For each, pull
   the current revision's subdir into Home (overwrite the Home copy), then update `revision` +
-  `installed_at` in the registry. Because agents see Home through symlinks, every Link updates
-  automatically. Shows a **bubbles/progress** bar when there is enough work to warrant it. No
-  diffs. Local skills are skipped with a note ("edit in Home directly").
-
-### remove
-- Auto-unlink from all agents/scopes, then delete the Home copy and its registry entry. On a
-  TTY, confirm first (unless `--yes`).
+  `installed_at` in the registry. Because agents see Home through symlinks, every install
+  updates automatically. Shows a **bubbles/progress** bar when there is enough work to warrant
+  it. No diffs. Local skills are skipped with a note ("edit in Home directly").
 
 ### agent
 - **huh** multiselect over the agents **defined** in `config.toml`, seeded with the current
   `enabled` flags; writes the toggled flags back (preserving each agent's locations).
   Defining a *new* agent is a config edit, not something this command does. Does not
-  retroactively link/unlink existing skills (only affects future links).
+  retroactively install/uninstall existing skills (only affects future installs).
 
 ---
 
@@ -200,8 +210,8 @@ v0.1.0). This covers dotfiles/CI bootstrap via deterministic commands.
 ```
 skillm/
 ├── main.go                 # thin: fang.Execute(ctx, cmd.Root())
-├── cmd/                    # cobra commands, one file each (add, link, unlink,
-│                           #   list, check, update, remove, agent, root)
+├── cmd/                    # cobra commands, one file each (add, install,
+│                           #   uninstall, list, check, update, agent, root)
 └── internal/
     ├── config/             # load/save ~/.skillm/config.toml (go-toml/v2); agent
     │                       #   definitions (name → enabled/global/local) + seed defaults
@@ -268,12 +278,14 @@ One-line install (`curl | sh`), a 4–5 line quickstart (`add` → `agent` → `
 4. **agentdir + linker** — folder mapping from config-supplied agents (global/local
    templates, skip a scope an agent doesn't define), symlink create/remove, scan-for-links,
    safe overwrite.
-5. **link / unlink** — wire linker to Enabled agents + scope; skip agents missing the scope
-   (error if none has it); `add --global/--local` reuses it.
+5. **install** — wire linker to Enabled agents + scope (variadic ids / `--all` / interactive
+   multiselect, one scope for all); skip agents missing the scope (error if none has it);
+   `add --global/--local` reuses it.
 6. **agent** — huh multiselect over defined agents → toggle `enabled` flags in config.
 7. **list / check** — registry + live link scan + per-skill tree-SHA compare.
 8. **update** — all/one, registry rewrite, bubbles/progress bar.
-9. **remove** — auto-unlink + delete + confirm.
+9. **uninstall** — variadic ids / `--all` / interactive multiselect; auto-unlink everywhere +
+   delete + confirm.
 10. **ui polish** — lipgloss tables, TTY degradation, fang help/errors.
 11. **dist** — `.goreleaser.yaml`, `install.sh`, CI workflows, `LICENSE` (MIT), `README.md`;
     tag `v0.1.0`.

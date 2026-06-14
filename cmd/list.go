@@ -70,10 +70,10 @@ func runList() error {
 	rows := make([]ui.Row, 0, len(st.Skills))
 	for _, e := range st.Skills {
 		rows = append(rows, ui.Row{
-			ID:     e.ID,
-			Source: sourceLabel(e),
-			Linked: linkedLabel(home, e.ID, agents, st.LocalRoots, cwd),
-			Kind:   e.Kind,
+			ID:        e.ID,
+			Source:    sourceLabel(e),
+			Installed: linkedLabel(home, e.ID, agents, st.LocalRoots, cwd),
+			Kind:      e.Kind,
 		})
 	}
 
@@ -246,21 +246,4 @@ func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) 
 	}
 	st.LocalRoots = kept
 	return changed
-}
-
-// pruneLocalRoots reconciles the tracked local roots and persists the result.
-// It is best-effort: any error is swallowed so a failed prune never fails the
-// user's command (the stale root is simply skipped by `list` next time).
-func pruneLocalRoots(home string) {
-	cfg, err := config.Load(home)
-	if err != nil {
-		return
-	}
-	st, err := state.Load(home)
-	if err != nil {
-		return
-	}
-	if reconcileLocalRoots(home, cfg.AllAgents(), st) {
-		_ = state.Save(home, st)
-	}
 }

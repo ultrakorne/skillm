@@ -26,8 +26,8 @@ func TestRenderSkillTableEmpty(t *testing.T) {
 
 func TestRenderSkillTablePlain(t *testing.T) {
 	rows := []Row{
-		{ID: "alpha", Source: "https://example.com/repo", Linked: "global: claude", Kind: "git"},
-		{ID: "beta", Source: "/tmp/local", Linked: "-", Kind: "local"},
+		{ID: "alpha", Source: "https://example.com/repo", Installed: "global: claude", Kind: "git"},
+		{ID: "beta", Source: "/tmp/local", Installed: "-", Kind: "local"},
 	}
 	got := RenderSkillTable(rows)
 
@@ -40,7 +40,7 @@ func TestRenderSkillTablePlain(t *testing.T) {
 		t.Fatalf("got %d lines, want 3 (header + 2 rows): %q", len(lines), got)
 	}
 	header := strings.Split(lines[0], "\t")
-	want := []string{"ID", "Source", "Linked", "Kind"}
+	want := []string{"ID", "Source", "Installed", "Kind"}
 	if len(header) != len(want) {
 		t.Fatalf("header columns = %v, want %v", header, want)
 	}

@@ -25,8 +25,8 @@ var (
 	addAs     string // --as:     override the Skill ID
 	addRef    string // --ref:    pin a branch/tag/sha (git sources)
 	addAll    bool   // --all:    add every discovered skill without prompting
-	addGlobal bool   // --global: also link the added skills at global scope
-	addLocal  bool   // --local:  also link the added skills at local scope
+	addGlobal bool   // --global: also install the added skills at global scope
+	addLocal  bool   // --local:  also install the added skills at local scope
 )
 
 func init() {
@@ -44,7 +44,7 @@ func newAddCmd() *cobra.Command {
 			"select non-interactively, otherwise skillm shows an interactive picker. " +
 			"--as overrides the Skill ID (to resolve a collision); --ref pins a " +
 			"branch, tag, or commit. By default add only fetches into Home; pass " +
-			"--global or --local to also link the added skills at that scope.",
+			"--global or --local to also install the added skills at that scope.",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAdd(cmd, args)
@@ -55,8 +55,8 @@ func newAddCmd() *cobra.Command {
 	f.StringVar(&addAs, "as", "", "override the Skill ID (resolves a collision)")
 	f.StringVar(&addRef, "ref", "", "pin a branch, tag, or commit (git sources; default: repo default branch)")
 	f.BoolVar(&addAll, "all", false, "add every skill discovered in the source without prompting")
-	f.BoolVar(&addGlobal, "global", false, "after adding, link the skill(s) at global scope")
-	f.BoolVar(&addLocal, "local", false, "after adding, link the skill(s) at local scope")
+	f.BoolVar(&addGlobal, "global", false, "after adding, install the skill(s) at global scope")
+	f.BoolVar(&addLocal, "local", false, "after adding, install the skill(s) at local scope")
 	c.MarkFlagsMutuallyExclusive("global", "local")
 
 	return c
@@ -359,9 +359,9 @@ func selectFound(found []source.Found, selectArg string) ([]source.Found, error)
 	return chosen, nil
 }
 
-// linkAdded links every freshly added skill into the enabled agents at scope,
-// reusing the linker the `link` command uses. It reports per-skill outcomes and
-// returns the first error encountered.
+// linkAdded installs every freshly added skill into the enabled agents at scope,
+// reusing the same linker as the `install` command. It reports per-skill
+// outcomes and returns the first error encountered.
 func linkAdded(home string, ids []string, scope agentdir.Scope) error {
 	cfg, err := config.Load(home)
 	if err != nil {
@@ -394,14 +394,14 @@ func linkAdded(home string, ids []string, scope agentdir.Scope) error {
 		// Report whatever succeeded before any refusal.
 		for _, ar := range res.Agents {
 			if ar.Action == linker.ActionCreated {
-				ui.Successf("linked %s into %s (%s)", id, ar.Agent.Name, scope)
+				ui.Successf("installed %s into %s (%s)", id, ar.Agent.Name, scope)
 			}
 		}
 		if err != nil {
 			return err
 		}
 	}
-	// A local link makes cwd a directory `list`/`remove` must scan later.
+	// A local link makes cwd a directory `list`/`uninstall` must scan later.
 	if scope == agentdir.Local {
 		if err := addLocalRoot(home, cwd); err != nil {
 			ui.Warnf("linked, but could not record %s for `skillm list`: %v", cwd, err)

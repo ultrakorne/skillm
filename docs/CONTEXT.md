@@ -50,16 +50,13 @@ without changing anything. Read-only.
 ### Update
 Pull the current upstream Revision of outdated git-sourced skills into Home (default: all of
 them; optionally one Skill ID). Because agents see skills through symlinks into Home, updating
-the Home copy updates every Link automatically. Shows a progress bar when there is enough work
+the Home copy updates every install automatically. Shows a progress bar when there is enough work
 to warrant one. Does not show diffs.
 
 ### List
-Show every skill in Home with its Source, the Scopes/Agents it is currently linked to (read
-live from disk), and its update status (up-to-date / update available / local / untracked).
-
-### Remove
-Delete a skill from Home. Safe by default: it first Unlinks the skill from every Agent and
-Scope, then removes the Home copy, so no dangling symlinks are left behind.
+Show every skill in Home with its Source, the Scopes/Agents it is currently installed at
+(read live from disk), and its update status (up-to-date / update available / local /
+untracked).
 
 ### Local skill
 A skill added from a local path. It is copied into Home, where the Home copy becomes the
@@ -72,20 +69,32 @@ updating one means editing it directly in Home (skillm warns rather than checkin
 - **Local** — available only within one project (the agent's project-level skill folder).
 
 The on-disk skill format is identical across all supported agents, so a single copy in Home
-can be linked to any combination of agents and scopes; a Link is always the same operation.
+can be installed to any combination of agents and scopes; an Install is always the same
+operation.
 
 ## Core verbs
 
 ### Add
 Fetch a skill from a Source into Home. Does not, by itself, expose it to any agent.
 
-### Link
-Create a symlink from an agent's skill folder (at a given Scope) back to a skill in Home.
-This is what makes an added skill actually visible to an agent. The inverse is **Unlink**.
-A Link is always made for **every Enabled agent** at the chosen Scope — there is no
-per-command agent choice. Passing a Scope (`--global`/`--local`) to `add` links in the same
-step; bare `add` is fetch-only. Which links currently exist is never stored — it is read live
-by scanning agents' skill folders for symlinks pointing into Home, so it never drifts.
+### Install
+Make a skill visible to agents by creating a symlink from each Enabled agent's skill folder
+(at a chosen Scope) back to the skill in Home. This is what turns an added skill into one an
+agent can actually see. An Install always targets **every Enabled agent** at the chosen
+Scope — there is no per-command agent choice — and a single Install command applies one Scope
+to every skill it acts on. Acts on one or more named skills, or interactively on a multiselect
+of every skill in Home. Passing a Scope (`--global`/`--local`) to `add` installs in the same
+step; bare `add` is fetch-only. Which installs currently exist is never stored — it is read
+live by scanning agents' skill folders for symlinks pointing into Home, so it never drifts.
+
+### Uninstall
+Remove a skill entirely — the inverse of **Add**, not of Install. Uninstall first removes the
+skill's symlink from every Agent and Scope it was installed at (the global folder and every
+tracked project, across all defined Agents — even ones now disabled, so nothing is left
+dangling), then deletes the Home copy and its Registry entry. There is **no per-scope
+uninstall**: it always clears every reference. Safe by default — on a terminal it confirms
+first (skip with `--yes`/`--force`). Acts on one or more named skills, or interactively on a
+multiselect of every skill in Home.
 
 ### Enabled agents
 The Agents that Links are applied to: the subset of agents **defined** in Config whose

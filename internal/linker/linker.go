@@ -1,7 +1,7 @@
 // Package linker creates, removes, and discovers the symlinks that expose a
-// skill in Home to the agents that read it. Each Link is a symlink at
+// skill in Home to the agents that read it. Each link is a symlink at
 // <agent-folder>/<id> whose target is <home>/skills/<id> (see docs/PLAN.md §3
-// and the "Link"/"Unlink" entries in CONTEXT.md).
+// and the "Install"/"Uninstall" entries in CONTEXT.md).
 //
 // The package is safe by default. It only ever creates, inspects, or removes
 // symlinks that resolve into Home's skills/ subtree; it refuses to clobber or

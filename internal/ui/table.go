@@ -12,19 +12,19 @@ import (
 // pre-formatted string so the renderer stays presentation-only and the
 // command layer owns all wording.
 type Row struct {
-	ID     string // skill id
-	Source string // origin (git url or local path)
-	Linked string // scopes×agents read live from disk, e.g. "global: claude,codex"
-	Kind   string // "git" or "local" — cheap to derive; update status lives in `skillm check`
+	ID        string // skill id
+	Source    string // origin (git url or local path)
+	Installed string // scopes×agents read live from disk, e.g. "global: claude,codex"
+	Kind      string // "git" or "local" — cheap to derive; update status lives in `skillm check`
 }
 
-// RenderSkillTable formats rows into a columnar view: ID | Source | Linked |
+// RenderSkillTable formats rows into a columnar view: ID | Source | Installed |
 // Kind. On a TTY it draws a bordered, colorized table (the Kind cell tinted by
 // meaning); off a TTY it emits a plain tab-separated grid so output stays pipe-
 // and grep-friendly. An empty rows slice yields a short notice rather than an
 // empty frame.
 func RenderSkillTable(rows []Row) string {
-	headers := []string{"ID", "Source", "Linked", "Kind"}
+	headers := []string{"ID", "Source", "Installed", "Kind"}
 
 	if len(rows) == 0 {
 		if IsTTY() {
@@ -48,7 +48,7 @@ func renderPlain(headers []string, rows []Row) string {
 		b.WriteByte('\t')
 		b.WriteString(r.Source)
 		b.WriteByte('\t')
-		b.WriteString(r.Linked)
+		b.WriteString(r.Installed)
 		b.WriteByte('\t')
 		b.WriteString(r.Kind)
 		b.WriteByte('\n')
@@ -86,7 +86,7 @@ func renderStyled(headers []string, rows []Row) string {
 	}
 
 	for _, r := range rows {
-		t.Row(r.ID, r.Source, r.Linked, r.Kind)
+		t.Row(r.ID, r.Source, r.Installed, r.Kind)
 	}
 	return t.String()
 }

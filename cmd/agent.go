@@ -18,12 +18,12 @@ func init() {
 func newAgentCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "agent",
-		Short: "Choose which agents skillm links skills into",
+		Short: "Choose which agents skillm installs skills into",
 		Long: "agent shows an interactive multiselect of the agents defined in " +
 			"config.toml, seeded with the currently enabled set, and writes the toggled " +
 			"enabled flags back (each agent's locations are preserved). Defining a new " +
 			"agent is a config edit, not something this command does. It does not " +
-			"retroactively link or unlink existing skills; the change only affects future links.",
+			"retroactively install or uninstall existing skills; it only affects future installs.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAgent()
@@ -63,12 +63,12 @@ func runAgent() error {
 	}
 
 	if len(selection) == 0 {
-		ui.Warnf("no agents enabled; skillm will link skills into nothing until you enable one")
+		ui.Warnf("no agents enabled; skillm will install skills into nothing until you enable one")
 	} else {
 		ui.Successf("enabled agents: %s", strings.Join(selection, ", "))
 	}
-	// The change is forward-looking only — existing links are untouched.
-	fmt.Println("(existing links are unchanged; this only affects future links)")
+	// The change is forward-looking only — existing installs are untouched.
+	fmt.Println("(existing installs are unchanged; this only affects future installs)")
 
 	return nil
 }

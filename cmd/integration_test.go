@@ -16,7 +16,7 @@ import (
 // This file holds the end-to-end integration test required by PLAN §8: it spins
 // up a temp Home (via SKILLM_HOME) and a real local git repo holding several
 // skill directories, then drives the *built* skillm binary through the full
-// add → link → check → update → remove lifecycle. Driving the real binary with
+// add → install → check → update → uninstall lifecycle. Driving the real binary with
 // SKILLM_HOME set (rather than calling cobra commands in-process) exercises the
 // genuine treeless-clone / ls-tree / sparse-checkout code paths against real git
 // — the SubtreeSHA revision tracking runs for real, not mocked.
@@ -209,8 +209,8 @@ func codexGlobalLink(e env, id string) string {
 }
 
 // TestLifecycleEndToEnd is the full PLAN §8 integration test: a temp Home + a
-// real local git repo, driven through add → link → check → update → remove via
-// the built binary, asserting symlink targets and registry contents at each
+// real local git repo, driven through add → install → check → update → uninstall
+// via the built binary, asserting symlink targets and registry contents at each
 // step.
 func TestLifecycleEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -296,16 +296,17 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("after collision attempt: %d entries, want 3 (alpha, beta, renamed-gamma)", n)
 	}
 
-	// --- link (default scope is global per config default) ------------------
-	e.run(t, "link", "beta", "--global")
+	// --- install (default scope is global per config default) ---------------
+	e.run(t, "install", "beta", "--global")
 	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "beta"), "beta")
 	assertLinkResolvesIntoHome(t, e, codexGlobalLink(e, "beta"), "beta")
 
-	// --- link --local creates project-scoped links under cwd ----------------
+	// --- install --local creates project-scoped links under cwd -------------
 	// Run with the working directory set to a temp project so .claude/.codex
-	// land there and not in the developer's tree.
+	// land there and not in the developer's tree. beta stays installed globally
+	// too — uninstall must later tear down every scope.
 	project := t.TempDir()
-	localCmd := exec.Command(bin, "link", "beta", "--local")
+	localCmd := exec.Command(bin, "install", "beta", "--local")
 	localCmd.Dir = project
 	localCmd.Env = append(os.Environ(),
 		"HOME="+e.userDir,
@@ -313,18 +314,10 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		"GIT_CONFIG_SYSTEM=/dev/null",
 	)
 	if b, err := localCmd.CombinedOutput(); err != nil {
-		t.Fatalf("link beta --local: %v\n%s", err, b)
+		t.Fatalf("install beta --local: %v\n%s", err, b)
 	}
 	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".claude", "skills", "beta"), "beta")
 	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".codex", "skills", "beta"), "beta")
-
-	// --- unlink one scope leaves the other intact ---------------------------
-	e.run(t, "unlink", "beta", "--global")
-	if _, err := os.Lstat(claudeGlobalLink(e, "beta")); !os.IsNotExist(err) {
-		t.Fatalf("beta global link should be gone after unlink, err = %v", err)
-	}
-	// The local link must survive the global unlink.
-	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".claude", "skills", "beta"), "beta")
 
 	// --- check (read-only) before any upstream change: all up-to-date -------
 	out = e.run(t, "check")
@@ -418,38 +411,42 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("update mylocal: expected a local-skill note, got:\n%s", out)
 	}
 
-	// --- remove (auto-unlink everywhere + delete + drop registry entry) -----
-	// Local-scope links are resolved relative to the process cwd, so run remove
-	// from the project directory where beta was linked locally — that is how a
-	// user would invoke it, and it lets remove tear down the local link too.
-	removeCmd := exec.Command(bin, "remove", "beta", "--yes")
-	removeCmd.Dir = project
-	removeCmd.Env = append(os.Environ(),
+	// --- uninstall (auto-unlink everywhere + delete + drop registry entry) --
+	// Local-scope links are resolved relative to the process cwd, so run
+	// uninstall from the project directory where beta was linked locally — that
+	// is how a user would invoke it, and it lets uninstall tear down the local
+	// link too.
+	uninstallCmd := exec.Command(bin, "uninstall", "beta", "--yes")
+	uninstallCmd.Dir = project
+	uninstallCmd.Env = append(os.Environ(),
 		"HOME="+e.userDir,
 		"SKILLM_HOME="+e.home,
 		"GIT_CONFIG_SYSTEM=/dev/null",
 	)
-	removeOut, removeErr := removeCmd.CombinedOutput()
-	if removeErr != nil {
-		t.Fatalf("remove beta: %v\n%s", removeErr, removeOut)
+	uninstallOut, uninstallErr := uninstallCmd.CombinedOutput()
+	if uninstallErr != nil {
+		t.Fatalf("uninstall beta: %v\n%s", uninstallErr, uninstallOut)
 	}
-	out = string(removeOut)
-	if !strings.Contains(out, "removed beta") {
-		t.Fatalf("remove beta: unexpected output:\n%s", out)
+	out = string(uninstallOut)
+	if !strings.Contains(out, "uninstalled beta") {
+		t.Fatalf("uninstall beta: unexpected output:\n%s", out)
 	}
 	if store.Exists(e.home, "beta") {
-		t.Fatal("beta still present in Home after remove")
+		t.Fatal("beta still present in Home after uninstall")
 	}
 	if _, ok := loadState(t, e).Get("beta"); ok {
-		t.Fatal("beta still in registry after remove")
+		t.Fatal("beta still in registry after uninstall")
 	}
-	// Both the surviving local link and any global link must be gone (no
-	// dangling symlinks left behind).
+	// The local link and BOTH global links must be gone (no dangling symlinks
+	// left behind), since beta was installed at every scope.
 	if _, err := os.Lstat(filepath.Join(project, ".claude", "skills", "beta")); !os.IsNotExist(err) {
-		t.Fatalf("beta local link not removed by remove, err = %v", err)
+		t.Fatalf("beta local link not removed by uninstall, err = %v", err)
+	}
+	if _, err := os.Lstat(claudeGlobalLink(e, "beta")); !os.IsNotExist(err) {
+		t.Fatalf("beta claude global link not removed by uninstall, err = %v", err)
 	}
 	if _, err := os.Lstat(codexGlobalLink(e, "beta")); !os.IsNotExist(err) {
-		t.Fatalf("beta codex global link not removed by remove, err = %v", err)
+		t.Fatalf("beta codex global link not removed by uninstall, err = %v", err)
 	}
 
 	// alpha must be untouched by beta's removal.
@@ -472,4 +469,97 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if have["beta"] {
 		t.Errorf("beta should be gone from registry; have %v", have)
 	}
+}
+
+// assertNoLink fails if linkPath exists at all (we expect no entry there).
+func assertNoLink(t *testing.T, linkPath, msg string) {
+	t.Helper()
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("%s: %s still exists (err = %v)", msg, linkPath, err)
+	}
+}
+
+// TestInstallUninstallMulti exercises the multi-skill behaviour added with the
+// install/uninstall rename: variadic ids, --all, atomic failure on an unknown
+// id, and the non-interactive guards (no picker / no scope on a non-TTY). The
+// binary's stdin is never a TTY here, so the interactive pickers refuse — which
+// is exactly the non-TTY contract we assert.
+func TestInstallUninstallMulti(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	bin := skillmBinary(t)
+	_, url := initSkillRepo(t)
+
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+
+	// Fetch three skills into Home without linking any of them.
+	for _, id := range []string{"alpha", "beta", "gamma"} {
+		e.run(t, "add", url, id)
+	}
+
+	// --- atomic install: one bad id installs nothing ------------------------
+	if out, err := e.tryRun(t, "install", "alpha", "nope", "--global"); err == nil {
+		t.Fatalf("install with an unknown id should fail; got success:\n%s", out)
+	}
+	assertNoLink(t, claudeGlobalLink(e, "alpha"), "atomic install must not link the valid id")
+
+	// --- non-TTY guards -----------------------------------------------------
+	// No ids and no --all: the picker refuses and names the escape hatch.
+	if out, err := e.tryRun(t, "install"); err == nil || !strings.Contains(out, "--all") {
+		t.Fatalf("bare install on a non-TTY should error naming --all; err=%v out=%s", err, out)
+	}
+	// Ids but no scope flag: the scope picker refuses and names --global/--local.
+	if out, err := e.tryRun(t, "install", "alpha"); err == nil || !strings.Contains(out, "--global") {
+		t.Fatalf("install without a scope on a non-TTY should error naming --global; err=%v out=%s", err, out)
+	}
+
+	// --- variadic install ---------------------------------------------------
+	e.run(t, "install", "alpha", "beta", "--global")
+	for _, id := range []string{"alpha", "beta"} {
+		assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, id), id)
+		assertLinkResolvesIntoHome(t, e, codexGlobalLink(e, id), id)
+	}
+	// gamma was not named, so it stays uninstalled.
+	assertNoLink(t, claudeGlobalLink(e, "gamma"), "gamma must not be installed yet")
+
+	// --- install --all picks up the rest (already-linked ones are no-ops) ---
+	e.run(t, "install", "--all", "--global")
+	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "gamma"), "gamma")
+
+	// --- atomic uninstall: one bad id removes nothing -----------------------
+	if out, err := e.tryRun(t, "uninstall", "beta", "nope", "--yes"); err == nil {
+		t.Fatalf("uninstall with an unknown id should fail; got success:\n%s", out)
+	}
+	if !store.Exists(e.home, "beta") {
+		t.Fatal("atomic uninstall must not remove the valid id (beta)")
+	}
+
+	// --- variadic uninstall removes exactly the named skills ----------------
+	out := e.run(t, "uninstall", "alpha", "gamma", "--yes")
+	if !strings.Contains(out, "uninstalled alpha") || !strings.Contains(out, "uninstalled gamma") {
+		t.Fatalf("uninstall alpha gamma: unexpected output:\n%s", out)
+	}
+	for _, id := range []string{"alpha", "gamma"} {
+		if store.Exists(e.home, id) {
+			t.Fatalf("%s still in Home after uninstall", id)
+		}
+		if _, ok := loadState(t, e).Get(id); ok {
+			t.Fatalf("%s still in registry after uninstall", id)
+		}
+		assertNoLink(t, claudeGlobalLink(e, id), "uninstall must drop the link")
+	}
+	// beta is untouched.
+	if !store.Exists(e.home, "beta") {
+		t.Fatal("beta removed as a side effect of uninstalling alpha/gamma")
+	}
+	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "beta"), "beta")
+
+	// --- uninstall --all clears whatever remains ----------------------------
+	e.run(t, "uninstall", "--all", "--yes")
+	if n := len(loadState(t, e).Skills); n != 0 {
+		t.Fatalf("uninstall --all left %d skills in the registry, want 0", n)
+	}
+	assertNoLink(t, claudeGlobalLink(e, "beta"), "uninstall --all must drop beta's link")
 }
