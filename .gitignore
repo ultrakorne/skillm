@@ -1,0 +1,31 @@
+# Compiled binaries / local build output
+/bin/
+/skillm
+skillm.exe
+
+# GoReleaser output
+/dist/
+
+# Test & coverage artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace files (machine-local)
+go.work
+go.work.sum
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local environment overrides
+.env
+.env.local

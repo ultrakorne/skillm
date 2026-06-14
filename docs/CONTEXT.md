@@ -1,0 +1,100 @@
+# skillm — Ubiquitous Language
+
+The canonical glossary for the project. Glossary only — no implementation details.
+Terms are added/sharpened as the design is resolved.
+
+## Core nouns
+
+### Skill
+A self-contained unit of agent instructions. On disk it is a directory whose entry
+point is a `SKILL.md` file (with YAML frontmatter), optionally accompanied by supporting
+files (references, sub-docs, scripts). One skill = one directory.
+
+### Home (a.k.a. the Store)
+The single central directory where every skill `skillm` knows about physically lives —
+`~/.skillm/`, with skills under `~/.skillm/skills/<id>/`. There is exactly one Home per
+machine. It is laid out **flat by Skill ID** (one directory per skill); two skills cannot
+share an ID, so a colliding `add` is an error that the user resolves with `--as <name>`.
+Everything an agent sees is a symlink back into Home.
+
+### Agent
+A tool that consumes skills by reading them from a skill folder. Initially supported
+agents are **Claude** and **Codex**. Each agent has its own conventional skill folder
+location(s).
+
+### Source
+A location skills are fetched from. Primary kind is a **git repository**, which may hold
+one or many skills (it acts as a catalog). Also supported: a **local path** to a skill
+directory. A Source is remembered for every added skill so it can be re-checked and updated.
+
+### Skill ID
+The stable name used to refer to and select a skill — by convention its directory name
+(e.g. `grill-with-docs`). Used to disambiguate when a Source holds multiple skills and to
+script non-interactive `add`.
+
+### Revision
+The per-skill content identity recorded at `add` time and compared on update checks. For a
+git-sourced skill it is the **git tree object SHA of the skill's own subdirectory** (read via
+`git ls-tree <ref>:<path>` against a treeless fetch — no full clone). It is scoped to a single
+skill's files, never the whole repo: a commit that touches a different skill must not register
+as an update to this one.
+
+### Check
+Report which git-sourced skills have an upstream Revision different from the installed one,
+without changing anything. Read-only.
+
+### Update
+Pull the current upstream Revision of outdated git-sourced skills into Home (default: all of
+them; optionally one Skill ID). Because agents see skills through symlinks into Home, updating
+the Home copy updates every Link automatically. Shows a progress bar when there is enough work
+to warrant one. Does not show diffs.
+
+### List
+Show every skill in Home with its Source, the Scopes/Agents it is currently linked to (read
+live from disk), and its update status (up-to-date / update available / local / untracked).
+
+### Remove
+Delete a skill from Home. Safe by default: it first Unlinks the skill from every Agent and
+Scope, then removes the Home copy, so no dangling symlinks are left behind.
+
+### Local skill
+A skill added from a local path. It is copied into Home, where the Home copy becomes the
+canonical source of truth. Local skills have no upstream and are **not** Revision-tracked;
+updating one means editing it directly in Home (skillm warns rather than checking for updates).
+
+### Scope
+*Where* a skill is made available to an agent. Two scopes:
+- **Global** — available to the agent everywhere (the agent's user-level skill folder).
+- **Local** — available only within one project (the agent's project-level skill folder).
+
+The on-disk skill format is identical across all supported agents, so a single copy in Home
+can be linked to any combination of agents and scopes; a Link is always the same operation.
+
+## Core verbs
+
+### Add
+Fetch a skill from a Source into Home. Does not, by itself, expose it to any agent.
+
+### Link
+Create a symlink from an agent's skill folder (at a given Scope) back to a skill in Home.
+This is what makes an added skill actually visible to an agent. The inverse is **Unlink**.
+A Link is always made for **every Enabled agent** at the chosen Scope — there is no
+per-command agent choice. Passing a Scope (`--global`/`--local`) to `add` links in the same
+step; bare `add` is fetch-only. Which links currently exist is never stored — it is read live
+by scanning agents' skill folders for symlinks pointing into Home, so it never drifts.
+
+### Enabled agents
+The set of Agents that Links are applied to, stored in Config. Managed interactively via
+`skillm agent` (a multiselect that reads the current set and writes the new selection back).
+Agents are expected to change rarely, so they live in Config rather than on each command.
+
+## Persistence
+
+### Config
+`~/.skillm/config.toml` — user-owned preferences, hand-editable: which Agents are enabled,
+default Scope, theme. skillm reads it and avoids rewriting it.
+
+### Registry
+`~/.skillm/state.toml` — machine-managed record skillm writes freely. One entry per added
+skill holding what cannot be re-derived: its Source (URL, subpath, ref), kind (git/local),
+the Revision recorded at `add`, and the install timestamp.
