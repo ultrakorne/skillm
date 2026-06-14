@@ -106,8 +106,11 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 	target := store.SkillDir(home, id)
 
 	for _, a := range agents {
-		folder := agentdir.SkillsFolder(a, scope, cwd)
-		linkPath := agentdir.LinkPath(a, scope, cwd, id)
+		folder, ok := agentdir.SkillsFolder(a, scope, cwd)
+		if !ok {
+			continue // agent has no folder at this scope; nothing to link
+		}
+		linkPath := filepath.Join(folder, id)
 
 		ar := AgentResult{Agent: a, Scope: scope, ID: id, Path: linkPath, Target: target}
 
@@ -181,7 +184,10 @@ func Unlink(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd 
 	var res Result
 
 	for _, a := range agents {
-		linkPath := agentdir.LinkPath(a, scope, cwd, id)
+		linkPath, ok := agentdir.LinkPath(a, scope, cwd, id)
+		if !ok {
+			continue // agent has no folder at this scope; nothing to unlink
+		}
 		ar := AgentResult{Agent: a, Scope: scope, ID: id, Path: linkPath}
 
 		info, lerr := os.Lstat(linkPath)
@@ -235,7 +241,10 @@ func ScanLinks(home, id string, agents []agentdir.Agent, scope agentdir.Scope, c
 	var res Result
 
 	for _, a := range agents {
-		linkPath := agentdir.LinkPath(a, scope, cwd, id)
+		linkPath, ok := agentdir.LinkPath(a, scope, cwd, id)
+		if !ok {
+			continue // agent has no folder at this scope; nothing to scan
+		}
 		ar := AgentResult{Agent: a, Scope: scope, ID: id, Path: linkPath, Action: ActionAbsent}
 
 		info, lerr := os.Lstat(linkPath)
@@ -288,7 +297,10 @@ func ScanAll(home string, agents []agentdir.Agent, scope agentdir.Scope, cwd str
 	var out []LinkInfo
 
 	for _, a := range agents {
-		folder := agentdir.SkillsFolder(a, scope, cwd)
+		folder, ok := agentdir.SkillsFolder(a, scope, cwd)
+		if !ok {
+			continue // agent has no folder at this scope
+		}
 		entries, err := os.ReadDir(folder)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {

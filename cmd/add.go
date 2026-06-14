@@ -82,6 +82,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	if err := store.EnsureHome(home); err != nil {
 		return err
 	}
+	// Materialize config.toml with the built-in defaults on first run so it is
+	// the visible, hand-editable source of truth for agent locations. Never
+	// clobbers an existing file.
+	if err := config.EnsureExists(home); err != nil {
+		return err
+	}
 
 	kind, err := source.Classify(srcArg)
 	if err != nil {
@@ -361,9 +367,20 @@ func linkAdded(home string, ids []string, scope agentdir.Scope) error {
 	if err != nil {
 		return err
 	}
-	agents := agentdir.Enabled(cfg.Agents)
+	agents := cfg.EnabledAgents()
 	if len(agents) == 0 {
 		ui.Warnf("no agents enabled (see `skillm agent`); skills added but not linked")
+		return nil
+	}
+
+	// Link only agents that define a location for this scope; an add should not
+	// fail just because some agent has no folder there.
+	supported, skipped := splitByScope(agents, scope)
+	for _, a := range skipped {
+		ui.Warnf("skipped %s: no %s location", a.Name, scope)
+	}
+	if len(supported) == 0 {
+		ui.Warnf("no enabled agent has a %s location; skills added but not linked", scope)
 		return nil
 	}
 
@@ -373,7 +390,7 @@ func linkAdded(home string, ids []string, scope agentdir.Scope) error {
 	}
 
 	for _, id := range ids {
-		res, err := linker.Link(home, id, agents, scope, cwd)
+		res, err := linker.Link(home, id, supported, scope, cwd)
 		// Report whatever succeeded before any refusal.
 		for _, ar := range res.Agents {
 			if ar.Action == linker.ActionCreated {

@@ -1,63 +1,36 @@
 package agentdir
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
 
-// agent fetches a supported agent by name for use in tests, failing if the
-// registry no longer contains it.
-func agent(t *testing.T, name string) Agent {
-	t.Helper()
-	for _, a := range All() {
-		if a.Name == name {
-			return a
-		}
-	}
-	t.Fatalf("agent %q not in registry", name)
-	return Agent{}
+// claudeAgent and codexAgent are the conventional definitions, constructed
+// directly: the catalog now lives in config, not in this package.
+func claudeAgent() Agent {
+	return Agent{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"}
 }
 
-func TestAllRegistry(t *testing.T) {
-	all := All()
-	if len(all) != 2 {
-		t.Fatalf("All() len = %d, want 2", len(all))
-	}
-	if all[0].Name != "claude" || all[1].Name != "codex" {
-		t.Fatalf("All() names = %q,%q; want claude,codex", all[0].Name, all[1].Name)
-	}
-	// Mutating the returned slice must not affect the registry.
-	all[0].Name = "tampered"
-	if All()[0].Name != "claude" {
-		t.Fatal("All() returned a slice aliasing the registry")
-	}
+func codexAgent() Agent {
+	return Agent{Name: "codex", Global: "~/.codex/skills", Local: ".codex/skills"}
 }
 
-func TestEnabled(t *testing.T) {
+func TestSupports(t *testing.T) {
 	cases := []struct {
-		names []string
-		want  []string
+		a             Agent
+		global, local bool
 	}{
-		{nil, nil},
-		{[]string{}, nil},
-		{[]string{"claude"}, []string{"claude"}},
-		{[]string{"codex"}, []string{"codex"}},
-		{[]string{"claude", "codex"}, []string{"claude", "codex"}},
-		// Preserves registry order regardless of input order.
-		{[]string{"codex", "claude"}, []string{"claude", "codex"}},
-		// Unknown names ignored; duplicates collapse.
-		{[]string{"claude", "bogus", "claude"}, []string{"claude"}},
+		{Agent{Name: "both", Global: "~/.x/skills", Local: ".x/skills"}, true, true},
+		{Agent{Name: "globalonly", Global: "~/.x/skills"}, true, false},
+		{Agent{Name: "localonly", Local: ".x/skills"}, false, true},
+		{Agent{Name: "none"}, false, false},
 	}
 	for _, c := range cases {
-		got := Enabled(c.names)
-		if len(got) != len(c.want) {
-			t.Fatalf("Enabled(%v) len = %d, want %d", c.names, len(got), len(c.want))
+		if got := c.a.Supports(Global); got != c.global {
+			t.Errorf("%s.Supports(Global) = %v, want %v", c.a.Name, got, c.global)
 		}
-		for i := range got {
-			if got[i].Name != c.want[i] {
-				t.Fatalf("Enabled(%v)[%d] = %q, want %q", c.names, i, got[i].Name, c.want[i])
-			}
+		if got := c.a.Supports(Local); got != c.local {
+			t.Errorf("%s.Supports(Local) = %v, want %v", c.a.Name, got, c.local)
 		}
 	}
 }
@@ -68,34 +41,85 @@ func TestSkillsFolderGlobal(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	cases := []struct {
-		agent string
+		agent Agent
 		want  string
 	}{
-		{"claude", filepath.Join(home, ".claude", "skills")},
-		{"codex", filepath.Join(home, ".codex", "skills")},
+		{claudeAgent(), filepath.Join(home, ".claude", "skills")},
+		{codexAgent(), filepath.Join(home, ".codex", "skills")},
 	}
 	for _, c := range cases {
-		// cwd is irrelevant for Global scope.
-		got := SkillsFolder(agent(t, c.agent), Global, "/some/project")
+		// base is irrelevant for Global scope.
+		got, ok := SkillsFolder(c.agent, Global, "/some/project")
+		if !ok {
+			t.Errorf("SkillsFolder(%s, Global) ok = false, want true", c.agent.Name)
+			continue
+		}
 		if got != c.want {
-			t.Errorf("SkillsFolder(%s, Global) = %q, want %q", c.agent, got, c.want)
+			t.Errorf("SkillsFolder(%s, Global) = %q, want %q", c.agent.Name, got, c.want)
 		}
 	}
 }
 
 func TestSkillsFolderLocal(t *testing.T) {
-	cwd := "/home/ultra/dev/myproject"
+	base := "/home/ultra/dev/myproject"
 	cases := []struct {
-		agent string
+		agent Agent
 		want  string
 	}{
-		{"claude", filepath.Join(cwd, ".claude", "skills")},
-		{"codex", filepath.Join(cwd, ".codex", "skills")},
+		{claudeAgent(), filepath.Join(base, ".claude", "skills")},
+		{codexAgent(), filepath.Join(base, ".codex", "skills")},
 	}
 	for _, c := range cases {
-		got := SkillsFolder(agent(t, c.agent), Local, cwd)
+		got, ok := SkillsFolder(c.agent, Local, base)
+		if !ok {
+			t.Errorf("SkillsFolder(%s, Local) ok = false, want true", c.agent.Name)
+			continue
+		}
 		if got != c.want {
-			t.Errorf("SkillsFolder(%s, Local) = %q, want %q", c.agent, got, c.want)
+			t.Errorf("SkillsFolder(%s, Local) = %q, want %q", c.agent.Name, got, c.want)
+		}
+	}
+}
+
+// TestSkillsFolderMissingScope verifies that an agent which defines only one
+// scope reports (_, false) for the scope it does not define, so callers skip it.
+func TestSkillsFolderMissingScope(t *testing.T) {
+	globalOnly := Agent{Name: "g", Global: "~/.g/skills"}
+	if _, ok := SkillsFolder(globalOnly, Local, "/proj"); ok {
+		t.Error("SkillsFolder(global-only, Local) ok = true, want false")
+	}
+	if _, ok := SkillsFolder(globalOnly, Global, "/proj"); !ok {
+		t.Error("SkillsFolder(global-only, Global) ok = false, want true")
+	}
+
+	localOnly := Agent{Name: "l", Local: ".l/skills"}
+	if _, ok := SkillsFolder(localOnly, Global, "/proj"); ok {
+		t.Error("SkillsFolder(local-only, Global) ok = true, want false")
+	}
+	if _, ok := SkillsFolder(localOnly, Local, "/proj"); !ok {
+		t.Error("SkillsFolder(local-only, Local) ok = false, want true")
+	}
+}
+
+// TestGlobalTemplateForms covers ~ expansion, the bare "~", relative-rooted-at-home,
+// and absolute-taken-as-is for Global locations.
+func TestGlobalTemplateForms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"~/.config/opencode/skill", filepath.Join(home, ".config", "opencode", "skill")},
+		{"~", home},
+		{".claude/skills", filepath.Join(home, ".claude", "skills")}, // relative rooted at home
+		{"/opt/skills", "/opt/skills"},                               // absolute as-is
+	}
+	for _, c := range cases {
+		got, ok := SkillsFolder(Agent{Name: "x", Global: c.in}, Global, "")
+		if !ok || got != c.want {
+			t.Errorf("Global %q -> (%q, %v), want (%q, true)", c.in, got, ok, c.want)
 		}
 	}
 }
@@ -103,24 +127,35 @@ func TestSkillsFolderLocal(t *testing.T) {
 func TestLinkPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	cwd := "/home/ultra/dev/myproject"
+	base := "/home/ultra/dev/myproject"
 	const id = "grill-with-docs"
 
 	cases := []struct {
-		agent string
+		agent Agent
 		scope Scope
 		want  string
 	}{
-		{"claude", Global, filepath.Join(home, ".claude", "skills", id)},
-		{"codex", Global, filepath.Join(home, ".codex", "skills", id)},
-		{"claude", Local, filepath.Join(cwd, ".claude", "skills", id)},
-		{"codex", Local, filepath.Join(cwd, ".codex", "skills", id)},
+		{claudeAgent(), Global, filepath.Join(home, ".claude", "skills", id)},
+		{codexAgent(), Global, filepath.Join(home, ".codex", "skills", id)},
+		{claudeAgent(), Local, filepath.Join(base, ".claude", "skills", id)},
+		{codexAgent(), Local, filepath.Join(base, ".codex", "skills", id)},
 	}
 	for _, c := range cases {
-		got := LinkPath(agent(t, c.agent), c.scope, cwd, id)
-		if got != c.want {
-			t.Errorf("LinkPath(%s, %s, %q) = %q, want %q", c.agent, c.scope, id, got, c.want)
+		got, ok := LinkPath(c.agent, c.scope, base, id)
+		if !ok {
+			t.Errorf("LinkPath(%s, %s) ok = false, want true", c.agent.Name, c.scope)
+			continue
 		}
+		if got != c.want {
+			t.Errorf("LinkPath(%s, %s, %q) = %q, want %q", c.agent.Name, c.scope, id, got, c.want)
+		}
+	}
+}
+
+func TestLinkPathMissingScope(t *testing.T) {
+	globalOnly := Agent{Name: "g", Global: "~/.g/skills"}
+	if _, ok := LinkPath(globalOnly, Local, "/proj", "id"); ok {
+		t.Error("LinkPath(global-only, Local) ok = true, want false")
 	}
 }
 
@@ -167,15 +202,12 @@ func TestScopeString(t *testing.T) {
 }
 
 func TestHomeDirFallback(t *testing.T) {
-	// When the home lookup fails, SkillsFolder must still produce a usable path
-	// rooted at "~" rather than panicking or returning an absolute machine path.
+	// When the home lookup fails, a Global SkillsFolder must still produce a
+	// usable path rooted at "~" rather than panicking or returning empty.
 	t.Setenv("HOME", "")
-	// On some platforms os.UserHomeDir consults other vars; clear the common ones.
 	t.Setenv("USERPROFILE", "")
-	got := SkillsFolder(agent(t, "claude"), Global, "")
-	// Either a real home resolved (rare in this stripped env) or the "~" fallback.
-	if got == "" {
-		t.Fatal("SkillsFolder returned empty path")
+	got, ok := SkillsFolder(claudeAgent(), Global, "")
+	if !ok || got == "" {
+		t.Fatalf("SkillsFolder returned (%q, %v); want a non-empty path", got, ok)
 	}
-	_ = os.PathSeparator
 }

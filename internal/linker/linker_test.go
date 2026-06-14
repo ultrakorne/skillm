@@ -32,21 +32,19 @@ func newFixture(t *testing.T, id string) fixture {
 	return fixture{home: home, cwd: t.TempDir()}
 }
 
-// claude returns the claude agent from the registry.
+// claude returns a claude test agent. Agent definitions now come from config;
+// tests construct them directly with the conventional locations.
 func claude(t *testing.T) agentdir.Agent {
 	t.Helper()
-	for _, a := range agentdir.All() {
-		if a.Name == "claude" {
-			return a
-		}
-	}
-	t.Fatal("claude not in registry")
-	return agentdir.Agent{}
+	return agentdir.Agent{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"}
 }
 
 func agents(t *testing.T) []agentdir.Agent {
 	t.Helper()
-	return agentdir.Enabled([]string{"claude", "codex"})
+	return []agentdir.Agent{
+		{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"},
+		{Name: "codex", Global: "~/.codex/skills", Local: ".codex/skills"},
+	}
 }
 
 func TestLink_FreshCreatesSymlink(t *testing.T) {
@@ -106,7 +104,7 @@ func TestLink_RefusesToClobberRealFile(t *testing.T) {
 	ag := []agentdir.Agent{claude(t)}
 
 	// Put a real file exactly where the link would go.
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +132,7 @@ func TestLink_RefusesToClobberRealDir(t *testing.T) {
 	fx := newFixture(t, id)
 	ag := []agentdir.Agent{claude(t)}
 
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	linkPath := filepath.Join(folder, id)
 	if err := os.MkdirAll(linkPath, 0o755); err != nil {
 		t.Fatal(err)
@@ -159,7 +157,7 @@ func TestLink_RefusesForeignSymlink(t *testing.T) {
 
 	// A symlink pointing OUTSIDE Home -> must not be touched.
 	foreign := t.TempDir()
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +189,7 @@ func TestLink_RepointsManagedLinkToDifferentSkill(t *testing.T) {
 	}
 	ag := []agentdir.Agent{claude(t)}
 
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +254,7 @@ func TestUnlink_RefusesForeignSymlink(t *testing.T) {
 	ag := []agentdir.Agent{claude(t)}
 
 	foreign := t.TempDir()
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +276,7 @@ func TestUnlink_RefusesRealFile(t *testing.T) {
 	fx := newFixture(t, id)
 	ag := []agentdir.Agent{claude(t)}
 
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +331,7 @@ func TestScanLinks_IgnoresForeignSymlink(t *testing.T) {
 	ag := []agentdir.Agent{claude(t)}
 
 	foreign := t.TempDir()
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +364,7 @@ func TestScanAll_DiscoversEveryLinkedID(t *testing.T) {
 	}
 
 	// Drop a foreign symlink and a real dir that must NOT be reported.
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.Symlink(t.TempDir(), filepath.Join(folder, "foreign")); err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +410,7 @@ func TestLink_RelativeForeignSymlinkRefused(t *testing.T) {
 	fx := newFixture(t, id)
 	ag := []agentdir.Agent{claude(t)}
 
-	folder := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}

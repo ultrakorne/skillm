@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/store"
 	"github.com/ultrakorne/skillm/internal/ui"
@@ -20,10 +19,11 @@ func newAgentCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "agent",
 		Short: "Choose which agents skillm links skills into",
-		Long: "agent shows an interactive multiselect of the supported agents, seeded " +
-			"with the currently enabled set, and writes the new selection back to " +
-			"config.toml. It does not retroactively link or unlink existing skills; the " +
-			"change only affects future links.",
+		Long: "agent shows an interactive multiselect of the agents defined in " +
+			"config.toml, seeded with the currently enabled set, and writes the toggled " +
+			"enabled flags back (each agent's locations are preserved). Defining a new " +
+			"agent is a config edit, not something this command does. It does not " +
+			"retroactively link or unlink existing skills; the change only affects future links.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAgent()
@@ -43,22 +43,21 @@ func runAgent() error {
 		return err
 	}
 
-	// Supported agents in stable registry order; this is the full option set.
-	supported := agentdir.All()
-	all := make([]string, 0, len(supported))
-	for _, a := range supported {
-		all = append(all, a.Name)
-	}
+	// The option set is every agent defined in config (sorted by name); the
+	// picker is seeded with those currently enabled.
+	all := cfg.AgentNames()
 
 	// SelectAgents seeds the picker from the currently enabled set and returns
 	// the new selection. It refuses on a non-TTY with a message naming
 	// config.toml, satisfying the non-interactive contract for this command.
-	selection, err := ui.SelectAgents(all, cfg.Agents)
+	selection, err := ui.SelectAgents(all, cfg.EnabledNames())
 	if err != nil {
 		return err
 	}
 
-	cfg.Agents = selection
+	// Write the selection back as per-agent enabled flags, keeping each agent's
+	// locations intact.
+	cfg.SetEnabled(selection)
 	if err := config.Save(home, cfg); err != nil {
 		return err
 	}

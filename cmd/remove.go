@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -30,6 +31,11 @@ func newRemoveCmd() *cobra.Command {
 			id := args[0]
 
 			home, err := store.Home(flagHome)
+			if err != nil {
+				return err
+			}
+
+			cfg, err := config.Load(home)
 			if err != nil {
 				return err
 			}
@@ -62,11 +68,11 @@ func newRemoveCmd() *cobra.Command {
 				return fmt.Errorf("determine current directory: %w", err)
 			}
 
-			// Clear links for EVERY supported agent (not just the enabled ones):
+			// Clear links for EVERY defined agent (not just the enabled ones):
 			// a link made while an agent was enabled must not be left dangling
 			// just because it is disabled now. Targets are the global folder plus
 			// every local folder skillm tracked for this Home.
-			agents := agentdir.All()
+			agents := cfg.AllAgents()
 			type target struct {
 				scope agentdir.Scope
 				dir   string
@@ -102,7 +108,7 @@ func newRemoveCmd() *cobra.Command {
 			// Drop the skill, then prune any tracked root that no longer holds a
 			// link now that this skill's local links are gone.
 			removed := st.Remove(id)
-			reconciled := reconcileLocalRoots(home, st)
+			reconciled := reconcileLocalRoots(home, cfg.AllAgents(), st)
 			if removed || reconciled {
 				if err := state.Save(home, st); err != nil {
 					return err

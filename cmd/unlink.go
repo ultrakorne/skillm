@@ -59,7 +59,7 @@ func runUnlink(id string, global, local bool) error {
 		return err
 	}
 
-	agents := agentdir.Enabled(cfg.Agents)
+	agents := cfg.EnabledAgents()
 	if len(agents) == 0 {
 		return fmt.Errorf("no enabled agents in %s; run `skillm agent` to enable at least one", config.Path(home))
 	}
@@ -74,7 +74,17 @@ func runUnlink(id string, global, local bool) error {
 		return err
 	}
 
-	res, err := linker.Unlink(home, id, agents, scope, base)
+	// Skip enabled agents that define no location for this scope (with a notice);
+	// error only when none of them does.
+	supported, skipped := splitByScope(agents, scope)
+	for _, a := range skipped {
+		ui.Warnf("skipped %s: no %s location", a.Name, scope)
+	}
+	if len(supported) == 0 {
+		return fmt.Errorf("no enabled agent has a %s location; define one in %s", scope, config.Path(home))
+	}
+
+	res, err := linker.Unlink(home, id, supported, scope, base)
 	reportUnlinkResult(res, scopeLabel(scope, base, cwd))
 	// A local unlink may have emptied a tracked root; drop any that no longer
 	// hold a skillm link so `list` stops scanning them.

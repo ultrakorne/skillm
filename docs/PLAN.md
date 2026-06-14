@@ -9,8 +9,11 @@ A single, self-contained spec for building `skillm`. Pair this with
 
 `skillm` is a Go CLI that manages AI-agent **Skills**. It keeps every skill in one central
 **Home** and **Links** them (via symlinks) into the skill folders that **Agents** read.
-Supported agents at launch: **Claude** and **Codex**, which share an identical on-disk skill
-format (a directory with `SKILL.md`), so one Home copy serves both.
+Agents are **defined in config**, not hardcoded: each agent declares the skill-folder
+location it reads at each Scope. skillm ships built-in definitions for **Claude** and
+**Codex** (which share an identical on-disk skill format — a directory with `SKILL.md` — so
+one Home copy serves both), and a user supports a new agent (e.g. opencode) purely by adding
+its locations to `config.toml`, never by changing skillm's source.
 
 **Constraints:** Go; Linux + macOS only (amd64/arm64); MIT licensed; public repo at
 `github.com/ultrakorne/skillm`; binary name `skillm`.
@@ -28,23 +31,53 @@ format (a directory with `SKILL.md`), so one Home copy serves both.
         └── SKILL.md
 ```
 
-Agent skill folders that get symlinks into Home:
+Agent skill folders that get symlinks into Home. **These paths are not hardcoded** — they
+come from each agent's definition in `config.toml`; the table below is just the seeded
+default for Claude and Codex:
 
 | Scope  | Claude                      | Codex                      |
 |--------|-----------------------------|----------------------------|
 | Global | `~/.claude/skills/<id>`     | `~/.codex/skills/<id>`     |
-| Local  | `<cwd>/.claude/skills/<id>` | `<cwd>/.codex/skills/<id>` |
+| Local  | `<base>/.claude/skills/<id>`| `<base>/.codex/skills/<id>`|
 
-Each entry is a symlink: `<agent-folder>/<id> → ~/.skillm/skills/<id>`.
+Each entry is a symlink: `<agent-folder>/<id> → ~/.skillm/skills/<id>`. `<base>` is the
+project root for Local scope — the current directory, or a custom path passed to `link`.
 
-### config.toml
+### config.toml — agent definitions
+
+`config.toml` is the single source of truth for **where** skills are installed. Each agent
+is a `[agents.<name>]` table:
 
 ```toml
-agents = ["claude", "codex"]  # Enabled agents; managed by `skillm agent`
-# Scope is not configured here: `link`/`unlink` ask interactively
-# (Global / Local / custom path) when neither --global nor --local is given.
-# theme/color is auto-detected from the terminal; no field needed
+[agents.claude]
+enabled = true
+global  = "~/.claude/skills"   # ~ expands to home; <id> is appended
+local   = ".claude/skills"     # relative to the project base; <id> is appended
+
+[agents.codex]
+enabled = true
+global  = "~/.codex/skills"
+local   = ".codex/skills"
+
+# Add a new agent by adding a table — no source change. Both scopes are
+# optional (at least one required); omit a scope the agent has no folder for.
+[agents.opencode]
+enabled = true
+global  = "~/.config/opencode/skill"   # global & local need not mirror
+local   = ".opencode/skill"
 ```
+
+Path rules: `global` expands a leading `~` to the user's home (and, if relative, is rooted
+at home); `local` is a relative path joined to the project base; skillm always appends the
+Skill ID. No `$ENV` expansion. `enabled` defaults to `true` when omitted.
+
+**Seeding & ownership.** When Home is first created (`EnsureHome`), skillm writes this file
+with the built-in Claude+Codex defaults *only if it is absent* — it never clobbers an
+existing file. The same built-in defaults are the in-memory fallback if the file is missing,
+so "what's written" equals "what you fall back to". Thereafter the file is hand-edited; the
+only command that rewrites it is `skillm agent` (toggling `enabled`), which re-marshals the
+whole file and so does not preserve hand-written comments. Agents iterate in a deterministic
+order (sorted by name). Scope is not configured here; theme is auto-detected.
 
 ### state.toml (registry)
 
@@ -112,10 +145,14 @@ Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (overrid
 
 ### link / unlink
 - Symlink (or remove the symlink for) `<skill_id>` into **every Enabled agent** at the chosen
-  Scope. `--global`/`--local` selects scope explicitly; with neither flag, skillm asks
-  interactively — **Global**, **Local** (the current directory), or a **custom path** typed with
-  Tab path-completion (on a non-TTY it refuses and requires a flag). `--local` and the custom
-  path use that directory's `.claude/skills` / `.codex/skills` (created if missing).
+  Scope, using each agent's location for that scope from `config.toml`. `--global`/`--local`
+  selects scope explicitly; with neither flag, skillm asks interactively — **Global**,
+  **Local** (the current directory), or a **custom path** typed with Tab path-completion (on a
+  non-TTY it refuses and requires a flag). `--local` and the custom path join that directory
+  to each agent's `local` location (created if missing).
+- **Missing scope:** an Enabled agent that defines no location for the chosen scope is
+  **skipped with a notice** (it simply has no folder there). If *no* Enabled agent defines a
+  location for that scope, the command errors.
 - **Safe by default:** `link` refuses to overwrite any existing entry skillm didn't create
   (i.e. not a symlink into Home) — it errors and leaves your own skill untouched.
 - Re-linking an already-correct symlink is a no-op.
@@ -142,8 +179,10 @@ Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (overrid
   TTY, confirm first (unless `--yes`).
 
 ### agent
-- **huh** multiselect seeded from `config.agents`; writes the new selection back to
-  `config.toml`. Does not retroactively link/unlink existing skills (only affects future links).
+- **huh** multiselect over the agents **defined** in `config.toml`, seeded with the current
+  `enabled` flags; writes the toggled flags back (preserving each agent's locations).
+  Defining a *new* agent is a config edit, not something this command does. Does not
+  retroactively link/unlink existing skills (only affects future links).
 
 ---
 
@@ -164,13 +203,15 @@ skillm/
 ├── cmd/                    # cobra commands, one file each (add, link, unlink,
 │                           #   list, check, update, remove, agent, root)
 └── internal/
-    ├── config/             # load/save ~/.skillm/config.toml (go-toml/v2)
+    ├── config/             # load/save ~/.skillm/config.toml (go-toml/v2); agent
+    │                       #   definitions (name → enabled/global/local) + seed defaults
     ├── state/              # load/save ~/.skillm/state.toml registry
     ├── store/              # Home bootstrap + layout; add/remove skill dirs
     ├── skill/              # Skill model; parse SKILL.md YAML frontmatter
     ├── source/             # parse URL vs local path; discover SKILL.md dirs
     ├── gitx/               # shell-out git: treeless fetch, ls-tree, sparse-checkout
-    ├── agentdir/           # agent definitions + skill-folder paths per scope
+    ├── agentdir/           # pure path computation from a config-supplied agent
+    │                       #   (global/local templates) → skill-folder path per scope
     ├── linker/             # create/remove symlinks; scan-for-links; safe overwrite
     └── ui/                 # lipgloss v2 styles, huh pickers, progress, tables, isatty
 ```
@@ -218,13 +259,18 @@ One-line install (`curl | sh`), a 4–5 line quickstart (`add` → `agent` → `
 ## 9. Build order (phases for ultracode)
 
 1. **Scaffold** — `go mod init github.com/ultrakorne/skillm`, `main.go`, cobra+fang root,
-   `config`/`state` packages with TOML round-trip, Home bootstrap, startup git check.
+   `config`/`state` packages with TOML round-trip (agent definitions: name →
+   enabled/global/local, built-in Claude+Codex defaults), Home bootstrap that seeds
+   `config.toml` when absent, startup git check.
 2. **Core libs** — `skill` (frontmatter), `source` (classify + discover), `gitx` (treeless
    fetch, `ls-tree`, sparse-checkout), `store` (copy skill into Home).
 3. **add** — git (discover + huh select, `--as`/`--ref`), local copy, optional `--global/--local`.
-4. **agentdir + linker** — folder mapping, symlink create/remove, scan-for-links, safe overwrite.
-5. **link / unlink** — wire linker to Enabled agents + scope; `add --global/--local` reuses it.
-6. **agent** — huh multiselect → config.
+4. **agentdir + linker** — folder mapping from config-supplied agents (global/local
+   templates, skip a scope an agent doesn't define), symlink create/remove, scan-for-links,
+   safe overwrite.
+5. **link / unlink** — wire linker to Enabled agents + scope; skip agents missing the scope
+   (error if none has it); `add --global/--local` reuses it.
+6. **agent** — huh multiselect over defined agents → toggle `enabled` flags in config.
 7. **list / check** — registry + live link scan + per-skill tree-SHA compare.
 8. **update** — all/one, registry rewrite, bubbles/progress bar.
 9. **remove** — auto-unlink + delete + confirm.

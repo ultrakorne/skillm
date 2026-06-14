@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
 )
@@ -64,7 +65,7 @@ func TestLinkedLabel(t *testing.T) {
 		t.Fatalf("mkdir skill: %v", err)
 	}
 
-	agents := agentdir.All() // claude, codex
+	agents := config.Default().AllAgents() // claude, codex
 
 	// Nothing linked yet.
 	if got := linkedLabel(home, id, agents, nil, t.TempDir()); got != "-" {
@@ -73,7 +74,7 @@ func TestLinkedLabel(t *testing.T) {
 
 	// Hand-build a global link for the first agent only, pointing into Home.
 	a := agents[0]
-	folder := agentdir.SkillsFolder(a, agentdir.Global, "")
+	folder, _ := agentdir.SkillsFolder(a, agentdir.Global, "")
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Skipf("cannot create global folder %s (no writable HOME?): %v", folder, err)
 	}
@@ -107,12 +108,12 @@ func TestLinkedLabelLocalRoots(t *testing.T) {
 		t.Fatalf("mkdir skill: %v", err)
 	}
 
-	agents := agentdir.All()
+	agents := config.Default().AllAgents()
 	a := agents[0]
 
 	// Hand-build a local link in a project dir that is not the cwd we scan from.
 	proj := t.TempDir()
-	folder := agentdir.SkillsFolder(a, agentdir.Local, proj)
+	folder, _ := agentdir.SkillsFolder(a, agentdir.Local, proj)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatalf("mkdir local folder: %v", err)
 	}

@@ -1,12 +1,14 @@
-// Package agentdir maps the supported AI agents to the on-disk skill folders
-// they read, at each Scope (Global or Local). It is pure path computation: it
-// performs no filesystem mutation and only resolves the conventional skill
-// folder locations defined in the PLAN folder table.
+// Package agentdir resolves an agent's on-disk skill folder at each Scope
+// (Global or Local). It is pure path computation: it performs no filesystem
+// mutation and holds no agent catalog of its own. The agents — and the
+// per-scope locations below — come from config.toml (see the config package),
+// so supporting a new agent is a config edit, not a source change. The seeded
+// defaults are:
 //
 //	| Scope  | Claude                      | Codex                      |
 //	|--------|-----------------------------|----------------------------|
 //	| Global | ~/.claude/skills/<id>       | ~/.codex/skills/<id>       |
-//	| Local  | <cwd>/.claude/skills/<id>   | <cwd>/.codex/skills/<id>   |
+//	| Local  | <base>/.claude/skills/<id>  | <base>/.codex/skills/<id>  |
 package agentdir
 
 import (
@@ -41,69 +43,60 @@ func (s Scope) String() string {
 	}
 }
 
-// Agent is a tool that consumes skills by reading them from a skill folder.
-// Name is the stable identifier used in config.toml's agents list (e.g.
-// "claude", "codex"); dir is the agent's conventional dotfolder name (e.g.
-// ".claude") relative to either the user's home (Global) or the cwd (Local).
+// Agent is a tool that consumes skills by reading them from a skill folder. It
+// is built from a config.toml definition: Name is the agent's identifier, and
+// Global/Local are the skill-folder location templates it reads at each Scope.
+// An empty Global or Local means the agent has no folder at that Scope.
 type Agent struct {
-	// Name is the lowercase identifier persisted in config.agents.
+	// Name is the agent's identifier (the [agents.<name>] key).
 	Name string
-	// dir is the agent's conventional dotfolder (e.g. ".claude").
-	dir string
+	// Global is the user-level location template; a leading "~" expands to the
+	// user's home, and a relative value is rooted at home. Empty = no Global folder.
+	Global string
+	// Local is the project-level location template, relative to the project
+	// base. Empty = no Local folder.
+	Local string
 }
 
-// registry is the ordered set of agents skillm supports. Order is stable so
-// All and Enabled return agents deterministically.
-var registry = []Agent{
-	{Name: "claude", dir: ".claude"},
-	{Name: "codex", dir: ".codex"},
-}
-
-// All returns every agent skillm supports, in a stable order. The returned
-// slice is a copy; callers may not mutate the registry through it.
-func All() []Agent {
-	out := make([]Agent, len(registry))
-	copy(out, registry)
-	return out
-}
-
-// Enabled returns the supported agents whose Name appears in names, preserving
-// the registry's stable order. Names that do not match a supported agent are
-// ignored. Typical use: agentdir.Enabled(cfg.Agents).
-func Enabled(names []string) []Agent {
-	want := make(map[string]bool, len(names))
-	for _, n := range names {
-		want[n] = true
+// Supports reports whether the agent defines a skill folder at scope.
+func (a Agent) Supports(scope Scope) bool {
+	if scope == Local {
+		return a.Local != ""
 	}
-	var out []Agent
-	for _, a := range registry {
-		if want[a.Name] {
-			out = append(out, a)
-		}
-	}
-	return out
+	return a.Global != ""
 }
 
 // SkillsFolder returns the absolute skill folder for the agent at the given
-// scope. For Global it is <home>/<agent-dir>/skills, where home is the user's
-// home directory (with a leading "~" expanded). For Local it is
-// <cwd>/<agent-dir>/skills. The path is cleaned but not created.
+// scope and true, or ("", false) when the agent defines no folder for that
+// scope. For Global it expands a leading "~" to the user's home and roots a
+// relative location at home. For Local it joins the agent's relative location
+// to base (the project root). The path is cleaned but not created.
 //
-// cwd is the project root used for Local scope; it is ignored for Global.
-func SkillsFolder(a Agent, scope Scope, cwd string) string {
+// base is the project root used for Local scope; it is ignored for Global.
+func SkillsFolder(a Agent, scope Scope, base string) (string, bool) {
 	switch scope {
 	case Local:
-		return filepath.Join(cwd, a.dir, "skills")
+		if a.Local == "" {
+			return "", false
+		}
+		return filepath.Join(base, a.Local), true
 	default: // Global
-		return filepath.Join(homeDir(), a.dir, "skills")
+		if a.Global == "" {
+			return "", false
+		}
+		return expandGlobal(a.Global), true
 	}
 }
 
 // LinkPath returns the absolute path of the symlink for skill id inside the
-// agent's skill folder at the given scope — i.e. SkillsFolder(a, scope, cwd)
-// joined with id. This is where the symlink into Home is created.
-func LinkPath(a Agent, scope Scope, cwd, id string) string {
-	return filepath.Join(SkillsFolder(a, scope, cwd), id)
+// agent's skill folder at the given scope — SkillsFolder joined with id — and
+// true, or ("", false) when the agent has no folder at that scope.
+func LinkPath(a Agent, scope Scope, base, id string) (string, bool) {
+	folder, ok := SkillsFolder(a, scope, base)
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(folder, id), true
 }
 
 // ParseScope maps a scope string to a Scope. It accepts "global"/"g" → Global
@@ -117,6 +110,22 @@ func ParseScope(s string) (Scope, error) {
 		return Local, nil
 	default:
 		return Global, fmt.Errorf("invalid scope %q: want \"global\" or \"local\"", s)
+	}
+}
+
+// expandGlobal resolves a Global location template to an absolute path: a
+// leading "~" (or "~/") expands to the user's home, an absolute path is taken
+// as-is, and a relative path is rooted at the user's home. The result is cleaned.
+func expandGlobal(p string) string {
+	switch {
+	case p == "~":
+		return homeDir()
+	case strings.HasPrefix(p, "~/"):
+		return filepath.Join(homeDir(), p[2:])
+	case filepath.IsAbs(p):
+		return filepath.Clean(p)
+	default:
+		return filepath.Join(homeDir(), p)
 	}
 }
 

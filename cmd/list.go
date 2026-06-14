@@ -56,7 +56,7 @@ func runList() error {
 		return err
 	}
 
-	agents := agentdir.Enabled(cfg.Agents)
+	agents := cfg.EnabledAgents()
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -230,14 +230,14 @@ func localScanDirs(roots []string, cwd string) []string {
 // supported agents (not just the enabled ones) so a root with links for a
 // currently-disabled agent is kept. It returns true if it changed st; the
 // caller persists via state.Save.
-func reconcileLocalRoots(home string, st *state.State) bool {
+func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) bool {
 	if len(st.LocalRoots) == 0 {
 		return false
 	}
 	kept := make([]string, 0, len(st.LocalRoots))
 	changed := false
 	for _, root := range st.LocalRoots {
-		infos, err := linker.ScanAll(home, agentdir.All(), agentdir.Local, root)
+		infos, err := linker.ScanAll(home, agents, agentdir.Local, root)
 		if err == nil && len(infos) == 0 {
 			changed = true
 			continue
@@ -252,11 +252,15 @@ func reconcileLocalRoots(home string, st *state.State) bool {
 // It is best-effort: any error is swallowed so a failed prune never fails the
 // user's command (the stale root is simply skipped by `list` next time).
 func pruneLocalRoots(home string) {
+	cfg, err := config.Load(home)
+	if err != nil {
+		return
+	}
 	st, err := state.Load(home)
 	if err != nil {
 		return
 	}
-	if reconcileLocalRoots(home, st) {
+	if reconcileLocalRoots(home, cfg.AllAgents(), st) {
 		_ = state.Save(home, st)
 	}
 }

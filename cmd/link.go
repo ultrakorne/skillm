@@ -69,7 +69,7 @@ func runLink(id string, global, local bool) error {
 		return fmt.Errorf("skill %q is not in Home (%s); add it first with `skillm add`", id, store.SkillsDir(home))
 	}
 
-	agents := agentdir.Enabled(cfg.Agents)
+	agents := cfg.EnabledAgents()
 	if len(agents) == 0 {
 		return fmt.Errorf("no enabled agents in %s; run `skillm agent` to enable at least one", config.Path(home))
 	}
@@ -86,7 +86,17 @@ func runLink(id string, global, local bool) error {
 		return err
 	}
 
-	res, err := linker.Link(home, id, agents, scope, base)
+	// An enabled agent that defines no location for this scope is skipped with a
+	// notice; it is only an error when none of the enabled agents has one.
+	supported, skipped := splitByScope(agents, scope)
+	for _, a := range skipped {
+		ui.Warnf("skipped %s: no %s location", a.Name, scope)
+	}
+	if len(supported) == 0 {
+		return fmt.Errorf("no enabled agent has a %s location; define one in %s", scope, config.Path(home))
+	}
+
+	res, err := linker.Link(home, id, supported, scope, base)
 	// Report whatever succeeded before any refusal, then surface the error.
 	reportLinkResult("Linked", res, scopeLabel(scope, base, cwd))
 	// Remember the project directory so `list` and `remove` can find this link
@@ -100,6 +110,21 @@ func runLink(id string, global, local bool) error {
 		return err
 	}
 	return nil
+}
+
+// splitByScope partitions agents into those that define a skill folder at scope
+// (supported) and those that do not (skipped). Callers link only the supported
+// ones and warn about the rest; an agent may legitimately have no folder at a
+// given scope (e.g. a global-only agent linked locally).
+func splitByScope(agents []agentdir.Agent, scope agentdir.Scope) (supported, skipped []agentdir.Agent) {
+	for _, a := range agents {
+		if a.Supports(scope) {
+			supported = append(supported, a)
+		} else {
+			skipped = append(skipped, a)
+		}
+	}
+	return supported, skipped
 }
 
 // linkedAny reports whether the Link result contains at least one link skillm

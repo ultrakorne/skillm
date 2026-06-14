@@ -18,9 +18,13 @@ share an ID, so a colliding `add` is an error that the user resolves with `--as 
 Everything an agent sees is a symlink back into Home.
 
 ### Agent
-A tool that consumes skills by reading them from a skill folder. Initially supported
-agents are **Claude** and **Codex**. Each agent has its own conventional skill folder
-location(s).
+A tool that consumes skills by reading them from a skill folder. An Agent is **defined**
+by a name and the skill-folder **location** it reads at each Scope — its Global location
+and its Local location, which need not mirror each other. These definitions live in
+Config, so supporting a new agent means **declaring its locations in config**, never
+changing skillm's source. skillm ships built-in definitions for **Claude** and **Codex**;
+those are also what a fresh Config is seeded with, but neither is privileged — any defined
+agent can be disabled, including Claude.
 
 ### Source
 A location skills are fetched from. Primary kind is a **git repository**, which may hold
@@ -84,15 +88,20 @@ step; bare `add` is fetch-only. Which links currently exist is never stored — 
 by scanning agents' skill folders for symlinks pointing into Home, so it never drifts.
 
 ### Enabled agents
-The set of Agents that Links are applied to, stored in Config. Managed interactively via
-`skillm agent` (a multiselect that reads the current set and writes the new selection back).
-Agents are expected to change rarely, so they live in Config rather than on each command.
+The Agents that Links are applied to: the subset of agents **defined** in Config whose
+`enabled` flag is set. An agent must be defined in Config before it can be enabled.
+Managed by editing config or interactively via `skillm agent` (a multiselect over the
+defined agents that writes the flags back). Disabling an agent keeps its definition — and
+its locations — intact, so it can be re-enabled without re-entering paths.
 
 ## Persistence
 
 ### Config
-`~/.skillm/config.toml` — user-owned preferences, hand-editable: which Agents are enabled,
-default Scope, theme. skillm reads it and avoids rewriting it.
+`~/.skillm/config.toml` — user-owned, hand-editable, and the **single source of truth for
+where skills are installed**. It holds the Agent definitions: for each known agent, the
+skill-folder locations it reads at each Scope and whether it is Enabled. skillm seeds it
+with the built-in defaults the first time Home is created, and otherwise avoids rewriting
+it (only `skillm agent` does, to toggle the Enabled flags).
 
 ### Registry
 `~/.skillm/state.toml` — machine-managed record skillm writes freely. One entry per added
