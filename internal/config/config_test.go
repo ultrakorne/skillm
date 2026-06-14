@@ -12,9 +12,6 @@ func TestDefault(t *testing.T) {
 	if !reflect.DeepEqual(c.Agents, []string{"claude", "codex"}) {
 		t.Errorf("Default().Agents = %v, want [claude codex]", c.Agents)
 	}
-	if c.DefaultScope != "global" {
-		t.Errorf("Default().DefaultScope = %q, want %q", c.DefaultScope, "global")
-	}
 }
 
 func TestLoadAbsentReturnsDefault(t *testing.T) {
@@ -38,8 +35,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	home := t.TempDir()
 
 	want := &Config{
-		Agents:       []string{"claude"},
-		DefaultScope: "local",
+		Agents: []string{"claude"},
 	}
 	if err := Save(home, want); err != nil {
 		t.Fatalf("Save: %v", err)

@@ -15,22 +15,16 @@ type Row struct {
 	ID     string // skill id
 	Source string // origin (git url or local path)
 	Linked string // scopes×agents read live from disk, e.g. "global: claude,codex"
-	Status string // up-to-date | update available | local | untracked
+	Kind   string // "git" or "local" — cheap to derive; update status lives in `skillm check`
 }
 
-const (
-	statusUpdateAvailable = "update available"
-	statusLocal           = "local"
-	statusUntracked       = "untracked"
-)
-
 // RenderSkillTable formats rows into a columnar view: ID | Source | Linked |
-// Status. On a TTY it draws a bordered, colorized table (status cells tinted
-// by meaning); off a TTY it emits a plain tab-separated grid so output stays
-// pipe- and grep-friendly. An empty rows slice yields a short notice rather
-// than an empty frame.
+// Kind. On a TTY it draws a bordered, colorized table (the Kind cell tinted by
+// meaning); off a TTY it emits a plain tab-separated grid so output stays pipe-
+// and grep-friendly. An empty rows slice yields a short notice rather than an
+// empty frame.
 func RenderSkillTable(rows []Row) string {
-	headers := []string{"ID", "Source", "Linked", "Status"}
+	headers := []string{"ID", "Source", "Linked", "Kind"}
 
 	if len(rows) == 0 {
 		if IsTTY() {
@@ -56,7 +50,7 @@ func renderPlain(headers []string, rows []Row) string {
 		b.WriteByte('\t')
 		b.WriteString(r.Linked)
 		b.WriteByte('\t')
-		b.WriteString(r.Status)
+		b.WriteString(r.Kind)
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -76,30 +70,24 @@ func renderStyled(headers []string, rows []Row) string {
 				return headerStyle.Padding(0, 1)
 			}
 			base := cellStyle
-			// Tint the Status column (index 3) by meaning.
+			// Tint the Kind column (index 3) by meaning.
 			if col == 3 && row >= 0 && row < len(rows) {
-				return base.Foreground(statusColor(rows[row].Status))
+				return base.Foreground(kindColor(rows[row].Kind))
 			}
 			return base
 		})
 
 	for _, r := range rows {
-		t.Row(r.ID, r.Source, r.Linked, r.Status)
+		t.Row(r.ID, r.Source, r.Linked, r.Kind)
 	}
 	return t.String()
 }
 
-func statusColor(status string) color.Color {
-	switch status {
-	case statusUpdateAvailable:
-		return lipgloss.Color("3") // yellow
-	case statusUntracked:
-		return lipgloss.Color("1") // red
-	case statusLocal:
-		return lipgloss.Color("8") // dim
-	default: // up-to-date and anything else
-		return lipgloss.Color("2") // green
+func kindColor(kind string) color.Color {
+	if kind == "local" {
+		return lipgloss.Color("8") // dim — local skills have no upstream
 	}
+	return lipgloss.Color("6") // cyan — git-tracked
 }
 
 func faintStyle() lipgloss.Style {

@@ -27,19 +27,21 @@ func newListCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "list",
 		Short: "Show every skill in Home",
-		Long: "List shows every skill registered in Home together with its source, the " +
-			"scopes and agents it is currently linked to (read live from disk), and its " +
-			"update status (up-to-date, update available, local, or untracked).",
+		Long: "List shows every skill registered in Home together with its source, its " +
+			"kind (git or local), and the scopes and agents it is currently linked to " +
+			"(read live from disk). It is fully offline and fast; run `skillm check` to " +
+			"see which git skills have upstream updates.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(cmd.Context())
+			return runList()
 		},
 	}
 	return c
 }
 
-// runList builds and renders the `skillm list` table.
-func runList(ctx context.Context) error {
+// runList builds and renders the `skillm list` table. It is fully offline: it
+// reports each skill's kind, not its upstream update status (see `skillm check`).
+func runList() error {
 	home, err := store.Home(flagHome)
 	if err != nil {
 		return err
@@ -61,43 +63,17 @@ func runList(ctx context.Context) error {
 		return fmt.Errorf("determine working directory: %w", err)
 	}
 
-	// Resolve the upstream status of every git skill (one treeless fetch each).
-	// Local skills need no network work. The check is read-only.
-	statuses := make([]string, len(st.Skills))
-	var gitIdx []int
-	for i, e := range st.Skills {
-		if e.Kind == state.KindGit {
-			gitIdx = append(gitIdx, i)
-		} else {
-			statuses[i] = statusLocal
-		}
-	}
-
-	if len(gitIdx) > 0 {
-		work := func(report func(done int)) error {
-			for n, i := range gitIdx {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				default:
-				}
-				statuses[i] = upstreamStatus(ctx, st.Skills[i])
-				report(n + 1)
-			}
-			return nil
-		}
-		if err := ui.RunProgress(len(gitIdx), work); err != nil {
-			return err
-		}
-	}
-
+	// list stays fast and offline: it reports each skill's kind (git or local),
+	// which is free to derive, and never touches the network. Upstream update
+	// status (up-to-date / update available / untracked) is the job of
+	// `skillm check`, which fetches each git skill's ref.
 	rows := make([]ui.Row, 0, len(st.Skills))
-	for i, e := range st.Skills {
+	for _, e := range st.Skills {
 		rows = append(rows, ui.Row{
 			ID:     e.ID,
 			Source: sourceLabel(e),
-			Linked: linkedLabel(home, e.ID, agents, cwd),
-			Status: statuses[i],
+			Linked: linkedLabel(home, e.ID, agents, st.LocalRoots, cwd),
+			Kind:   e.Kind,
 		})
 	}
 
@@ -105,12 +81,11 @@ func runList(ctx context.Context) error {
 	return nil
 }
 
-// Status labels for the list/check output. statusUpToDate is the default for a
-// git skill whose upstream subdir SHA still matches the recorded revision.
+// Status labels for `skillm check`. statusUpToDate is the default for a git
+// skill whose upstream subdir SHA still matches the recorded revision.
 const (
 	statusUpToDate        = "up-to-date"
 	statusUpdateAvailable = "update available"
-	statusLocal           = "local"
 	statusUntracked       = "untracked"
 )
 
@@ -173,29 +148,115 @@ func sourceLabel(e state.SkillEntry) string {
 }
 
 // linkedLabel scans, live from disk, which enabled agents have a link to skill
-// id at each scope and renders a compact "global: a,b; local: a" summary. A
-// skill that is linked nowhere renders as "-".
-func linkedLabel(home, id string, agents []agentdir.Agent, cwd string) string {
-	scopes := []agentdir.Scope{agentdir.Global, agentdir.Local}
+// id and renders a compact summary: "global: a,b; local: a; local(/proj): b".
+// Local links are looked for in the current directory (shown as bare "local")
+// and in every tracked root (shown as "local(<path>)"). A skill linked nowhere
+// renders as "-".
+func linkedLabel(home, id string, agents []agentdir.Agent, roots []string, cwd string) string {
 	var parts []string
-	for _, scope := range scopes {
-		res, err := linker.ScanLinks(home, id, agents, scope, cwd)
-		if err != nil {
+
+	if names := scanLinkNames(home, id, agents, agentdir.Global, ""); len(names) > 0 {
+		parts = append(parts, "global: "+strings.Join(names, ","))
+	}
+
+	cwdAbs, err := filepath.Abs(cwd)
+	if err != nil {
+		cwdAbs = cwd
+	}
+	for _, dir := range localScanDirs(roots, cwd) {
+		names := scanLinkNames(home, id, agents, agentdir.Local, dir)
+		if len(names) == 0 {
 			continue
 		}
-		var names []string
-		for _, ar := range res.Agents {
-			if ar.Action == linker.ActionFound {
-				names = append(names, ar.Agent.Name)
-			}
+		label := "local"
+		if dir != cwdAbs {
+			label = fmt.Sprintf("local(%s)", dir)
 		}
-		if len(names) > 0 {
-			sort.Strings(names)
-			parts = append(parts, fmt.Sprintf("%s: %s", scope, strings.Join(names, ",")))
-		}
+		parts = append(parts, label+": "+strings.Join(names, ","))
 	}
+
 	if len(parts) == 0 {
 		return "-"
 	}
 	return strings.Join(parts, "; ")
+}
+
+// scanLinkNames returns the sorted names of the enabled agents that have a
+// skillm link to skill id at the given scope and base directory (dir is ignored
+// for Global scope). A scan error yields no names rather than failing the row.
+func scanLinkNames(home, id string, agents []agentdir.Agent, scope agentdir.Scope, dir string) []string {
+	res, err := linker.ScanLinks(home, id, agents, scope, dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, ar := range res.Agents {
+		if ar.Action == linker.ActionFound {
+			names = append(names, ar.Agent.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// localScanDirs returns the absolute local directories to inspect for links:
+// the current directory plus every tracked root, de-duplicated and sorted. cwd
+// is always included so links in the current folder — or made before roots were
+// tracked — are still found.
+func localScanDirs(roots []string, cwd string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(p string) {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		if !seen[abs] {
+			seen[abs] = true
+			out = append(out, abs)
+		}
+	}
+	add(cwd)
+	for _, r := range roots {
+		add(r)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// reconcileLocalRoots prunes tracked local roots that hold none of skillm's
+// links — because every linked skill there was unlinked or removed, or the
+// directory is gone — mutating st.LocalRoots in place. It scans across ALL
+// supported agents (not just the enabled ones) so a root with links for a
+// currently-disabled agent is kept. It returns true if it changed st; the
+// caller persists via state.Save.
+func reconcileLocalRoots(home string, st *state.State) bool {
+	if len(st.LocalRoots) == 0 {
+		return false
+	}
+	kept := make([]string, 0, len(st.LocalRoots))
+	changed := false
+	for _, root := range st.LocalRoots {
+		infos, err := linker.ScanAll(home, agentdir.All(), agentdir.Local, root)
+		if err == nil && len(infos) == 0 {
+			changed = true
+			continue
+		}
+		kept = append(kept, root)
+	}
+	st.LocalRoots = kept
+	return changed
+}
+
+// pruneLocalRoots reconciles the tracked local roots and persists the result.
+// It is best-effort: any error is swallowed so a failed prune never fails the
+// user's command (the stale root is simply skipped by `list` next time).
+func pruneLocalRoots(home string) {
+	st, err := state.Load(home)
+	if err != nil {
+		return
+	}
+	if reconcileLocalRoots(home, st) {
+		_ = state.Save(home, st)
+	}
 }

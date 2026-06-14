@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -53,6 +54,13 @@ type State struct {
 	// Skills is one entry per added skill. The TOML key "skills" produces the
 	// [[skills]] array-of-tables in state.toml.
 	Skills []SkillEntry `toml:"skills"`
+	// LocalRoots is the set of project directories (absolute paths) skillm has
+	// linked skills into at local scope. It is NOT link state — link existence
+	// is still read live from disk — only the set of directories worth
+	// scanning, so `list` and `remove` can find local links outside the current
+	// directory. Roots that hold none of skillm's links are pruned by the
+	// commands that touch them.
+	LocalRoots []string `toml:"local_roots,omitempty"`
 }
 
 // Path returns the absolute path to the registry file inside homeDir.
@@ -134,6 +142,30 @@ func (s *State) Remove(id string) bool {
 	for i := range s.Skills {
 		if s.Skills[i].ID == id {
 			s.Skills = append(s.Skills[:i], s.Skills[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// AddLocalRoot records dir as a directory skillm has linked a skill into at
+// local scope. LocalRoots is a string set, so adding a dir already present is a
+// no-op. It returns true if dir was added (the caller should then Save).
+// Callers pass an absolute, cleaned path.
+func (s *State) AddLocalRoot(dir string) bool {
+	if slices.Contains(s.LocalRoots, dir) {
+		return false
+	}
+	s.LocalRoots = append(s.LocalRoots, dir)
+	return true
+}
+
+// RemoveLocalRoot drops dir from the tracked local roots, preserving order. It
+// returns true if dir was present (the caller should then Save).
+func (s *State) RemoveLocalRoot(dir string) bool {
+	for i, r := range s.LocalRoots {
+		if r == dir {
+			s.LocalRoots = append(s.LocalRoots[:i], s.LocalRoots[i+1:]...)
 			return true
 		}
 	}

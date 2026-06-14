@@ -40,8 +40,9 @@ Each entry is a symlink: `<agent-folder>/<id> → ~/.skillm/skills/<id>`.
 ### config.toml
 
 ```toml
-agents        = ["claude", "codex"]  # Enabled agents; managed by `skillm agent`
-default_scope = "global"             # scope used by `link` when neither --global/--local given
+agents = ["claude", "codex"]  # Enabled agents; managed by `skillm agent`
+# Scope is not configured here: `link`/`unlink` ask interactively
+# (Global / Local / custom path) when neither --global nor --local is given.
 # theme/color is auto-detected from the terminal; no field needed
 ```
 
@@ -63,10 +64,17 @@ kind         = "local"
 source       = "/home/ultra/dev/my-skill"                     # original path (informational)
 installed_at = "2026-06-13T18:05:00Z"
 # local skills have no ref/revision and are not update-tracked
+
+# Project directories skillm has linked skills into at local scope. Not link
+# state — only the set of folders to scan, so `list`/`remove` find local links
+# outside the current directory. Pruned when a folder holds no skillm link.
+local_roots = ["/home/ultra/projA", "/home/ultra/projB"]
 ```
 
-**Links are never stored** — they are read live by scanning each agent folder for symlinks
-whose target resolves into `~/.skillm/skills/`.
+**Link existence is never stored** — links are read live by scanning each agent folder (global,
+plus the current directory and every `local_roots` entry) for symlinks whose target resolves
+into `~/.skillm/skills/`. Only the *set of local folders to scan* is persisted, so a recorded
+root never lets stale link state survive: a folder with no skillm link is pruned.
 
 ---
 
@@ -104,8 +112,10 @@ Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (overrid
 
 ### link / unlink
 - Symlink (or remove the symlink for) `<skill_id>` into **every Enabled agent** at the chosen
-  Scope. `--global`/`--local` selects scope; default is `config.default_scope`. `--local` uses
-  the current working directory's `.claude/skills` / `.codex/skills` (created if missing).
+  Scope. `--global`/`--local` selects scope explicitly; with neither flag, skillm asks
+  interactively — **Global**, **Local** (the current directory), or a **custom path** typed with
+  Tab path-completion (on a non-TTY it refuses and requires a flag). `--local` and the custom
+  path use that directory's `.claude/skills` / `.codex/skills` (created if missing).
 - **Safe by default:** `link` refuses to overwrite any existing entry skillm didn't create
   (i.e. not a symlink into Home) — it errors and leaves your own skill untouched.
 - Re-linking an already-correct symlink is a no-op.

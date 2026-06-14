@@ -2,7 +2,10 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"charm.land/huh/v2"
 )
@@ -95,6 +98,171 @@ func SelectAgents(all []string, enabled []string) ([]string, error) {
 		return nil, err
 	}
 	return selected, nil
+}
+
+// ScopeSelection is the outcome of SelectScope. Global is true when the user
+// chose the agents' user-level scope; otherwise the link is project-level and
+// Path is the base directory it is rooted at (the current directory for the
+// "Local" choice, or a directory the user typed for the "Custom path" choice).
+type ScopeSelection struct {
+	Global bool
+	Path   string
+}
+
+// errNonInteractiveScope is returned by SelectScope on a non-TTY: there is no
+// way to prompt, so the caller is told which flags pick a scope explicitly.
+var errNonInteractiveScope = errors.New("non-interactive: pass --global or --local")
+
+// SelectScope asks where a skill should be linked: Global (the agents'
+// user-level folders), Local (the current directory's project folders), or a
+// custom directory typed with Tab path-completion. cwd is the current working
+// directory; it labels the Local choice and seeds the custom-path input so
+// completion is useful from the first keystroke. On a non-TTY it refuses and
+// names the --global/--local escape hatch.
+func SelectScope(cwd string) (ScopeSelection, error) {
+	if !IsTTY() {
+		return ScopeSelection{}, errNonInteractiveScope
+	}
+
+	const (
+		choiceGlobal = "global"
+		choiceLocal  = "local"
+		choicePath   = "path"
+	)
+
+	// Show the current directory's full path on the Local option: a bare "./"
+	// hides which folder the user is actually in.
+	localLabel := "Local — this folder (" + filepath.Join(cwd, ".<agent>", "skills") + ")"
+
+	var choice string
+	// Height must be set explicitly — see SelectSkills for why huh v2 collapses
+	// a static-Options field to zero height otherwise.
+	sel := huh.NewSelect[string]().
+		Title("Where should this skill be linked?").
+		Options(
+			huh.NewOption("Global — every project (~/.<agent>/skills)", choiceGlobal),
+			huh.NewOption(localLabel, choiceLocal),
+			huh.NewOption("Custom path…", choicePath),
+		).
+		Height(5).
+		Value(&choice)
+	if err := runForm(sel); err != nil {
+		return ScopeSelection{}, err
+	}
+
+	switch choice {
+	case choiceGlobal:
+		return ScopeSelection{Global: true}, nil
+	case choiceLocal:
+		return ScopeSelection{Path: cwd}, nil
+	case choicePath:
+		path, err := selectPath(cwd)
+		if err != nil {
+			return ScopeSelection{}, err
+		}
+		return ScopeSelection{Path: path}, nil
+	default:
+		return ScopeSelection{}, errors.New("no scope selected")
+	}
+}
+
+// selectPath prompts for a directory with Tab path-completion. It seeds the
+// input with cwd (so the first Tab lists its subdirectories) and validates that
+// the chosen path is an existing directory. The returned path is tilde-expanded
+// and cleaned so the linker can use it directly.
+func selectPath(cwd string) (string, error) {
+	value := withTrailingSep(cwd)
+	field := huh.NewInput().
+		Title("Directory to link into").
+		Description("Type a path; press Tab to complete. Links go in <path>/.<agent>/skills.").
+		Value(&value).
+		// Bind the suggestions to the input's own value so they refresh on every
+		// keystroke (huh re-evaluates the func whenever the binding's hash changes).
+		SuggestionsFunc(func() []string { return dirSuggestions(value) }, &value).
+		Validate(validateDir)
+	if err := runForm(field); err != nil {
+		return "", err
+	}
+	return filepath.Clean(expandTilde(strings.TrimSpace(value))), nil
+}
+
+// dirSuggestions returns the subdirectory paths that extend the partial path
+// typed so far, for the path input's Tab-completion. It lists the directory
+// holding the partial leaf (or the partial path itself when it ends in a
+// separator) and keeps the subdirectories whose full path has the typed value
+// as a prefix — the match rule bubbles' textinput applies. It is best-effort:
+// an unreadable or missing directory yields no suggestions.
+func dirSuggestions(partial string) []string {
+	partial = strings.TrimSpace(partial)
+
+	dir := partial
+	if !strings.HasSuffix(partial, string(os.PathSeparator)) {
+		dir = filepath.Dir(partial)
+	}
+	if dir == "" {
+		dir = "."
+	}
+
+	entries, err := os.ReadDir(expandTilde(dir))
+	if err != nil {
+		return nil
+	}
+
+	lowerPartial := strings.ToLower(partial)
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		cand := filepath.Join(dir, e.Name())
+		if strings.HasPrefix(strings.ToLower(cand), lowerPartial) {
+			out = append(out, cand)
+		}
+	}
+	return out
+}
+
+// validateDir is the path input's validator: the trimmed value must name an
+// existing directory (tilde-expanded for the check).
+func validateDir(p string) error {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return errors.New("enter a directory path")
+	}
+	info, err := os.Stat(expandTilde(p))
+	if err != nil {
+		return fmt.Errorf("%s: not found", p)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", p)
+	}
+	return nil
+}
+
+// expandTilde replaces a leading "~" (alone or as "~/…") with the user's home
+// directory so typed paths resolve like the shell does. Other paths and an
+// unavailable home are returned unchanged.
+func expandTilde(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~"+string(os.PathSeparator)) {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
+}
+
+// withTrailingSep ensures p ends in a path separator (unless empty), so the
+// path input starts ready to list the directory's contents on the first Tab.
+func withTrailingSep(p string) string {
+	if p == "" || strings.HasSuffix(p, string(os.PathSeparator)) {
+		return p
+	}
+	return p + string(os.PathSeparator)
 }
 
 // Confirm asks a yes/no question and returns the answer. On a non-TTY it

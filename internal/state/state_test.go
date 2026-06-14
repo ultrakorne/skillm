@@ -157,3 +157,60 @@ func TestSaveNilErrors(t *testing.T) {
 		t.Error("Save(nil) = nil error, want error")
 	}
 }
+
+func TestLocalRoots(t *testing.T) {
+	s := &State{}
+
+	if !s.AddLocalRoot("/projA") {
+		t.Error("AddLocalRoot(/projA) = false, want true (new)")
+	}
+	if s.AddLocalRoot("/projA") {
+		t.Error("AddLocalRoot(/projA) again = true, want false (duplicate)")
+	}
+	if !s.AddLocalRoot("/projB") {
+		t.Error("AddLocalRoot(/projB) = false, want true")
+	}
+	if !reflect.DeepEqual(s.LocalRoots, []string{"/projA", "/projB"}) {
+		t.Fatalf("LocalRoots = %v, want [/projA /projB]", s.LocalRoots)
+	}
+
+	if !s.RemoveLocalRoot("/projA") {
+		t.Error("RemoveLocalRoot(/projA) = false, want true")
+	}
+	if s.RemoveLocalRoot("/projA") {
+		t.Error("RemoveLocalRoot(/projA) again = true, want false (absent)")
+	}
+	if !reflect.DeepEqual(s.LocalRoots, []string{"/projB"}) {
+		t.Fatalf("LocalRoots after remove = %v, want [/projB]", s.LocalRoots)
+	}
+}
+
+func TestLocalRootsRoundTrip(t *testing.T) {
+	home := t.TempDir()
+
+	want := &State{LocalRoots: []string{"/home/me/projA", "/home/me/projB"}}
+	if err := Save(home, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(home)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(got.LocalRoots, want.LocalRoots) {
+		t.Errorf("round-trip LocalRoots = %v, want %v", got.LocalRoots, want.LocalRoots)
+	}
+}
+
+func TestLocalRootsOmittedWhenEmpty(t *testing.T) {
+	home := t.TempDir()
+	if err := Save(home, &State{Skills: []SkillEntry{{ID: "x", Kind: KindLocal}}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(Path(home))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if containsKey(string(data), "local_roots") {
+		t.Errorf("empty LocalRoots serialized a local_roots key:\n%s", data)
+	}
+}

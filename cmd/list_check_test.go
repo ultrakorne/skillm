@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,7 +67,7 @@ func TestLinkedLabel(t *testing.T) {
 	agents := agentdir.All() // claude, codex
 
 	// Nothing linked yet.
-	if got := linkedLabel(home, id, agents, t.TempDir()); got != "-" {
+	if got := linkedLabel(home, id, agents, nil, t.TempDir()); got != "-" {
 		t.Fatalf("unlinked label = %q, want %q", got, "-")
 	}
 
@@ -83,8 +84,45 @@ func TestLinkedLabel(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(link) })
 
-	got := linkedLabel(home, id, agents, t.TempDir())
+	got := linkedLabel(home, id, agents, nil, t.TempDir())
 	want := "global: " + a.Name
+	if got != want {
+		t.Fatalf("linked label = %q, want %q", got, want)
+	}
+}
+
+// TestLinkedLabelLocalRoots verifies a local link in a tracked root that is NOT
+// the current directory is discovered and rendered with its full path.
+func TestLinkedLabelLocalRoots(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	home := t.TempDir()
+	if err := store.EnsureHome(home); err != nil {
+		t.Fatalf("EnsureHome: %v", err)
+	}
+	const id = "demo"
+	skillDir := store.SkillDir(home, id)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+
+	agents := agentdir.All()
+	a := agents[0]
+
+	// Hand-build a local link in a project dir that is not the cwd we scan from.
+	proj := t.TempDir()
+	folder := agentdir.SkillsFolder(a, agentdir.Local, proj)
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatalf("mkdir local folder: %v", err)
+	}
+	if err := os.Symlink(skillDir, filepath.Join(folder, id)); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	cwd := t.TempDir() // a different directory with no links of its own
+	got := linkedLabel(home, id, agents, []string{proj}, cwd)
+	want := fmt.Sprintf("local(%s): %s", proj, a.Name)
 	if got != want {
 		t.Fatalf("linked label = %q, want %q", got, want)
 	}

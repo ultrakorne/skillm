@@ -29,7 +29,7 @@ const (
 )
 
 // String returns the canonical lowercase name of the scope, matching the
-// values used in config.toml's default_scope and the --global/--local flags.
+// values used by the --global/--local flags.
 func (s Scope) String() string {
 	switch s {
 	case Global:
@@ -106,9 +106,9 @@ func LinkPath(a Agent, scope Scope, cwd, id string) string {
 	return filepath.Join(SkillsFolder(a, scope, cwd), id)
 }
 
-// ParseScope maps a flag value to a Scope. It accepts "global"/"g" → Global,
-// "local"/"l" → Local, and the empty string → the def fallback (the caller's
-// configured default_scope). Any other value is an error.
+// ParseScope maps a scope string to a Scope. It accepts "global"/"g" → Global
+// and "local"/"l" → Local (case-insensitive, trimmed). Any other value,
+// including the empty string, is an error.
 func ParseScope(s string) (Scope, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "global", "g":

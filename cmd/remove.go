@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
-	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -22,10 +21,10 @@ func newRemoveCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "remove <skill_id>",
 		Short: "Delete a skill from Home, unlinking it from every agent first",
-		Long: "remove unlinks a skill from every enabled agent at both the global and " +
-			"local scopes, then deletes the Home copy and its registry entry so no " +
-			"dangling symlinks are left behind. On a terminal it confirms first unless " +
-			"--yes or --force is given.",
+		Long: "remove unlinks a skill from every agent at the global scope and in every " +
+			"local folder skillm linked it into (tracked in state.toml), then deletes the " +
+			"Home copy and its registry entry so no dangling symlinks are left behind. On " +
+			"a terminal it confirms first unless --yes or --force is given.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
@@ -35,10 +34,6 @@ func newRemoveCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, err := config.Load(home)
-			if err != nil {
-				return err
-			}
 			st, err := state.Load(home)
 			if err != nil {
 				return err
@@ -67,15 +62,25 @@ func newRemoveCmd() *cobra.Command {
 				return fmt.Errorf("determine current directory: %w", err)
 			}
 
-			agents := agentdir.Enabled(cfg.Agents)
-			scopes := []agentdir.Scope{agentdir.Global, agentdir.Local}
+			// Clear links for EVERY supported agent (not just the enabled ones):
+			// a link made while an agent was enabled must not be left dangling
+			// just because it is disabled now. Targets are the global folder plus
+			// every local folder skillm tracked for this Home.
+			agents := agentdir.All()
+			type target struct {
+				scope agentdir.Scope
+				dir   string
+			}
+			targets := []target{{agentdir.Global, cwd}}
+			for _, dir := range localScanDirs(st.LocalRoots, cwd) {
+				targets = append(targets, target{agentdir.Local, dir})
+			}
 
-			// Unlink from every enabled agent at both scopes. linker.Unlink is
-			// idempotent for absent links and refuses to touch foreign symlinks
-			// or real files; under --force we skip such refusals so the Home copy
-			// can still be deleted (the foreign entry is left in place).
-			for _, scope := range scopes {
-				res, err := linker.Unlink(home, id, agents, scope, cwd)
+			// linker.Unlink is idempotent for absent links and refuses to touch
+			// foreign symlinks or real files; under --force we skip such refusals
+			// so the Home copy can still be deleted (the foreign entry stays put).
+			for _, tg := range targets {
+				res, err := linker.Unlink(home, id, agents, tg.scope, tg.dir)
 				if err != nil {
 					if flagForce {
 						ui.Warnf("%v", err)
@@ -85,7 +90,7 @@ func newRemoveCmd() *cobra.Command {
 				}
 				for _, ar := range res.Agents {
 					if ar.Action == linker.ActionRemoved {
-						ui.Successf("unlinked %s (%s: %s)", id, scope, ar.Agent.Name)
+						ui.Successf("unlinked %s from %s (%s)", id, ar.Agent.Name, scopeLabel(tg.scope, tg.dir, cwd))
 					}
 				}
 			}
@@ -94,7 +99,11 @@ func newRemoveCmd() *cobra.Command {
 				return err
 			}
 
-			if st.Remove(id) {
+			// Drop the skill, then prune any tracked root that no longer holds a
+			// link now that this skill's local links are gone.
+			removed := st.Remove(id)
+			reconciled := reconcileLocalRoots(home, st)
+			if removed || reconciled {
 				if err := state.Save(home, st); err != nil {
 					return err
 				}

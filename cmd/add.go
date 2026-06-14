@@ -114,9 +114,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 }
 
 // addLinkScope resolves whether the caller asked to link after adding, and at
-// which scope. Bare `add` is fetch-only (doLink == false). add does not fall
-// back to config.default_scope: only an explicit --global/--local triggers a
-// link (PLAN §3 add).
+// which scope. Bare `add` is fetch-only (doLink == false): only an explicit
+// --global/--local triggers a link (PLAN §3 add).
 func addLinkScope() (scope agentdir.Scope, doLink bool, err error) {
 	switch {
 	case addGlobal && addLocal:
@@ -385,6 +384,12 @@ func linkAdded(home string, ids []string, scope agentdir.Scope) error {
 		}
 		if err != nil {
 			return err
+		}
+	}
+	// A local link makes cwd a directory `list`/`remove` must scan later.
+	if scope == agentdir.Local {
+		if err := addLocalRoot(home, cwd); err != nil {
+			ui.Warnf("linked, but could not record %s for `skillm list`: %v", cwd, err)
 		}
 	}
 	return nil

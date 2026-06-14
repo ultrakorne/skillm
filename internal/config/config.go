@@ -24,17 +24,14 @@ type Config struct {
 	// Agents is the set of Enabled agents that Links are applied to. Managed
 	// interactively via `skillm agent`.
 	Agents []string `toml:"agents"`
-	// DefaultScope is the scope used by `link`/`add` when neither --global nor
-	// --local is given. Expected values: "global" or "local".
-	DefaultScope string `toml:"default_scope"`
 }
 
 // Default returns a freshly allocated Config holding skillm's built-in
-// defaults: both supported agents enabled and the global scope as default.
+// defaults: both supported agents enabled. Link scope is no longer configured
+// here — `link`/`unlink` ask interactively (or take --global/--local).
 func Default() *Config {
 	return &Config{
-		Agents:       []string{"claude", "codex"},
-		DefaultScope: "global",
+		Agents: []string{"claude", "codex"},
 	}
 }
 

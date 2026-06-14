@@ -28,12 +28,14 @@ func newUnlinkCmd() *cobra.Command {
 		Use:   "unlink <skill_id>",
 		Short: "Remove a skill's symlink from every enabled agent at the chosen scope",
 		Long: "Remove the symlink for <skill_id> from every enabled agent's skill folder " +
-			"(see config.agents) at the chosen scope. --global targets the agents' " +
-			"user-level folders (~/.<agent>/skills); --local targets the current " +
-			"directory's project folders (<cwd>/.<agent>/skills). When neither flag is " +
-			"given, config.default_scope is used. Only symlinks skillm created (pointing " +
-			"into Home) are removed; real files, directories, or foreign symlinks are left " +
-			"untouched. Unlinking a skill that is not linked is a no-op.",
+			"(see config.agents) at the chosen scope. With no flag, skillm asks " +
+			"interactively which scope to target: Global (the agents' user-level " +
+			"~/.<agent>/skills folders), Local (this directory's <cwd>/.<agent>/skills " +
+			"folders), or a custom directory you type with Tab path-completion. --global " +
+			"or --local skip the prompt; on a non-interactive terminal one of them is " +
+			"required. Only symlinks skillm created (pointing into Home) are removed; real " +
+			"files, directories, or foreign symlinks are left untouched. Unlinking a skill " +
+			"that is not linked is a no-op.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUnlink(args[0], unlinkFlagGlobal, unlinkFlagLocal)
@@ -57,11 +59,6 @@ func runUnlink(id string, global, local bool) error {
 		return err
 	}
 
-	scope, err := resolveScope(global, local, cfg.DefaultScope)
-	if err != nil {
-		return err
-	}
-
 	agents := agentdir.Enabled(cfg.Agents)
 	if len(agents) == 0 {
 		return fmt.Errorf("no enabled agents in %s; run `skillm agent` to enable at least one", config.Path(home))
@@ -72,8 +69,18 @@ func runUnlink(id string, global, local bool) error {
 		return fmt.Errorf("determine current directory: %w", err)
 	}
 
-	res, err := linker.Unlink(home, id, agents, scope, cwd)
-	reportUnlinkResult(res, scope)
+	scope, base, err := resolveScope(global, local, cwd)
+	if err != nil {
+		return err
+	}
+
+	res, err := linker.Unlink(home, id, agents, scope, base)
+	reportUnlinkResult(res, scopeLabel(scope, base, cwd))
+	// A local unlink may have emptied a tracked root; drop any that no longer
+	// hold a skillm link so `list` stops scanning them.
+	if scope == agentdir.Local {
+		pruneLocalRoots(home)
+	}
 	if err != nil {
 		return err
 	}
@@ -81,13 +88,13 @@ func runUnlink(id string, global, local bool) error {
 }
 
 // reportUnlinkResult prints a styled line per agent describing what Unlink did.
-func reportUnlinkResult(res linker.Result, scope agentdir.Scope) {
+func reportUnlinkResult(res linker.Result, label string) {
 	for _, ar := range res.Agents {
 		switch ar.Action {
 		case linker.ActionRemoved:
-			ui.Successf("Unlinked %s from %s (%s)", ar.ID, ar.Agent.Name, scope)
+			ui.Successf("Unlinked %s from %s (%s)", ar.ID, ar.Agent.Name, label)
 		case linker.ActionAbsent:
-			ui.Warnf("%s was not linked for %s (%s)", ar.ID, ar.Agent.Name, scope)
+			ui.Warnf("%s was not linked for %s (%s)", ar.ID, ar.Agent.Name, label)
 		}
 	}
 }
