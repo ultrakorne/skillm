@@ -77,6 +77,14 @@ func renderStyled(headers []string, rows []Row) string {
 			return base
 		})
 
+	// Constrain the table to the terminal so wide cells (long git URLs) wrap
+	// within their column instead of overflowing the window. The resizer fits
+	// columns plus borders inside this width; 0 (non-TTY/unknown) leaves the
+	// table to size to content, as before.
+	if w := TerminalWidth(); w > 0 {
+		t.Width(w)
+	}
+
 	for _, r := range rows {
 		t.Row(r.ID, r.Source, r.Linked, r.Kind)
 	}

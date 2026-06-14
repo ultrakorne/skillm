@@ -11,6 +11,7 @@ package ui
 import (
 	"os"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/mattn/go-isatty"
 )
 
@@ -20,4 +21,16 @@ import (
 func IsTTY() bool {
 	fd := os.Stdout.Fd()
 	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// TerminalWidth returns the width in cells of the stdout terminal, or 0 when
+// stdout is not a terminal or its size can't be determined. Renderers treat 0
+// as "unbounded" and only constrain their layout when a positive width is
+// known, so tables fit the window instead of overflowing it.
+func TerminalWidth() int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || w <= 0 {
+		return 0
+	}
+	return w
 }
