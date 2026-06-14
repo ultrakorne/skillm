@@ -80,6 +80,23 @@ func fanOut(ctx context.Context, n int, do func(i int)) {
 	wg.Wait()
 }
 
+// spawnCheckers launches the bounded fan-out of check(ctx, i) on a background
+// goroutine, forwarding each finished row to msgs as a checkDoneMsg. A send is
+// abandoned if ctx is cancelled first, so the goroutine never blocks after the
+// program tears down. Both the spinner-only and the spinner+bar runners share
+// this so their worker plumbing stays identical.
+func spawnCheckers(ctx context.Context, n int, check func(ctx context.Context, i int) Result, msgs chan tea.Msg) {
+	go func() {
+		fanOut(ctx, n, func(i int) {
+			res := check(ctx, i)
+			select {
+			case msgs <- checkDoneMsg{index: i, res: res}:
+			case <-ctx.Done():
+			}
+		})
+	}()
+}
+
 // printResult emits a finished check as a plain line, routing by severity the
 // same way the Successf/Warnf/Errorf helpers do.
 func printResult(r Result) {
@@ -191,15 +208,7 @@ func runChecksTUI(ctx context.Context, labels []string, check func(ctx context.C
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go func() {
-		fanOut(wctx, n, func(i int) {
-			res := check(wctx, i)
-			select {
-			case msgs <- checkDoneMsg{index: i, res: res}:
-			case <-wctx.Done():
-			}
-		})
-	}()
+	spawnCheckers(wctx, n, check, msgs)
 
 	prog := tea.NewProgram(model, tea.WithOutput(os.Stderr), tea.WithContext(ctx))
 	finalModel, err := prog.Run()

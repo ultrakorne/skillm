@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -70,35 +71,48 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 		return nil
 	}
 
-	// Each target requires its own treeless clone and tree-SHA comparison; that
-	// network/git work is what warrants a progress bar.
+	// Each target requires its own treeless clone and tree-SHA comparison. That
+	// per-skill network/git work is run concurrently (bounded by ui's fan-out)
+	// and shown as a live spinner row per skill with an aggregate progress bar
+	// underneath. Because the workers run in parallel, the shared bookkeeping
+	// below is guarded by mu; the registry is persisted once after they finish.
 	var (
+		mu       sync.Mutex
 		updated  []string
-		upToDate []string
 		failures []string
 		dirty    bool // whether the registry needs persisting
 	)
 
-	work := func(report func(done int)) error {
-		report(0)
-		for i, t := range targets {
-			changed, upErr := updateOne(ctx, home, &t.entry)
-			switch {
-			case upErr != nil:
-				failures = append(failures, fmt.Sprintf("%s: %v", t.entry.ID, upErr))
-			case changed:
-				st.Upsert(t.entry)
-				dirty = true
-				updated = append(updated, t.entry.ID)
-			default:
-				upToDate = append(upToDate, t.entry.ID)
-			}
-			report(i + 1)
-		}
-		return nil
+	labels := make([]string, len(targets))
+	for i, t := range targets {
+		labels[i] = t.entry.ID
 	}
 
-	if err := ui.RunProgress(len(targets), work); err != nil {
+	work := func(ctx context.Context, i int) ui.Result {
+		t := targets[i] // copy; updateOne mutates t.entry in place
+		changed, upErr := updateOne(ctx, home, &t.entry)
+
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case upErr != nil:
+			msg := fmt.Sprintf("%s: %v", t.entry.ID, upErr)
+			failures = append(failures, msg)
+			return ui.Result{Level: ui.LevelError, Text: msg}
+		case changed:
+			st.Upsert(t.entry)
+			dirty = true
+			updated = append(updated, t.entry.ID)
+			return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("Updated %s.", t.entry.ID)}
+		default:
+			return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("%s is already up to date.", t.entry.ID)}
+		}
+	}
+
+	// The rows themselves report each skill's outcome (Updated / up to date /
+	// failed), so there is no separate per-skill print pass afterwards.
+	ui.RunChecklistProgress(ctx, labels, work)
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
@@ -108,16 +122,6 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 		if err := state.Save(home, st); err != nil {
 			return fmt.Errorf("save registry: %w", err)
 		}
-	}
-
-	for _, uid := range updated {
-		ui.Successf("Updated %s.", uid)
-	}
-	for _, uid := range upToDate {
-		ui.Successf("%s is already up to date.", uid)
-	}
-	for _, f := range failures {
-		ui.Errorf("%s", f)
 	}
 
 	if len(failures) > 0 {
