@@ -330,11 +330,9 @@ func selectFound(found []source.Found, selectArg string) ([]source.Found, error)
 
 	opts := make([]ui.Option, 0, len(found))
 	for _, f := range found {
-		label := f.Id
-		if d := f.Skill.Description; d != "" {
-			label = fmt.Sprintf("%s — %s", f.Id, d)
-		}
-		opts = append(opts, ui.Option{Label: label, Value: f.Id})
+		// Label with the skill id only: descriptions wrap to the next line in
+		// the picker and clutter the selection.
+		opts = append(opts, ui.Option{Label: f.Id, Value: f.Id})
 	}
 
 	ids, err := ui.SelectSkills("Select skills to add", opts)
