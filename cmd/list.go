@@ -164,7 +164,10 @@ func linkedLabel(home, id string, agents []agentdir.Agent, roots []string, cwd s
 		cwdAbs = cwd
 	}
 	for _, dir := range localScanDirs(roots, cwd) {
-		names := scanLinkNames(home, id, agents, agentdir.Local, dir)
+		// Skip agents whose local folder aliases their global one at dir, so a
+		// global link (e.g. when dir is home) is never also rendered as local.
+		localAgents, _ := splitLocalAliased(agents, dir)
+		names := scanLinkNames(home, id, localAgents, agentdir.Local, dir)
 		if len(names) == 0 {
 			continue
 		}
@@ -237,7 +240,11 @@ func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) 
 	kept := make([]string, 0, len(st.LocalRoots))
 	changed := false
 	for _, root := range st.LocalRoots {
-		infos, err := linker.ScanAll(home, agents, agentdir.Local, root)
+		// Only agents with a real local scope at root count toward keeping it.
+		// A legacy root that aliases global for every agent (e.g. home) exposes
+		// only global links there and must be pruned, not kept alive by them.
+		localAgents, _ := splitLocalAliased(agents, root)
+		infos, err := linker.ScanAll(home, localAgents, agentdir.Local, root)
 		if err == nil && len(infos) == 0 {
 			changed = true
 			continue

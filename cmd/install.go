@@ -110,6 +110,20 @@ func runInstall(args []string, global, local, all bool) error {
 	for _, a := range skipped {
 		ui.Warnf("skipped %s: no %s location", a.Name, scope)
 	}
+	// At local scope, an agent whose local folder *is* its global folder at base
+	// (the canonical case: running from home) has no real local scope here. Drop
+	// such agents so we never write a "local" link that silently means global,
+	// nor record base as a tracked local root.
+	if scope == agentdir.Local {
+		real, aliased := splitLocalAliased(supported, base)
+		for _, a := range aliased {
+			ui.Warnf("skipped %s: local scope here resolves to its global skill folder", a.Name)
+		}
+		if len(real) == 0 && len(aliased) > 0 {
+			return fmt.Errorf("local scope resolves to the global skill folder here (%s); run from a project directory or use --global", base)
+		}
+		supported = real
+	}
 	if len(supported) == 0 {
 		return fmt.Errorf("no enabled agent has a %s location; define one in %s", scope, config.Path(home))
 	}
@@ -213,7 +227,11 @@ func installedMark(home, id string, agents []agentdir.Agent, cwd string) string 
 	if len(scanLinkNames(home, id, agents, agentdir.Global, "")) > 0 {
 		where = append(where, "global")
 	}
-	if len(scanLinkNames(home, id, agents, agentdir.Local, cwd)) > 0 {
+	// Only count a local install for agents whose local folder is distinct from
+	// their global one at cwd; otherwise a global link from home would also be
+	// reported as local (the two folders are the same on disk).
+	localAgents, _ := splitLocalAliased(agents, cwd)
+	if len(scanLinkNames(home, id, localAgents, agentdir.Local, cwd)) > 0 {
 		where = append(where, "local")
 	}
 	if len(where) == 0 {
@@ -246,6 +264,25 @@ func splitByScope(agents []agentdir.Agent, scope agentdir.Scope) (supported, ski
 		}
 	}
 	return supported, skipped
+}
+
+// splitLocalAliased partitions agents by whether each has a *usable* local
+// skill folder at base. An agent's local scope is real when its local folder
+// resolves to a different directory than its global folder; it is aliased when
+// the two coincide (see agentdir.LocalAliasesGlobal), the canonical case being
+// base == home, where e.g. <base>/.claude/skills *is* ~/.claude/skills. Callers
+// pass agents already known to support a local folder; an agent without a
+// global folder cannot alias and falls into real. This is how every local
+// scan/write site avoids treating the global folder as if it were local.
+func splitLocalAliased(agents []agentdir.Agent, base string) (real, aliased []agentdir.Agent) {
+	for _, a := range agents {
+		if agentdir.LocalAliasesGlobal(a, base) {
+			aliased = append(aliased, a)
+		} else {
+			real = append(real, a)
+		}
+	}
+	return real, aliased
 }
 
 // linkedAny reports whether the Link result contains at least one link skillm

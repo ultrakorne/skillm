@@ -373,20 +373,31 @@ func linkAdded(home string, ids []string, scope agentdir.Scope) error {
 		return nil
 	}
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("determine working directory: %w", err)
+	}
+
 	// Link only agents that define a location for this scope; an add should not
 	// fail just because some agent has no folder there.
 	supported, skipped := splitByScope(agents, scope)
 	for _, a := range skipped {
 		ui.Warnf("skipped %s: no %s location", a.Name, scope)
 	}
-	if len(supported) == 0 {
-		ui.Warnf("no enabled agent has a %s location; skills added but not linked", scope)
-		return nil
+	// At local scope, drop agents whose local folder is their global one at cwd
+	// (e.g. when adding from home): linking there would silently write a global
+	// link and record cwd as a bogus local root. Warn and skip, consistent with
+	// add's "added but not linked" behaviour.
+	if scope == agentdir.Local {
+		real, aliased := splitLocalAliased(supported, cwd)
+		for _, a := range aliased {
+			ui.Warnf("skipped %s: local scope here resolves to its global skill folder", a.Name)
+		}
+		supported = real
 	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("determine working directory: %w", err)
+	if len(supported) == 0 {
+		ui.Warnf("no enabled agent has a usable %s location; skills added but not linked", scope)
+		return nil
 	}
 
 	for _, id := range ids {

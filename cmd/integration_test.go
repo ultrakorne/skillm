@@ -486,6 +486,58 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	}
 }
 
+// TestInstallLocalFromHomeRefuses drives the real binary to prove the
+// home-directory invariant end-to-end: `install --local` run from HOME refuses
+// (local there resolves to the global skill folder), creates no link, and
+// records no local root. This is the only way to exercise the os.Getwd()-based
+// scope resolution the in-process helper tests cannot reach.
+func TestInstallLocalFromHomeRefuses(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	bin := skillmBinary(t)
+	_, url := initSkillRepo(t)
+
+	// Resolve symlinks in the sandbox home so the path the child reports via
+	// os.Getwd() (which resolves them — e.g. /var -> /private/var on macOS)
+	// matches HOME exactly. A real home (/Users/foo, C:\Users\foo, /home/foo) is
+	// not behind such a symlink, so this only matters for the tmpdir sandbox.
+	userDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve sandbox home: %v", err)
+	}
+	e := env{home: t.TempDir(), userDir: userDir, bin: bin}
+
+	// Fetch a skill into Home without linking it.
+	e.run(t, "add", url, "alpha")
+
+	// Run `install --local` with the working directory set to HOME.
+	cmd := exec.Command(bin, "install", "alpha", "--local")
+	cmd.Dir = e.userDir
+	cmd.Env = append(os.Environ(),
+		"HOME="+e.userDir,
+		"USERPROFILE="+e.userDir,
+		"SKILLM_HOME="+e.home,
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("install --local from home should fail; got success:\n%s", out)
+	}
+	if !strings.Contains(string(out), "resolves to the global skill folder") {
+		t.Fatalf("expected the alias error, got:\n%s", out)
+	}
+
+	// No local root recorded, and no link created under HOME.
+	if st := loadState(t, e); len(st.LocalRoots) != 0 {
+		t.Fatalf("home must not be recorded as a local root: %v", st.LocalRoots)
+	}
+	if _, err := os.Lstat(filepath.Join(e.userDir, ".claude", "skills", "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("install --local from home must not create a link; lstat err = %v", err)
+	}
+}
+
 // assertNoLink fails if linkPath exists at all (we expect no entry there).
 func assertNoLink(t *testing.T, linkPath, msg string) {
 	t.Helper()

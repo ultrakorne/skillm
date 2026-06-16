@@ -56,6 +56,36 @@ func TestInstalledMark(t *testing.T) {
 	}
 }
 
+// TestInstalledMarkHomeAliasesGlobal verifies the home-directory invariant for
+// the install picker: when scanned from cwd == HOME, a purely *global* link must
+// be marked "installed: global" only. Each agent's local folder there is its
+// global folder, so without the alias filter the same link would also be
+// reported as local ("installed: global, local").
+func TestInstalledMarkHomeAliasesGlobal(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // Windows resolves home via USERPROFILE
+
+	home := t.TempDir()
+	if err := store.EnsureHome(home); err != nil {
+		t.Fatalf("EnsureHome: %v", err)
+	}
+	const id = "demo"
+	skillDir := store.SkillDir(home, id)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+
+	agents := config.Default().AllAgents() // claude, codex
+	a := agents[0]
+
+	// A single global link, scanned with cwd == HOME.
+	linkInto(t, a, agentdir.Global, "", skillDir, id)
+	if got := installedMark(home, id, agents, fakeHome); got != " (installed: global)" {
+		t.Fatalf("mark from home = %q, want %q", got, " (installed: global)")
+	}
+}
+
 // linkInto creates a skillm-style symlink (folder/<id> -> target) for agent a at
 // the given scope and base directory, creating the folder as needed.
 func linkInto(t *testing.T, a agentdir.Agent, scope agentdir.Scope, base, target, id string) {

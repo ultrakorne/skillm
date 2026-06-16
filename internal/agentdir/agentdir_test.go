@@ -173,6 +173,44 @@ func TestLinkPathMissingScope(t *testing.T) {
 	}
 }
 
+// TestLocalAliasesGlobal verifies the per-agent alias rule: an agent's local
+// folder aliases its global folder exactly when base resolves to the agent's
+// global parent (the canonical case is base == home), and only when the agent
+// defines both folders.
+func TestLocalAliasesGlobal(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+
+	project := filepath.Join(home, "dev", "myproject")
+
+	cases := []struct {
+		name string
+		a    Agent
+		base string
+		want bool
+	}{
+		// claude global is ~/.claude/skills; at base == home its local
+		// .claude/skills resolves to the very same folder.
+		{"claude at home aliases", claudeAgent(), home, true},
+		{"codex at home aliases", codexAgent(), home, true},
+		// In a real project the two diverge — a genuine local scope.
+		{"claude in project is real", claudeAgent(), project, false},
+		// Global-only and local-only agents cannot alias (need both folders).
+		{"global only", Agent{Name: "g", Global: "~/.g/skills"}, home, false},
+		{"local only", Agent{Name: "l", Local: ".l/skills"}, home, false},
+		// Divergent templates: even at home, global ~/.foo never equals local
+		// ~/.bar — the rule is per-agent path equality, not "base == home".
+		{"divergent templates at home", Agent{Name: "d", Global: "~/.foo/skills", Local: ".bar/skills"}, home, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := LocalAliasesGlobal(c.a, c.base); got != c.want {
+				t.Errorf("LocalAliasesGlobal(%s, %q) = %v, want %v", c.a.Name, c.base, got, c.want)
+			}
+		})
+	}
+}
+
 func TestParseScope(t *testing.T) {
 	cases := []struct {
 		in      string

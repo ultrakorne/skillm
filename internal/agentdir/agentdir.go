@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -86,6 +87,50 @@ func SkillsFolder(a Agent, scope Scope, base string) (string, bool) {
 		}
 		return expandGlobal(a.Global), true
 	}
+}
+
+// LocalAliasesGlobal reports whether the agent's Local skill folder at base
+// resolves to the same directory as its Global folder. When it does, the agent
+// has no distinct local scope at base: "local" would mean exactly the folder
+// "global" already means (the canonical case is base == home, where e.g.
+// <base>/.claude/skills is literally ~/.claude/skills). Callers treat such an
+// agent as having no usable local scope there.
+//
+// It returns false unless the agent defines BOTH a Global and a Local folder —
+// without both there is nothing to alias. The comparison is by absolute,
+// cleaned path, case-insensitively on Windows and macOS (whose filesystems are
+// case-insensitive) so paths differing only in case still count as the same
+// folder; on Linux it is case-sensitive.
+func LocalAliasesGlobal(a Agent, base string) bool {
+	local, okL := SkillsFolder(a, Local, base)
+	global, okG := SkillsFolder(a, Global, base)
+	if !okL || !okG {
+		return false
+	}
+	return samePath(local, global)
+}
+
+// samePath reports whether a and b denote the same directory, comparing their
+// absolute, cleaned forms. On case-insensitive platforms (Windows, macOS) the
+// comparison folds case, matching how those filesystems resolve names; on Linux
+// it is exact. It does not resolve symlinks or 8.3 short names — the paths it
+// compares are built from the same templates, so a plain form suffices.
+func samePath(a, b string) bool {
+	a = absClean(a)
+	b = absClean(b)
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// absClean returns p in absolute, cleaned form, falling back to a plain Clean
+// when the working directory cannot be resolved (filepath.Abs already Cleans).
+func absClean(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return filepath.Clean(p)
 }
 
 // LinkPath returns the absolute path of the symlink for skill id inside the

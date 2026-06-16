@@ -165,8 +165,17 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 	var places []string
 
 	linkAt := func(scope agentdir.Scope, base string) {
+		// At local scope, ignore the footprint of any before-enabled peer whose
+		// local folder aliases its global one at base (e.g. home): scanning it
+		// would read that peer's GLOBAL links as a phantom local footprint and
+		// mirror those global-only skills into the newly enabled agent. Global
+		// scope needs no such filter — a global folder is always real.
+		sources := beforeEnabled
+		if scope == agentdir.Local {
+			sources, _ = splitLocalAliased(beforeEnabled, base)
+		}
 		got := false
-		for _, id := range footprintIDs(home, beforeEnabled, scope, base) {
+		for _, id := range footprintIDs(home, sources, scope, base) {
 			res, err := linker.Link(home, id, one, scope, base)
 			if err != nil {
 				ui.Warnf("%v", err)
@@ -191,6 +200,12 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 	}
 	if a.Supports(agentdir.Local) {
 		for _, dir := range localScanDirs(st.LocalRoots, cwd) {
+			// Skip a dir where this agent's local folder is its global one (e.g.
+			// home): the global pass already mirrored those links, and recording
+			// the dir as a local root would be bogus.
+			if agentdir.LocalAliasesGlobal(a, dir) {
+				continue
+			}
 			linkAt(agentdir.Local, dir)
 		}
 	}
@@ -243,6 +258,11 @@ func disableAgent(home string, a agentdir.Agent, st *state.State, cwd string) {
 	}
 	if a.Supports(agentdir.Local) {
 		for _, dir := range localScanDirs(st.LocalRoots, cwd) {
+			// Skip a dir where this agent's local folder is its global one (e.g.
+			// home): the global pass already removed those links there.
+			if agentdir.LocalAliasesGlobal(a, dir) {
+				continue
+			}
 			unlinkAt(agentdir.Local, dir)
 		}
 	}

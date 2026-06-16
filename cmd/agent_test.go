@@ -154,6 +154,77 @@ func TestEnableAgentRecordsUntrackedCwdWithLocalFootprint(t *testing.T) {
 	}
 }
 
+// TestEnableAgentFromHomeMirrorsGlobalOnly: enabling an agent while the working
+// directory is the home directory must mirror the peer's links via the GLOBAL
+// pass only, and must never record home as a tracked local root. testAgents uses
+// globalRoot as the global parent, so running with cwd == globalRoot reproduces
+// the alias condition (each agent's local folder there IS its global folder).
+func TestEnableAgentFromHomeMirrorsGlobalOnly(t *testing.T) {
+	home := t.TempDir()
+	globalRoot := t.TempDir()
+
+	claude, codex := testAgents(globalRoot)
+	makeSkill(t, home, "alpha")
+	mustLink(t, home, "alpha", claude, agentdir.Global, globalRoot)
+
+	st := &state.State{}
+	enableAgent(home, codex, []agentdir.Agent{claude}, st, globalRoot)
+
+	// codex mirrors claude's global link.
+	assertResolves(t, home, linkPath(t, codex, agentdir.Global, globalRoot, "alpha"), "alpha")
+
+	// Home was never recorded as a local root: the local pass is skipped because
+	// local aliases global there.
+	if len(st.LocalRoots) != 0 {
+		t.Fatalf("LocalRoots = %v, want empty (home must not be tracked as a local root)", st.LocalRoots)
+	}
+}
+
+// TestEnableAgentSkipsAliasedPeerFootprintAtHome guards the *source* side of the
+// home invariant: a before-enabled peer whose local folder aliases its global
+// one at the root (here claude at globalRoot) must NOT have its global links
+// read as a local footprint and mirrored into a newly enabled agent that has a
+// genuine local folder there (weird, whose global/local templates diverge). Such
+// a mirror would invent local links for global-only skills and resurrect the
+// bogus root.
+func TestEnableAgentSkipsAliasedPeerFootprintAtHome(t *testing.T) {
+	home := t.TempDir()
+	globalRoot := t.TempDir()
+
+	// claude aliases local->global at base == globalRoot (the home-equivalent).
+	claude := agentdir.Agent{
+		Name:   "claude",
+		Global: filepath.Join(globalRoot, ".claude", "skills"),
+		Local:  ".claude/skills",
+	}
+	// weird's global and local templates diverge, so it keeps a *real* local
+	// scope even at globalRoot — it is not skipped by the target-side guard.
+	weird := agentdir.Agent{
+		Name:   "weird",
+		Global: filepath.Join(globalRoot, ".weird-global", "skills"),
+		Local:  ".weird-local/skills",
+	}
+
+	makeSkill(t, home, "alpha")
+	// claude has alpha only GLOBALLY; its global folder == its local folder at
+	// globalRoot, so a naive local scan there would surface alpha as "local".
+	mustLink(t, home, "alpha", claude, agentdir.Global, globalRoot)
+
+	st := &state.State{}
+	enableAgent(home, weird, []agentdir.Agent{claude}, st, globalRoot)
+
+	// weird mirrors alpha via the GLOBAL pass — that part is correct.
+	assertResolves(t, home, linkPath(t, weird, agentdir.Global, globalRoot, "alpha"), "alpha")
+
+	// But weird must get NO local link at globalRoot: claude's global-only alpha
+	// is not a real local footprint, so nothing is mirrored locally...
+	assertAbsent(t, linkPath(t, weird, agentdir.Local, globalRoot, "alpha"))
+	// ...and the bogus home root is never recorded.
+	if len(st.LocalRoots) != 0 {
+		t.Fatalf("LocalRoots = %v, want empty (a phantom local footprint must not resurrect home)", st.LocalRoots)
+	}
+}
+
 // TestDisableAgentUnlinksButKeepsHome: disabling claude removes its links across
 // global and the tracked project, but the Home copies survive and codex's links
 // are untouched — disabling an agent is not uninstalling a skill.

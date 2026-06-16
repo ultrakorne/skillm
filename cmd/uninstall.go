@@ -166,16 +166,24 @@ func selectUninstallIDs(home string, st *state.State, args []string, all bool) (
 // so the Home copy can still be deleted (the foreign entry stays put).
 func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd string) error {
 	type target struct {
-		scope agentdir.Scope
-		dir   string
+		scope  agentdir.Scope
+		agents []agentdir.Agent
+		dir    string
 	}
-	targets := []target{{agentdir.Global, cwd}}
+	targets := []target{{agentdir.Global, agents, cwd}}
 	for _, dir := range localScanDirs(st.LocalRoots, cwd) {
-		targets = append(targets, target{agentdir.Local, dir})
+		// Skip a local dir where every agent's local folder is its global one
+		// (e.g. home): the global pass above already removed those links, so a
+		// local pass would only repeat the work and double-report it.
+		real, _ := splitLocalAliased(agents, dir)
+		if len(real) == 0 {
+			continue
+		}
+		targets = append(targets, target{agentdir.Local, real, dir})
 	}
 
 	for _, tg := range targets {
-		res, err := linker.Unlink(home, id, agents, tg.scope, tg.dir)
+		res, err := linker.Unlink(home, id, tg.agents, tg.scope, tg.dir)
 		if err != nil {
 			if flagForce {
 				ui.Warnf("%v", err)
