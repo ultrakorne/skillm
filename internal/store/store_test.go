@@ -8,24 +8,28 @@ import (
 )
 
 func TestHome_OverrideWins(t *testing.T) {
-	t.Setenv("SKILLM_HOME", "/env/path")
-	got, err := Home("/override/path")
+	t.Setenv("SKILLM_HOME", filepath.FromSlash("/env/path"))
+	override := filepath.FromSlash("/override/path")
+	got, err := Home(override)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/override/path" {
-		t.Errorf("Home(override) = %q, want /override/path (override beats env)", got)
+	want := filepath.Clean(override)
+	if got != want {
+		t.Errorf("Home(override) = %q, want %q (override beats env)", got, want)
 	}
 }
 
 func TestHome_EnvWhenNoOverride(t *testing.T) {
-	t.Setenv("SKILLM_HOME", "/env/skillm")
+	env := filepath.FromSlash("/env/skillm")
+	t.Setenv("SKILLM_HOME", env)
 	got, err := Home("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/env/skillm" {
-		t.Errorf("Home(\"\") = %q, want /env/skillm", got)
+	want := filepath.Clean(env)
+	if got != want {
+		t.Errorf("Home(\"\") = %q, want %q", got, want)
 	}
 }
 

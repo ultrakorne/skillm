@@ -16,11 +16,50 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/store"
 )
+
+// symlinkHint wraps a symlink error with actionable guidance on Windows when
+// the root cause is a missing privilege (Developer Mode not enabled).
+func symlinkHint(err error) error {
+	if err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == 1314 {
+		return fmt.Errorf("%w\n\nHint: skillm uses symbolic links, which on Windows require Developer Mode.\n"+
+			"Enable it at: Settings → System → For developers → Developer Mode\n"+
+			"Then restart your terminal.", err)
+	}
+	return err
+}
+
+// replaceLink replaces the link at linkPath so it points at target.
+// On Unix this is atomic (temp link + rename). On Windows directory symlinks
+// cannot be atomically renamed over one another, so we remove first.
+func replaceLink(linkPath, target string) error {
+	if runtime.GOOS == "windows" {
+		if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return symlinkHint(os.Symlink(target, linkPath))
+	}
+	tmp := linkPath + ".skillm-tmp"
+	_ = os.Remove(tmp)
+	if err := os.Symlink(target, tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, linkPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
 
 // Action describes what happened (or what was found) for a single
 // agent/scope/skill combination.
@@ -135,7 +174,7 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 			}
 			// A skillm-managed link pointing at a different skill in Home.
 			// Repoint it to the requested target.
-			if err := replaceSymlink(linkPath, target); err != nil {
+			if err := replaceLink(linkPath, target); err != nil {
 				return res, fmt.Errorf("repoint link %s: %w", linkPath, err)
 			}
 			ar.Action = ActionCreated
@@ -157,7 +196,7 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 				return res, fmt.Errorf("create skill folder %s: %w", folder, err)
 			}
 			if err := os.Symlink(target, linkPath); err != nil {
-				return res, fmt.Errorf("create link %s -> %s: %w", linkPath, target, err)
+				return res, fmt.Errorf("create link %s -> %s: %w", linkPath, target, symlinkHint(err))
 			}
 			ar.Action = ActionCreated
 			res.Agents = append(res.Agents, ar)
@@ -376,18 +415,3 @@ func underDir(dir, path string) bool {
 	return true
 }
 
-// replaceSymlink atomically replaces the symlink at linkPath so it points at
-// target. It writes a temporary link beside the destination and renames it over
-// the old one, avoiding a window where linkPath does not exist.
-func replaceSymlink(linkPath, target string) error {
-	tmp := linkPath + ".skillm-tmp"
-	_ = os.Remove(tmp)
-	if err := os.Symlink(target, tmp); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, linkPath); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
-}
