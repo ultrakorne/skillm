@@ -13,6 +13,17 @@ import (
 	"github.com/ultrakorne/skillm/internal/store"
 )
 
+// fileURL converts a local directory path to a file:// URL that git accepts on
+// all platforms. On Windows the path needs a leading slash before the drive
+// letter (file:///C:/...), which is already present on Unix paths.
+func fileURL(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return "file://" + p
+}
+
 // This file holds the end-to-end integration test required by PLAN §8: it spins
 // up a temp Home (via SKILLM_HOME) and a real local git repo holding several
 // skill directories, then drives the *built* skillm binary through the full
@@ -97,15 +108,17 @@ func (e env) run(t *testing.T, args ...string) string {
 func (e env) tryRun(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command(e.bin, args...)
-	cmd.Env = append(os.Environ(),
-		"HOME="+e.userDir,
-		"SKILLM_HOME="+e.home,
-		// Make the sandbox deterministic regardless of the developer's git
-		// identity / config.
-		"GIT_CONFIG_GLOBAL="+filepath.Join(e.userDir, ".gitconfig"),
-		"GIT_CONFIG_SYSTEM=/dev/null",
+	extraEnv := []string{
+		"HOME=" + e.userDir,
+		// Windows: os.UserHomeDir reads USERPROFILE, not HOME.
+		"USERPROFILE=" + e.userDir,
+		"SKILLM_HOME=" + e.home,
+		// Make the sandbox deterministic regardless of the developer's git identity.
+		"GIT_CONFIG_GLOBAL=" + filepath.Join(e.userDir, ".gitconfig"),
+		"GIT_CONFIG_SYSTEM=" + os.DevNull,
 		"GIT_TERMINAL_PROMPT=0",
-	)
+	}
+	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -116,7 +129,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
 		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
 		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
 	)
@@ -159,7 +172,7 @@ func initSkillRepo(t *testing.T) (repo, url string) {
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "initial skills")
 
-	url = "file://" + repo
+	url = fileURL(repo)
 	return repo, url
 }
 
@@ -310,8 +323,9 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	localCmd.Dir = project
 	localCmd.Env = append(os.Environ(),
 		"HOME="+e.userDir,
+		"USERPROFILE="+e.userDir,
 		"SKILLM_HOME="+e.home,
-		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
 	)
 	if b, err := localCmd.CombinedOutput(); err != nil {
 		t.Fatalf("install beta --local: %v\n%s", err, b)
@@ -420,8 +434,9 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	uninstallCmd.Dir = project
 	uninstallCmd.Env = append(os.Environ(),
 		"HOME="+e.userDir,
+		"USERPROFILE="+e.userDir,
 		"SKILLM_HOME="+e.home,
-		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
 	)
 	uninstallOut, uninstallErr := uninstallCmd.CombinedOutput()
 	if uninstallErr != nil {
