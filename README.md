@@ -40,7 +40,7 @@ skillm update                                               # pull the updates i
 | `list`                               | Show every skill, where it is installed, and its status. |
 | `check`                              | Report which git skills have upstream updates.        |
 | `update [id]`                        | Pull updates for outdated git skills (all, or one).   |
-| `agent`                              | Interactively choose the enabled agents.              |
+| `agent`                              | Enable/disable agents, reconciling their links right away (skills stay in Home). |
 
 Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (override Home, default `~/.skillm`).
 

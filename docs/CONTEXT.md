@@ -96,12 +96,26 @@ uninstall**: it always clears every reference. Safe by default — on a terminal
 first (skip with `--yes`/`--force`). Acts on one or more named skills, or interactively on a
 multiselect of every skill in Home.
 
+### Enable (an agent)
+Start applying Links for an Agent. Enabling creates a symlink for that agent at every place
+the already-Enabled agents are currently linked — the Global folder and every tracked
+project — bringing the agent to parity with its peers. Enabling an agent while nothing is
+installed anywhere links nothing. Performed interactively via `skillm agent`.
+
+### Disable (an agent)
+Stop applying Links for an Agent: remove that agent's symlinks across every Scope and every
+tracked project. **Distinct from Uninstall** — the skill stays in Home and stays linked for
+the other Agents; only this agent's Links go away. At least one Agent must always remain
+Enabled, so deselecting every agent is refused (use Uninstall to remove the skills
+themselves). Disabling keeps the agent's definition — and its locations — intact in Config,
+so it can be re-enabled without re-entering paths.
+
 ### Enabled agents
 The Agents that Links are applied to: the subset of agents **defined** in Config whose
-`enabled` flag is set. An agent must be defined in Config before it can be enabled.
-Managed by editing config or interactively via `skillm agent` (a multiselect over the
-defined agents that writes the flags back). Disabling an agent keeps its definition — and
-its locations — intact, so it can be re-enabled without re-entering paths.
+`enabled` flag is set. An agent must be defined in Config before it can be enabled. The
+Enabled set is changed interactively via `skillm agent` (a multiselect over the defined
+agents); changing it Enables or Disables the affected agents, reconciling their Links
+immediately rather than only affecting future installs.
 
 ## Persistence
 

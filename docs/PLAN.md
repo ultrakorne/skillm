@@ -191,8 +191,24 @@ Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (overrid
 ### agent
 - **huh** multiselect over the agents **defined** in `config.toml`, seeded with the current
   `enabled` flags; writes the toggled flags back (preserving each agent's locations).
-  Defining a *new* agent is a config edit, not something this command does. Does not
-  retroactively install/uninstall existing skills (only affects future installs).
+  Defining a *new* agent is a config edit, not something this command does.
+- **Reconciles links immediately** (it does not merely affect future installs): the change
+  is applied in two passes — **enable pass first, then disable pass** — so a one-shot swap
+  (disable A, enable B) lets B copy A's links while they are still on disk.
+  - **Enable** a previously-disabled agent → for every place the **before-enabled** agents
+    are currently linked (global + every tracked local root + cwd), create the same link for
+    the newly-enabled agent. Footprint is read live from disk. Enabling while nothing is
+    installed links nothing.
+  - **Disable** an agent → remove **all** its skillm-managed links across global + every
+    tracked local root + cwd. The Home copy is left intact — this is **not** uninstall.
+  - Unchanged agents are never touched (`agent` toggles, it does not repair drift — use
+    `install` for that).
+- **At least one agent must stay enabled**: an empty selection is refused (pointing at
+  `uninstall` for removing skills themselves).
+- **Confirms** only when the change removes links (a disable is present); an enable-only
+  change is additive and applies without a prompt. Skip with `--yes`/`--force`. A spot
+  blocked by a foreign file/symlink is **skipped with a warning**, never aborting the sweep.
+  Tracked local roots left with no link are pruned.
 
 ---
 
