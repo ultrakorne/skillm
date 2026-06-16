@@ -2,8 +2,19 @@ package agentdir
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// setTestHome pins the user home directory for the duration of the test. On
+// Windows, os.UserHomeDir reads USERPROFILE rather than HOME.
+func setTestHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", dir)
+	}
+}
 
 // claudeAgent and codexAgent are the conventional definitions, constructed
 // directly: the catalog now lives in config, not in this package.
@@ -38,7 +49,7 @@ func TestSupports(t *testing.T) {
 func TestSkillsFolderGlobal(t *testing.T) {
 	// Pin a known home so the expected paths are deterministic.
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	cases := []struct {
 		agent Agent
@@ -105,7 +116,10 @@ func TestSkillsFolderMissingScope(t *testing.T) {
 // and absolute-taken-as-is for Global locations.
 func TestGlobalTemplateForms(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
+	// Use a real temp dir as the "absolute path taken as-is" case so the path
+	// is genuinely absolute on every platform (Windows paths need a drive letter).
+	absDir := t.TempDir()
 
 	cases := []struct {
 		in   string
@@ -114,7 +128,7 @@ func TestGlobalTemplateForms(t *testing.T) {
 		{"~/.config/opencode/skill", filepath.Join(home, ".config", "opencode", "skill")},
 		{"~", home},
 		{".claude/skills", filepath.Join(home, ".claude", "skills")}, // relative rooted at home
-		{"/opt/skills", "/opt/skills"},                               // absolute as-is
+		{absDir, absDir},                                              // absolute as-is
 	}
 	for _, c := range cases {
 		got, ok := SkillsFolder(Agent{Name: "x", Global: c.in}, Global, "")
@@ -126,7 +140,7 @@ func TestGlobalTemplateForms(t *testing.T) {
 
 func TestLinkPath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	base := "/home/ultra/dev/myproject"
 	const id = "grill-with-docs"
 

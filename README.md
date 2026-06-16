@@ -5,11 +5,20 @@ Claude and Codex read. One copy, symlinked everywhere.
 
 ## Install
 
+**macOS / Linux**
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ultrakorne/skillm/main/install.sh | sh
 ```
 
-Or with Go: `go install github.com/ultrakorne/skillm@latest`
+**Windows** (PowerShell — requires [Developer Mode](ms-settings:developers) for symlinks)
+```powershell
+irm https://raw.githubusercontent.com/ultrakorne/skillm/main/install.ps1 | iex
+```
+
+**Go**
+```sh
+go install github.com/ultrakorne/skillm@latest
+```
 
 ## Quickstart
 
