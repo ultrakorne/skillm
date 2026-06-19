@@ -104,9 +104,13 @@ func SelectAgents(all []string, enabled []string) ([]string, error) {
 // chose the agents' user-level scope; otherwise the link is project-level and
 // Path is the base directory it is rooted at (the current directory for the
 // "Local" choice, or a directory the user typed for the "Custom path" choice).
+// Copy is set for a project-level selection when the user chose to vendor a real
+// copy (committed to git) instead of a symlink into Home; it is always false for
+// a Global selection.
 type ScopeSelection struct {
 	Global bool
 	Path   string
+	Copy   bool
 }
 
 // errNonInteractiveScope is returned by SelectScope on a non-TTY: there is no
@@ -154,16 +158,50 @@ func SelectScope(cwd string) (ScopeSelection, error) {
 	case choiceGlobal:
 		return ScopeSelection{Global: true}, nil
 	case choiceLocal:
-		return ScopeSelection{Path: cwd}, nil
+		vendor, err := selectVendorMethod()
+		if err != nil {
+			return ScopeSelection{}, err
+		}
+		return ScopeSelection{Path: cwd, Copy: vendor}, nil
 	case choicePath:
 		path, err := selectPath(cwd)
 		if err != nil {
 			return ScopeSelection{}, err
 		}
-		return ScopeSelection{Path: path}, nil
+		vendor, err := selectVendorMethod()
+		if err != nil {
+			return ScopeSelection{}, err
+		}
+		return ScopeSelection{Path: path, Copy: vendor}, nil
 	default:
 		return ScopeSelection{}, errors.New("no scope selected")
 	}
+}
+
+// selectVendorMethod asks, for a project-level install, whether to symlink the
+// skill into Home (the default — not committable to git) or to write a real
+// copy into the project (committable, shareable with teammates). The cursor
+// starts on the safe Symlink choice, but the user always picks. It is only
+// reached on a TTY (SelectScope already refused otherwise).
+func selectVendorMethod() (bool, error) {
+	const (
+		choiceLink = "link"
+		choiceCopy = "copy"
+	)
+	choice := choiceLink
+	sel := huh.NewSelect[string]().
+		Title("How should it be installed here?").
+		Description("A copy can be committed to the project's git repo; a symlink cannot.").
+		Options(
+			huh.NewOption("Symlink into Home — personal, not tracked in git", choiceLink),
+			huh.NewOption("Copy the files in — commit to git, share with teammates", choiceCopy),
+		).
+		Height(4).
+		Value(&choice)
+	if err := runForm(sel); err != nil {
+		return false, err
+	}
+	return choice == choiceCopy, nil
 }
 
 // selectPath prompts for a directory with Tab path-completion. It seeds the

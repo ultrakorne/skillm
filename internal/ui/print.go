@@ -15,6 +15,7 @@ var (
 	styleSuccess = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true) // green
 	styleWarn    = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true) // yellow
 	styleError   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red
+	styleHint    = lipgloss.NewStyle().Faint(true)                                // dim tip
 )
 
 // Successf prints a success line to stdout (green check on a TTY).
@@ -25,6 +26,12 @@ func Successf(format string, a ...any) {
 // Warnf prints a warning line to stdout (yellow bang on a TTY).
 func Warnf(format string, a ...any) {
 	emit(os.Stdout, styleWarn, "!", format, a...)
+}
+
+// Hintf prints a dim, non-alarming tip line to stdout (a faint arrow on a TTY).
+// Used for advisory follow-ups such as "commit this folder to share it".
+func Hintf(format string, a ...any) {
+	emit(os.Stdout, styleHint, "→", format, a...)
 }
 
 // Errorf prints an error line to stderr (red cross on a TTY). It does not

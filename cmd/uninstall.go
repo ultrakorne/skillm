@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -68,9 +69,10 @@ func runUninstall(args []string, all bool) error {
 
 	// One confirmation covers the whole batch. As with the rest of skillm, the
 	// prompt only appears on a TTY; a non-interactive run proceeds (pass --yes
-	// to be explicit), so scripts are not blocked.
+	// to be explicit), so scripts are not blocked. The prompt names any project
+	// where committed copies will be deleted, since that edits the user's repo.
 	if ui.IsTTY() && !flagYes && !flagForce {
-		ok, err := ui.Confirm(confirmUninstallPrompt(ids))
+		ok, err := ui.Confirm(confirmUninstallPrompt(ids, vendoredDirsForIDs(st, ids)))
 		if err != nil {
 			return err
 		}
@@ -159,19 +161,42 @@ func selectUninstallIDs(home string, st *state.State, args []string, all bool) (
 }
 
 // uninstallOne removes a single skill: it unlinks the skill from every supplied
-// agent at the global scope and in every tracked local folder, deletes the Home
-// copy, and drops the registry entry from st (in memory — the caller persists).
-// linker.Unlink is idempotent for absent links and refuses to touch foreign
-// symlinks or real files; under --force such refusals are downgraded to warnings
-// so the Home copy can still be deleted (the foreign entry stays put).
+// agent at the global scope and in every tracked local folder, deletes any
+// Vendored copies it has in tracked projects, deletes the Home copy, and drops
+// the registry entry from st (in memory — the caller persists). linker.Unlink is
+// idempotent for absent links and refuses to touch foreign symlinks or real
+// files; under --force such refusals are downgraded to warnings so the Home copy
+// can still be deleted (the foreign entry stays put).
 func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd string) error {
+	// Delete the committed Vendored copies in every recorded project FIRST, so a
+	// later symlink sweep over the same root sees an empty slot rather than
+	// refusing on a real directory. This edits the user's git working tree; the
+	// batch confirmation already named these directories. A missing copy (project
+	// moved/deleted) is silently skipped.
+	for _, dir := range st.VendoredRoots(id) {
+		removed, err := vendorRemove(home, id, agents, dir)
+		if err != nil {
+			if flagForce {
+				ui.Warnf("%v", err)
+			} else {
+				return err
+			}
+		}
+		for _, a := range removed {
+			ui.Successf("deleted copy of %s for %s (%s)", id, a.Name, scopeLabel(agentdir.Local, dir, cwd))
+		}
+	}
+
 	type target struct {
 		scope  agentdir.Scope
 		agents []agentdir.Agent
 		dir    string
 	}
 	targets := []target{{agentdir.Global, agents, cwd}}
-	for _, dir := range localScanDirs(st.LocalRoots, cwd) {
+	// Sweep tracked local roots AND vendored roots for symlinks: a vendored root
+	// may also hold a stray symlink, and need not be in LocalRoots.
+	sweepDirs := append(append([]string{}, st.LocalRoots...), st.VendoredRoots(id)...)
+	for _, dir := range localScanDirs(sweepDirs, cwd) {
 		// Skip a local dir where every agent's local folder is its global one
 		// (e.g. home): the global pass above already removed those links, so a
 		// local pass would only repeat the work and double-report it.
@@ -201,16 +226,41 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 	if err := store.RemoveSkillDir(home, id); err != nil {
 		return err
 	}
-	st.Remove(id)
+	st.Remove(id) // drops the entry, including its VendoredAt record
 	return nil
 }
 
-// confirmUninstallPrompt builds the single confirmation shown before a batch
-// uninstall, naming the skills so the user sees exactly what will be removed.
-func confirmUninstallPrompt(ids []string) string {
-	if len(ids) == 1 {
-		return fmt.Sprintf("Remove skill %q from Home and unlink it from all agents?", ids[0])
+// vendoredDirsForIDs returns the sorted, de-duplicated set of project roots
+// where any of the named skills has a Vendored copy — the directories an
+// uninstall will delete committed files from, named in the confirmation.
+func vendoredDirsForIDs(st *state.State, ids []string) []string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, id := range ids {
+		for _, d := range st.VendoredRoots(id) {
+			if !seen[d] {
+				seen[d] = true
+				dirs = append(dirs, d)
+			}
+		}
 	}
-	return fmt.Sprintf("Remove %d skills (%s) from Home and unlink them from all agents?",
-		len(ids), strings.Join(ids, ", "))
+	sort.Strings(dirs)
+	return dirs
+}
+
+// confirmUninstallPrompt builds the single confirmation shown before a batch
+// uninstall, naming the skills so the user sees exactly what will be removed and
+// warning, when applicable, that committed copies in named projects are deleted.
+func confirmUninstallPrompt(ids, vendoredDirs []string) string {
+	var head string
+	if len(ids) == 1 {
+		head = fmt.Sprintf("Remove skill %q from Home and unlink it from all agents?", ids[0])
+	} else {
+		head = fmt.Sprintf("Remove %d skills (%s) from Home and unlink them from all agents?",
+			len(ids), strings.Join(ids, ", "))
+	}
+	if len(vendoredDirs) > 0 {
+		head += fmt.Sprintf("\nThis also DELETES committed copies in: %s", strings.Join(vendoredDirs, ", "))
+	}
+	return head
 }

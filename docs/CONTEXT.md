@@ -50,8 +50,12 @@ without changing anything. Read-only.
 ### Update
 Pull the current upstream Revision of outdated git-sourced skills into Home (default: all of
 them; optionally one Skill ID). Because agents see skills through symlinks into Home, updating
-the Home copy updates every install automatically. Shows a progress bar when there is enough work
-to warrant one. Does not show diffs.
+the Home copy updates every symlink install automatically. **Vendored copies** are not symlinks,
+so Update also re-syncs them: a git skill's copies are overwritten only when it actually changed
+upstream, and a local skill's copies are re-synced from Home whenever their content differs (so
+an unchanged skill produces no git churn). A recorded vendored root whose copy has vanished is
+reported and forgotten. Shows a progress bar when there is enough work to warrant one. Does not
+show diffs.
 
 ### List
 Show every skill in Home with its Source, the Scopes/Agents it is currently installed at
@@ -69,8 +73,21 @@ updating one means editing it directly in Home (skillm warns rather than checkin
 - **Local** — available only within one project (the agent's project-level skill folder).
 
 The on-disk skill format is identical across all supported agents, so a single copy in Home
-can be installed to any combination of agents and scopes; an Install is always the same
-operation.
+can be installed to any combination of agents and scopes. A Global Install is always a Link
+(symlink); a Local Install can be materialized either as a Link or as a Vendored copy.
+
+### Vendored copy (a.k.a. vendoring)
+An alternative way to materialize a **Local** Install: instead of a symlink into Home, skillm
+writes a real, self-contained copy of the skill's files into the agent's project skill folder.
+Chosen so the skill can be committed to the project's git repository and travel to teammates who
+clone it — a symlink would point at the installer's Home and be broken for everyone else. Only
+the Local Scope can be vendored; a Global Install is always a Link. A vendored copy is still
+skillm-managed: skillm records which project roots hold one (in the Registry) so Update can
+refresh it and Uninstall can clear it, like any Install. Vendoring and a Link can coexist for the
+same skill — e.g. a Global Link for personal use alongside a vendored Local copy committed to a
+project. The committed copy carries no skillm metadata of its own, so on another machine it is
+just files; a teammate who uses skillm installs the skill from its Source rather than adopting
+the copy.
 
 ## Core verbs
 
@@ -84,31 +101,38 @@ agent can actually see. An Install always targets **every Enabled agent** at the
 Scope — there is no per-command agent choice — and a single Install command applies one Scope
 to every skill it acts on. Acts on one or more named skills, or interactively on a multiselect
 of every skill in Home. Passing a Scope (`--global`/`--local`) to `add` installs in the same
-step; bare `add` is fetch-only. Which installs currently exist is never stored — it is read
-live by scanning agents' skill folders for symlinks pointing into Home, so it never drifts.
+step; bare `add` is fetch-only. Which symlink installs currently exist is never stored — it is
+read live by scanning agents' skill folders for symlinks pointing into Home, so it never
+drifts. A **Local** Install may instead be materialized as a **Vendored copy** (`--copy`, or
+the interactive prompt) — a real copy of the files committed to the project; switching a
+skill's Local install between a Link and a copy converts it in place, and skillm refuses to
+overwrite files it did not create unless forced.
 
 ### Uninstall
 Remove a skill entirely — the inverse of **Add**, not of Install. Uninstall first removes the
 skill's symlink from every Agent and Scope it was installed at (the global folder and every
 tracked project, across all defined Agents — even ones now disabled, so nothing is left
-dangling), then deletes the Home copy and its Registry entry. There is **no per-scope
-uninstall**: it always clears every reference. Safe by default — on a terminal it confirms
-first (skip with `--yes`/`--force`). Acts on one or more named skills, or interactively on a
-multiselect of every skill in Home.
+dangling), **deletes any Vendored copies** it has in tracked projects (committed files in the
+user's repos — the confirmation names those projects), then deletes the Home copy and its
+Registry entry. There is **no per-scope uninstall**: it always clears every reference. Safe by
+default — on a terminal it confirms first (skip with `--yes`/`--force`). Acts on one or more
+named skills, or interactively on a multiselect of every skill in Home.
 
 ### Enable (an agent)
-Start applying Links for an Agent. Enabling creates a symlink for that agent at every place
+Start applying Installs for an Agent. Enabling creates a symlink for that agent at every place
 the already-Enabled agents are currently linked — the Global folder and every tracked
-project — bringing the agent to parity with its peers. Enabling an agent while nothing is
-installed anywhere links nothing. Performed interactively via `skillm agent`.
+project — and, at every recorded Vendored root where a peer still holds a copy, writes a copy
+for the agent too, bringing it to parity with its peers. Enabling an agent while nothing is
+installed anywhere does nothing. Performed interactively via `skillm agent`.
 
 ### Disable (an agent)
-Stop applying Links for an Agent: remove that agent's symlinks across every Scope and every
-tracked project. **Distinct from Uninstall** — the skill stays in Home and stays linked for
-the other Agents; only this agent's Links go away. At least one Agent must always remain
-Enabled, so deselecting every agent is refused (use Uninstall to remove the skills
-themselves). Disabling keeps the agent's definition — and its locations — intact in Config,
-so it can be re-enabled without re-entering paths.
+Stop applying Installs for an Agent: remove that agent's symlinks across every Scope and every
+tracked project, and delete its Vendored copies (its committed files) in every project. **Distinct
+from Uninstall** — the skill stays in Home and stays installed for the other Agents; only this
+agent's footprint goes away. At least one Agent must always remain Enabled, so deselecting every
+agent is refused (use Uninstall to remove the skills themselves). Disabling keeps the agent's
+definition — and its locations — intact in Config, so it can be re-enabled without re-entering
+paths.
 
 ### Enabled agents
 The Agents that Links are applied to: the subset of agents **defined** in Config whose
@@ -129,4 +153,7 @@ it (only `skillm agent` does, to toggle the Enabled flags).
 ### Registry
 `~/.skillm/state.toml` — machine-managed record skillm writes freely. One entry per added
 skill holding what cannot be re-derived: its Source (URL, subpath, ref), kind (git/local),
-the Revision recorded at `add`, and the install timestamp.
+the Revision recorded at `add`, and the install timestamp. It also records, per skill, the
+project roots where a Local Install was materialized as a Vendored copy — the one piece of
+install state skillm stores, because a copy (unlike a Link) cannot be re-discovered by a live
+disk scan.

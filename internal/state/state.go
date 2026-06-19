@@ -47,6 +47,12 @@ type SkillEntry struct {
 	Revision string `toml:"revision,omitempty"`
 	// InstalledAt is when the skill was added, serialized as RFC3339.
 	InstalledAt time.Time `toml:"installed_at"`
+	// VendoredAt is the set of project roots (absolute paths) where this skill's
+	// Local Install was materialized as a Vendored copy rather than a symlink.
+	// It is the one piece of install state skillm stores: unlike a symlink, a
+	// copy cannot be re-discovered by a live disk scan, so the roots holding one
+	// are recorded here. Empty for the common (symlinked / not-installed) case.
+	VendoredAt []string `toml:"vendored_at,omitempty"`
 }
 
 // State is the in-memory form of the whole registry.
@@ -170,4 +176,53 @@ func (s *State) RemoveLocalRoot(dir string) bool {
 		}
 	}
 	return false
+}
+
+// AddVendoredRoot records that skill id has a Vendored copy at project root dir
+// (an absolute, cleaned path). VendoredAt is a string set, so adding a dir
+// already present is a no-op. It returns true if the entry changed (the caller
+// should then Save), or false if the skill is unknown or dir was already
+// recorded.
+func (s *State) AddVendoredRoot(id, dir string) bool {
+	for i := range s.Skills {
+		if s.Skills[i].ID != id {
+			continue
+		}
+		if slices.Contains(s.Skills[i].VendoredAt, dir) {
+			return false
+		}
+		s.Skills[i].VendoredAt = append(s.Skills[i].VendoredAt, dir)
+		return true
+	}
+	return false
+}
+
+// RemoveVendoredRoot drops dir from skill id's vendored roots, preserving order.
+// It returns true if dir was present and removed (the caller should then Save).
+func (s *State) RemoveVendoredRoot(id, dir string) bool {
+	for i := range s.Skills {
+		if s.Skills[i].ID != id {
+			continue
+		}
+		for j, r := range s.Skills[i].VendoredAt {
+			if r == dir {
+				s.Skills[i].VendoredAt = append(s.Skills[i].VendoredAt[:j], s.Skills[i].VendoredAt[j+1:]...)
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// VendoredRoots returns the project roots where skill id has a Vendored copy, or
+// nil if the skill is unknown or has none. The returned slice is the entry's own
+// backing array — callers must not mutate it.
+func (s *State) VendoredRoots(id string) []string {
+	for _, e := range s.Skills {
+		if e.ID == id {
+			return e.VendoredAt
+		}
+	}
+	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ var (
 	installFlagGlobal bool
 	installFlagLocal  bool
 	installFlagAll    bool
+	installFlagCopy   bool
 )
 
 func init() {
@@ -44,21 +46,25 @@ func newInstallCmd() *cobra.Command {
 			"or --local skip the prompt; on a non-interactive terminal pass skill ids (or " +
 			"--all) together with --global or --local. Folders are created if missing. " +
 			"Re-installing an already-correct symlink is a no-op; skillm refuses to overwrite " +
-			"anything it did not create.",
+			"anything it did not create. For a local install, --copy (or the interactive " +
+			"prompt) vendors a real copy of the skill into each agent's project folder instead " +
+			"of a symlink, so it can be committed to the project's git repo and shared with " +
+			"teammates; --copy is rejected at global scope.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInstall(args, installFlagGlobal, installFlagLocal, installFlagAll)
+			return runInstall(args, installFlagGlobal, installFlagLocal, installFlagAll, installFlagCopy)
 		},
 	}
 	f := c.Flags()
 	f.BoolVar(&installFlagGlobal, "global", false, "install into the agents' user-level skill folders")
 	f.BoolVar(&installFlagLocal, "local", false, "install into the current directory's project skill folders")
 	f.BoolVar(&installFlagAll, "all", false, "install every skill in Home (no interactive picker)")
+	f.BoolVar(&installFlagCopy, "copy", false, "vendor a real copy into the project (commit to git) instead of a symlink; local scope only")
 	c.MarkFlagsMutuallyExclusive("global", "local")
 	return c
 }
 
-func runInstall(args []string, global, local, all bool) error {
+func runInstall(args []string, global, local, all, vendor bool) error {
 	home, err := store.Home(flagHome)
 	if err != nil {
 		return err
@@ -97,9 +103,9 @@ func runInstall(args []string, global, local, all bool) error {
 		return nil // selectInstallIDs already reported why (empty Home / nothing picked)
 	}
 
-	// One scope applies to every selected skill. Resolved after selection so an
-	// interactive run asks "which skills" before "where".
-	scope, base, err := resolveScope(global, local, cwd)
+	// One scope (and method) applies to every selected skill. Resolved after
+	// selection so an interactive run asks "which skills" before "where/how".
+	scope, base, doVendor, err := resolveInstallTarget(global, local, vendor, cwd)
 	if err != nil {
 		return err
 	}
@@ -128,10 +134,32 @@ func runInstall(args []string, global, local, all bool) error {
 		return fmt.Errorf("no enabled agent has a %s location; define one in %s", scope, config.Path(home))
 	}
 
+	if doVendor {
+		return installVendored(home, st, ids, supported, base, scopeLabel(scope, base, cwd))
+	}
+
 	label := scopeLabel(scope, base, cwd)
 	linkedAnywhere := false
+	stateDirty := false
 	var runErr error
 	for _, id := range ids {
+		// Convert a Vendored copy back to a symlink: a plain local install over a
+		// recorded copy removes the committed files first so Link can take the
+		// path, and drops the vendored root. (skillm's own symlink / absent path
+		// are handled by Link directly.)
+		if scope == agentdir.Local && slices.Contains(st.VendoredRoots(id), base) {
+			removed, rerr := vendorRemove(home, id, supported, base)
+			if rerr != nil {
+				ui.Warnf("%v", rerr)
+			}
+			for _, a := range removed {
+				ui.Successf("removed copy of %s for %s (%s)", id, a.Name, label)
+			}
+			if st.RemoveVendoredRoot(id, base) {
+				stateDirty = true
+			}
+		}
+
 		res, err := linker.Link(home, id, supported, scope, base)
 		// Report whatever succeeded before any refusal, then stop on the error.
 		reportInstallResult(res, label)
@@ -148,11 +176,102 @@ func runInstall(args []string, global, local, all bool) error {
 	// links from anywhere, not just from within base. Global links need no
 	// record. Done even on a partial failure, so a link that did land is found.
 	if scope == agentdir.Local && linkedAnywhere {
-		if rerr := addLocalRoot(home, base); rerr != nil {
-			ui.Warnf("installed, but could not record %s for `skillm list`: %v", base, rerr)
+		if st.AddLocalRoot(base) {
+			stateDirty = true
+		}
+	}
+	if stateDirty {
+		if err := state.Save(home, st); err != nil {
+			ui.Warnf("installed, but could not record %s for `skillm list`: %v", base, err)
 		}
 	}
 	return runErr
+}
+
+// installVendored writes a Vendored copy of each selected skill into the
+// supported agents' project folders at base, recording each base as a vendored
+// root so update/uninstall/list can find the copies later. Foreign files at a
+// target are not clobbered silently: skillm asks once for the whole batch on a
+// TTY (or refuses on a non-TTY) unless --force/--yes was given. skillm's own
+// symlink at a target is converted to a copy without asking.
+func installVendored(home string, st *state.State, ids []string, agents []agentdir.Agent, base, label string) error {
+	force := flagForce || flagYes
+
+	// Pre-scan every target across all skills for foreign entries that would be
+	// overwritten, so the question (or the refusal) covers the whole batch once.
+	recorded := make(map[string]bool, len(ids))
+	var conflicts []string
+	for _, id := range ids {
+		recorded[id] = slices.Contains(st.VendoredRoots(id), base)
+		conflicts = append(conflicts, vendorConflicts(home, id, agents, base, recorded[id])...)
+	}
+	if len(conflicts) > 0 && !force {
+		if !ui.IsTTY() {
+			return fmt.Errorf("refusing to overwrite files skillm did not create:\n  %s\npass --force to overwrite them", strings.Join(conflicts, "\n  "))
+		}
+		ok, err := ui.Confirm(confirmVendorOverwritePrompt(conflicts))
+		if err != nil {
+			return err
+		}
+		force = ok // declined: leave foreign entries untouched, vendor the rest
+	}
+
+	stateDirty := false
+	vendoredAny := false
+	var runErr error
+	for _, id := range ids {
+		outcomes, err := vendorApply(home, id, agents, base, recorded[id], force)
+		// vendorApply is atomic per base: a skill is either fully vendored across
+		// its agents or fully blocked, so the root is recorded only when every
+		// slot is skillm's — never while a skipped foreign dir sits at one slot.
+		touched, blocked := reportVendorResult(id, outcomes, label)
+		if touched {
+			vendoredAny = true
+			if st.AddVendoredRoot(id, base) {
+				stateDirty = true
+			}
+		} else if blocked {
+			ui.Warnf("skipped %s: vendoring here would overwrite files skillm did not create (pass --force)", id)
+		}
+		if err != nil {
+			runErr = err
+			break
+		}
+	}
+
+	if stateDirty {
+		if serr := state.Save(home, st); serr != nil {
+			ui.Warnf("vendored, but could not record roots for `skillm list`/`update`: %v", serr)
+		}
+	}
+	if vendoredAny {
+		ui.Hintf("commit %s to share these skills with your team", base)
+	}
+	return runErr
+}
+
+// reportVendorResult prints a success line per agent that got a copy and reports
+// whether any copy now exists (touched) and whether any slot was blocked. Because
+// vendorApply is atomic per base, an id's outcomes are either all touched or all
+// blocked; the caller prints a single skip notice for the blocked case (the
+// per-slot paths are not individually foreign, so they are not named here).
+func reportVendorResult(id string, outcomes []vendorOutcome, label string) (touched, blocked bool) {
+	for _, o := range outcomes {
+		if o.touched() {
+			ui.Successf("%s %s for %s (%s)", vendorActionLabel(o.Action), id, o.Agent.Name, label)
+			touched = true
+		} else {
+			blocked = true
+		}
+	}
+	return touched, blocked
+}
+
+// confirmVendorOverwritePrompt builds the one-shot confirmation shown before a
+// vendor install overwrites files skillm did not create.
+func confirmVendorOverwritePrompt(paths []string) string {
+	return fmt.Sprintf("These paths exist and were not created by skillm:\n  %s\nOverwrite them with vendored copies?",
+		strings.Join(paths, "\n  "))
 }
 
 // selectInstallIDs resolves which skills `install` should act on:
@@ -314,32 +433,43 @@ func addLocalRoot(home, dir string) error {
 	return nil
 }
 
-// resolveScope maps the --global/--local flags (mutually exclusive) to a Scope
-// and the base directory a local-scope link is rooted at. When neither flag is
-// given it runs the interactive picker (Global / Local / custom path); on a
-// non-TTY the picker refuses and names the flags to pass instead. base is
-// ignored for Global scope. cobra enforces that the two flags are not both set.
-func resolveScope(global, local bool, cwd string) (agentdir.Scope, string, error) {
+// resolveInstallTarget maps the --global/--local/--copy flags to a Scope, the
+// base directory a local install is rooted at, and whether to vendor a copy
+// rather than symlink. --copy is local-only: combined with --global it is an
+// error, and given alone (no scope flag) it implies --local. When no scope flag
+// is given it runs the interactive picker (Global / Local / custom path), which
+// itself asks symlink-vs-copy after a local choice; on a non-TTY the picker
+// refuses and names the flags to pass instead. base is ignored and vendoring is
+// always false for Global scope. cobra enforces that --global/--local are not
+// both set.
+func resolveInstallTarget(global, local, copyFlag bool, cwd string) (scope agentdir.Scope, base string, vendor bool, err error) {
+	if copyFlag && global {
+		return agentdir.Global, cwd, false, errors.New("--copy is only valid for a local install; drop --global (a global install is always a symlink)")
+	}
 	switch {
 	case global:
-		return agentdir.Global, cwd, nil
-	case local:
-		return agentdir.Local, cwd, nil
+		return agentdir.Global, cwd, false, nil
+	case local || copyFlag: // --copy with no scope flag implies --local
+		abs, aerr := filepath.Abs(cwd)
+		if aerr != nil {
+			abs = cwd
+		}
+		return agentdir.Local, abs, copyFlag, nil
 	default:
-		sel, err := ui.SelectScope(cwd)
-		if err != nil {
-			return agentdir.Global, cwd, err
+		sel, serr := ui.SelectScope(cwd)
+		if serr != nil {
+			return agentdir.Global, cwd, false, serr
 		}
 		if sel.Global {
-			return agentdir.Global, cwd, nil
+			return agentdir.Global, cwd, false, nil
 		}
 		// Anchor a typed (possibly relative) custom path to an absolute base so
-		// the link, its report line, and the recorded root all agree.
-		base, err := filepath.Abs(sel.Path)
-		if err != nil {
-			return agentdir.Local, sel.Path, fmt.Errorf("resolve %s: %w", sel.Path, err)
+		// the link/copy, its report line, and the recorded root all agree.
+		b, aerr := filepath.Abs(sel.Path)
+		if aerr != nil {
+			return agentdir.Local, sel.Path, sel.Copy, fmt.Errorf("resolve %s: %w", sel.Path, aerr)
 		}
-		return agentdir.Local, base, nil
+		return agentdir.Local, b, sel.Copy, nil
 	}
 }
 

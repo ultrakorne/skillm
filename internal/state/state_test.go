@@ -201,6 +201,93 @@ func TestLocalRootsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestVendoredRoots(t *testing.T) {
+	s := &State{Skills: []SkillEntry{{ID: "a", Kind: KindGit}, {ID: "b", Kind: KindLocal}}}
+
+	// Add to a known skill.
+	if !s.AddVendoredRoot("a", "/projA") {
+		t.Fatal("AddVendoredRoot(a, /projA) = false, want true")
+	}
+	if s.AddVendoredRoot("a", "/projA") {
+		t.Error("AddVendoredRoot(a, /projA) again = true, want false (already present)")
+	}
+	if !s.AddVendoredRoot("a", "/projB") {
+		t.Error("AddVendoredRoot(a, /projB) = false, want true")
+	}
+	if !reflect.DeepEqual(s.VendoredRoots("a"), []string{"/projA", "/projB"}) {
+		t.Fatalf("VendoredRoots(a) = %v, want [/projA /projB]", s.VendoredRoots("a"))
+	}
+
+	// Unknown skill: no-op, not a panic.
+	if s.AddVendoredRoot("missing", "/x") {
+		t.Error("AddVendoredRoot on unknown skill = true, want false")
+	}
+	if s.VendoredRoots("missing") != nil {
+		t.Error("VendoredRoots(missing) should be nil")
+	}
+
+	// Remove.
+	if !s.RemoveVendoredRoot("a", "/projA") {
+		t.Error("RemoveVendoredRoot(a, /projA) = false, want true")
+	}
+	if s.RemoveVendoredRoot("a", "/projA") {
+		t.Error("RemoveVendoredRoot(a, /projA) again = true, want false (absent)")
+	}
+	if !reflect.DeepEqual(s.VendoredRoots("a"), []string{"/projB"}) {
+		t.Fatalf("VendoredRoots(a) after remove = %v, want [/projB]", s.VendoredRoots("a"))
+	}
+	// Other skills are unaffected.
+	if len(s.VendoredRoots("b")) != 0 {
+		t.Errorf("VendoredRoots(b) = %v, want empty", s.VendoredRoots("b"))
+	}
+}
+
+func TestVendoredAtRoundTripAndOmitted(t *testing.T) {
+	home := t.TempDir()
+	want := &State{Skills: []SkillEntry{
+		{ID: "a", Kind: KindGit, VendoredAt: []string{"/home/me/projA"}},
+		{ID: "b", Kind: KindLocal}, // no vendored copies
+	}}
+	if err := Save(home, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(home)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(got.VendoredRoots("a"), []string{"/home/me/projA"}) {
+		t.Errorf("round-trip VendoredAt(a) = %v, want [/home/me/projA]", got.VendoredRoots("a"))
+	}
+	// A skill with no vendored copies must not serialize the key.
+	data, err := os.ReadFile(Path(home))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	lines := 0
+	for _, line := range splitLines(string(data)) {
+		if containsKey(line, "vendored_at") {
+			lines++
+		}
+	}
+	if lines != 1 {
+		t.Errorf("vendored_at should appear exactly once (only skill a), found %d:\n%s", lines, data)
+	}
+}
+
+// splitLines splits s on newlines for a per-line key check.
+func splitLines(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
+}
+
 func TestLocalRootsOmittedWhenEmpty(t *testing.T) {
 	home := t.TempDir()
 	if err := Save(home, &State{Skills: []SkillEntry{{ID: "x", Kind: KindLocal}}}); err != nil {

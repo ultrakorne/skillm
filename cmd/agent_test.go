@@ -364,7 +364,7 @@ func TestConfirmAgentPrompt(t *testing.T) {
 	claude := agentdir.Agent{Name: "claude"}
 	codex := agentdir.Agent{Name: "codex"}
 
-	disableOnly := confirmAgentPrompt(nil, []agentdir.Agent{claude})
+	disableOnly := confirmAgentPrompt(nil, []agentdir.Agent{claude}, nil)
 	if !strings.Contains(disableOnly, "claude") || !strings.Contains(disableOnly, "stay in Home") {
 		t.Fatalf("disable-only prompt missing agent or Home reassurance: %q", disableOnly)
 	}
@@ -372,8 +372,14 @@ func TestConfirmAgentPrompt(t *testing.T) {
 		t.Fatalf("disable-only prompt should not mention enabling: %q", disableOnly)
 	}
 
-	swap := confirmAgentPrompt([]agentdir.Agent{codex}, []agentdir.Agent{claude})
+	swap := confirmAgentPrompt([]agentdir.Agent{codex}, []agentdir.Agent{claude}, nil)
 	if !strings.Contains(swap, "Enable codex") || !strings.Contains(swap, "disable claude") {
 		t.Fatalf("swap prompt missing enable/disable detail: %q", swap)
+	}
+
+	// With vendored copies, the prompt warns about deleting committed copies.
+	withCopies := confirmAgentPrompt(nil, []agentdir.Agent{claude}, []string{"/home/me/projA"})
+	if !strings.Contains(withCopies, "DELETES") || !strings.Contains(withCopies, "/home/me/projA") {
+		t.Fatalf("prompt with copies missing deletion warning: %q", withCopies)
 	}
 }

@@ -27,6 +27,7 @@ var (
 	addAll    bool   // --all:    add every discovered skill without prompting
 	addGlobal bool   // --global: also install the added skills at global scope
 	addLocal  bool   // --local:  also install the added skills at local scope
+	addCopy   bool   // --copy:   vendor a copy (local scope only) instead of a symlink
 )
 
 func init() {
@@ -57,6 +58,7 @@ func newAddCmd() *cobra.Command {
 	f.BoolVar(&addAll, "all", false, "add every skill discovered in the source without prompting")
 	f.BoolVar(&addGlobal, "global", false, "after adding, install the skill(s) at global scope")
 	f.BoolVar(&addLocal, "local", false, "after adding, install the skill(s) at local scope")
+	f.BoolVar(&addCopy, "copy", false, "with a local install, vendor a real copy (commit to git) instead of a symlink")
 	c.MarkFlagsMutuallyExclusive("global", "local")
 
 	return c
@@ -69,8 +71,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		selectArg = args[1]
 	}
 
-	// Resolve where things link to (only if --global/--local was given).
-	linkScope, doLink, err := addLinkScope()
+	// Resolve where things link to (only if --global/--local/--copy was given).
+	linkScope, doLink, vendor, err := addLinkScope()
 	if err != nil {
 		return err
 	}
@@ -112,27 +114,31 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	if doLink {
-		if err := linkAdded(home, added, linkScope); err != nil {
+		if err := linkAdded(home, added, linkScope, vendor); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// addLinkScope resolves whether the caller asked to link after adding, and at
-// which scope. Bare `add` is fetch-only (doLink == false): only an explicit
-// --global/--local triggers a link (PLAN §3 add).
-func addLinkScope() (scope agentdir.Scope, doLink bool, err error) {
+// addLinkScope resolves whether the caller asked to install after adding, at
+// which scope, and whether to vendor a copy. Bare `add` is fetch-only (doLink ==
+// false): only an explicit --global/--local/--copy triggers an install (PLAN §3
+// add). --copy is local-only: it is an error with --global and implies --local
+// when given alone.
+func addLinkScope() (scope agentdir.Scope, doLink, vendor bool, err error) {
 	switch {
 	case addGlobal && addLocal:
 		// Guarded by MarkFlagsMutuallyExclusive, but keep a defensive check.
-		return agentdir.Global, false, errors.New("cannot use both --global and --local")
+		return agentdir.Global, false, false, errors.New("cannot use both --global and --local")
+	case addGlobal && addCopy:
+		return agentdir.Global, false, false, errors.New("--copy is only valid for a local install; drop --global")
 	case addGlobal:
-		return agentdir.Global, true, nil
-	case addLocal:
-		return agentdir.Local, true, nil
+		return agentdir.Global, true, false, nil
+	case addLocal || addCopy: // --copy with no scope flag implies --local
+		return agentdir.Local, true, addCopy, nil
 	default:
-		return agentdir.Global, false, nil
+		return agentdir.Global, false, false, nil
 	}
 }
 
@@ -360,9 +366,10 @@ func selectFound(found []source.Found, selectArg string) ([]source.Found, error)
 }
 
 // linkAdded installs every freshly added skill into the enabled agents at scope,
-// reusing the same linker as the `install` command. It reports per-skill
-// outcomes and returns the first error encountered.
-func linkAdded(home string, ids []string, scope agentdir.Scope) error {
+// reusing the same linker (or, when vendor is set, the same vendoring path) as
+// the `install` command. It reports per-skill outcomes and returns the first
+// error encountered.
+func linkAdded(home string, ids []string, scope agentdir.Scope, vendor bool) error {
 	cfg, err := config.Load(home)
 	if err != nil {
 		return err
@@ -398,6 +405,20 @@ func linkAdded(home string, ids []string, scope agentdir.Scope) error {
 	if len(supported) == 0 {
 		ui.Warnf("no enabled agent has a usable %s location; skills added but not linked", scope)
 		return nil
+	}
+
+	// Vendoring shares the install command's machinery (foreign-overwrite
+	// confirmation, vendored-root recording, commit hint).
+	if vendor {
+		base, aerr := filepath.Abs(cwd)
+		if aerr != nil {
+			base = cwd
+		}
+		st, lerr := state.Load(home)
+		if lerr != nil {
+			return lerr
+		}
+		return installVendored(home, st, ids, supported, base, scopeLabel(scope, base, cwd))
 	}
 
 	for _, id := range ids {

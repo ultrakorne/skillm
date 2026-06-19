@@ -55,25 +55,30 @@ func TestAddLinkScope(t *testing.T) {
 		name       string
 		global     bool
 		local      bool
+		copy       bool
 		wantScope  agentdir.Scope
 		wantDoLink bool
+		wantVendor bool
 		wantErr    bool
 	}{
-		{"bare add is fetch-only", false, false, agentdir.Global, false, false},
-		{"--global links global", true, false, agentdir.Global, true, false},
-		{"--local links local", false, true, agentdir.Local, true, false},
-		{"both is an error", true, true, agentdir.Global, false, true},
+		{"bare add is fetch-only", false, false, false, agentdir.Global, false, false, false},
+		{"--global links global", true, false, false, agentdir.Global, true, false, false},
+		{"--local links local", false, true, false, agentdir.Local, true, false, false},
+		{"--copy implies local vendor", false, false, true, agentdir.Local, true, true, false},
+		{"--local --copy vendors", false, true, true, agentdir.Local, true, true, false},
+		{"--global --copy is an error", true, false, true, agentdir.Global, false, false, true},
+		{"both global and local is an error", true, true, false, agentdir.Global, false, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// addLinkScope reads the package-level flag vars.
-			addGlobal, addLocal = tc.global, tc.local
-			t.Cleanup(func() { addGlobal, addLocal = false, false })
+			addGlobal, addLocal, addCopy = tc.global, tc.local, tc.copy
+			t.Cleanup(func() { addGlobal, addLocal, addCopy = false, false, false })
 
-			scope, doLink, err := addLinkScope()
+			scope, doLink, vendor, err := addLinkScope()
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("expected error for global=%v local=%v", tc.global, tc.local)
+					t.Fatalf("expected error for global=%v local=%v copy=%v", tc.global, tc.local, tc.copy)
 				}
 				return
 			}
@@ -85,6 +90,9 @@ func TestAddLinkScope(t *testing.T) {
 			}
 			if doLink != tc.wantDoLink {
 				t.Errorf("doLink = %v, want %v", doLink, tc.wantDoLink)
+			}
+			if vendor != tc.wantVendor {
+				t.Errorf("vendor = %v, want %v", vendor, tc.wantVendor)
 			}
 		})
 	}

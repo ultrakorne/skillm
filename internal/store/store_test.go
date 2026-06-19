@@ -161,6 +161,72 @@ func TestRemoveSkillDir(t *testing.T) {
 	}
 }
 
+func TestReplaceDir(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	mustWrite(t, filepath.Join(src, "SKILL.md"), "v1\n", 0o644)
+	mustWrite(t, filepath.Join(src, "sub", "ref.md"), "ref\n", 0o644)
+
+	dst := filepath.Join(root, "proj", ".claude", "skills", "demo")
+
+	// Into a non-existent destination: creates parents and copies the tree.
+	if err := ReplaceDir(src, dst); err != nil {
+		t.Fatalf("ReplaceDir (fresh): %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "SKILL.md"), "v1\n")
+	assertFile(t, filepath.Join(dst, "sub", "ref.md"), "ref\n")
+
+	// Over an existing destination with stale extra files: fully replaced, no
+	// leftovers from the old copy.
+	mustWrite(t, filepath.Join(dst, "STALE.md"), "old\n", 0o644)
+	mustWrite(t, filepath.Join(src, "SKILL.md"), "v2\n", 0o644)
+	if err := ReplaceDir(src, dst); err != nil {
+		t.Fatalf("ReplaceDir (replace): %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "SKILL.md"), "v2\n")
+	if _, err := os.Stat(filepath.Join(dst, "STALE.md")); !os.IsNotExist(err) {
+		t.Fatalf("ReplaceDir must drop stale files; STALE.md err = %v", err)
+	}
+	// No staging dir is left behind.
+	if _, err := os.Stat(dst + ".skillm-tmp"); !os.IsNotExist(err) {
+		t.Fatalf("ReplaceDir left a staging dir behind: err = %v", err)
+	}
+}
+
+func TestDirContentEqual(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "a")
+	b := filepath.Join(root, "b")
+	mustWrite(t, filepath.Join(a, "SKILL.md"), "same\n", 0o644)
+	mustWrite(t, filepath.Join(a, "sub", "x.md"), "x\n", 0o644)
+
+	// Identical copy → equal.
+	if err := CopyDir(a, b); err != nil {
+		t.Fatalf("CopyDir: %v", err)
+	}
+	if !DirContentEqual(a, b) {
+		t.Fatal("identical trees reported as different")
+	}
+
+	// Differing content → not equal.
+	mustWrite(t, filepath.Join(b, "SKILL.md"), "different\n", 0o644)
+	if DirContentEqual(a, b) {
+		t.Fatal("differing content reported as equal")
+	}
+
+	// Extra file on one side → not equal.
+	mustWrite(t, filepath.Join(b, "SKILL.md"), "same\n", 0o644)
+	mustWrite(t, filepath.Join(b, "extra.md"), "extra\n", 0o644)
+	if DirContentEqual(a, b) {
+		t.Fatal("extra file reported as equal")
+	}
+
+	// Missing tree → not equal (best-effort false, never a panic).
+	if DirContentEqual(a, filepath.Join(root, "nope")) {
+		t.Fatal("missing tree reported as equal")
+	}
+}
+
 func mustWrite(t *testing.T, path, content string, perm os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

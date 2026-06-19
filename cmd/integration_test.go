@@ -546,6 +546,216 @@ func assertNoLink(t *testing.T, linkPath, msg string) {
 	}
 }
 
+// runIn executes the skillm binary with the working directory set to dir (so
+// local-scope resolution sees it as cwd), failing the test on a non-zero exit.
+func (e env) runIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := e.tryRunIn(t, dir, args...)
+	if err != nil {
+		t.Fatalf("skillm %s (in %s) failed: %v\n%s", strings.Join(args, " "), dir, err, out)
+	}
+	return out
+}
+
+// tryRunIn is runIn without failing on error, for cases expecting a non-zero exit.
+func (e env) tryRunIn(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(e.bin, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"HOME="+e.userDir,
+		"USERPROFILE="+e.userDir,
+		"SKILLM_HOME="+e.home,
+		"GIT_CONFIG_GLOBAL="+filepath.Join(e.userDir, ".gitconfig"),
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// assertVendoredCopy verifies path is a REAL directory (not a symlink) holding a
+// SKILL.md whose content contains wantSubstr — i.e. a self-contained Vendored
+// copy, not a link back into Home.
+func assertVendoredCopy(t *testing.T, path, wantSubstr string) {
+	t.Helper()
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat vendored copy %s: %v", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("%s is a symlink, want a real vendored copy", path)
+	}
+	if !fi.IsDir() {
+		t.Fatalf("%s is not a directory", path)
+	}
+	b, err := os.ReadFile(filepath.Join(path, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read SKILL.md in vendored copy %s: %v", path, err)
+	}
+	if !strings.Contains(string(b), wantSubstr) {
+		t.Fatalf("vendored %s/SKILL.md = %q, want it to contain %q", path, b, wantSubstr)
+	}
+}
+
+// evalProject resolves symlinks in a project dir so it matches the absolute path
+// a child process records via os.Getwd() (which resolves them, e.g. /var ->
+// /private/var on macOS). On Linux tmpdirs this is usually a no-op.
+func evalProject(t *testing.T, dir string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return dir
+	}
+	return resolved
+}
+
+// TestVendoredCopyLifecycle drives the real binary through the full vendoring
+// lifecycle: install --local --copy writes self-contained copies (per agent,
+// not symlinks) and records the root; a Global symlink coexists; update refreshes
+// the committed copies in place AND the global symlink; uninstall deletes the
+// copies, the Home copy, and the registry entry. It also covers the guard rails:
+// --copy --global is rejected, and a foreign directory is not clobbered without
+// --force.
+func TestVendoredCopyLifecycle(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	bin := skillmBinary(t)
+	repo, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+
+	// Fetch alpha into Home, no install yet.
+	e.run(t, "add", url, "alpha")
+
+	// --- install --local --copy: real copies per agent, root recorded ---------
+	project := evalProject(t, t.TempDir())
+	out := e.runIn(t, project, "install", "alpha", "--local", "--copy")
+	if !strings.Contains(out, "copied alpha") {
+		t.Fatalf("install --copy: expected a 'copied' line, got:\n%s", out)
+	}
+	claudeCopy := filepath.Join(project, ".claude", "skills", "alpha")
+	codexCopy := filepath.Join(project, ".codex", "skills", "alpha")
+	assertVendoredCopy(t, claudeCopy, "alpha body")
+	assertVendoredCopy(t, codexCopy, "alpha body")
+
+	// The registry records the project as a vendored root (and only that).
+	alpha, _ := loadState(t, e).Get("alpha")
+	if got := alpha.VendoredAt; len(got) != 1 || got[0] != project {
+		t.Fatalf("vendored_at = %v, want [%s]", got, project)
+	}
+
+	// --- a Global symlink coexists with the Local copy ------------------------
+	e.run(t, "install", "alpha", "--global")
+	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
+	// The local copies are still real directories, untouched by the global link.
+	assertVendoredCopy(t, claudeCopy, "alpha body")
+
+	// --- update refreshes the committed copies in place -----------------------
+	if err := os.WriteFile(filepath.Join(repo, "alpha", "SKILL.md"),
+		[]byte("---\nname: alpha\ndescription: alpha skill\n---\nalpha body CHANGED\n"), 0o644); err != nil {
+		t.Fatalf("rewrite alpha upstream: %v", err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "edit alpha")
+
+	out = e.run(t, "update")
+	if !strings.Contains(out, "Updated alpha") {
+		t.Fatalf("update: expected alpha updated, got:\n%s", out)
+	}
+	// Both committed copies now hold the new content...
+	assertVendoredCopy(t, claudeCopy, "CHANGED")
+	assertVendoredCopy(t, codexCopy, "CHANGED")
+	// ...and the global symlink transparently exposes it via Home.
+	gb, err := os.ReadFile(filepath.Join(claudeGlobalLink(e, "alpha"), "SKILL.md"))
+	if err != nil || !strings.Contains(string(gb), "CHANGED") {
+		t.Fatalf("global symlink did not see the update: err=%v content=%s", err, gb)
+	}
+
+	// --- uninstall deletes copies + Home + registry entry ---------------------
+	e.runIn(t, project, "uninstall", "alpha", "--yes")
+	assertNoLink(t, claudeCopy, "uninstall must delete the vendored copy")
+	assertNoLink(t, codexCopy, "uninstall must delete the vendored copy")
+	assertNoLink(t, claudeGlobalLink(e, "alpha"), "uninstall must remove the global symlink")
+	if store.Exists(e.home, "alpha") {
+		t.Fatal("alpha still in Home after uninstall")
+	}
+	if _, ok := loadState(t, e).Get("alpha"); ok {
+		t.Fatal("alpha still in registry after uninstall")
+	}
+
+	// --- guard: --copy --global is rejected -----------------------------------
+	e.run(t, "add", url, "beta")
+	if out, err := e.tryRun(t, "install", "beta", "--global", "--copy"); err == nil ||
+		!strings.Contains(out, "only valid for a local install") {
+		t.Fatalf("--copy --global should be rejected; err=%v out=%s", err, out)
+	}
+
+	// --- guard: a foreign directory is not clobbered without --force ----------
+	proj2 := evalProject(t, t.TempDir())
+	foreign := filepath.Join(proj2, ".claude", "skills", "beta")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatalf("create foreign dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(foreign, "MINE.txt"), []byte("hand-written\n"), 0o644); err != nil {
+		t.Fatalf("write foreign file: %v", err)
+	}
+	if out, err := e.tryRunIn(t, proj2, "install", "beta", "--local", "--copy"); err == nil ||
+		!strings.Contains(out, "--force") {
+		t.Fatalf("vendoring over a foreign dir should refuse on a non-TTY naming --force; err=%v out=%s", err, out)
+	}
+	// The foreign file survives the refusal.
+	if _, err := os.Stat(filepath.Join(foreign, "MINE.txt")); err != nil {
+		t.Fatalf("refusal must not touch the foreign files: %v", err)
+	}
+	// With --force it overwrites and adopts the directory as a vendored copy.
+	e.runIn(t, proj2, "install", "beta", "--local", "--copy", "--force")
+	assertVendoredCopy(t, foreign, "beta body")
+	if _, err := os.Stat(filepath.Join(foreign, "MINE.txt")); !os.IsNotExist(err) {
+		t.Fatalf("--force should have replaced the foreign dir; MINE.txt err = %v", err)
+	}
+}
+
+// TestVendorSymlinkConversion proves install converts between skillm's own
+// symlink and copy forms in place: a symlinked local install becomes a copy
+// under --copy (recording the root), and a plain re-install turns it back into a
+// symlink (dropping the vendored root).
+func TestVendorSymlinkConversion(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	bin := skillmBinary(t)
+	_, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+	e.run(t, "add", url, "alpha")
+
+	project := evalProject(t, t.TempDir())
+	claudePath := filepath.Join(project, ".claude", "skills", "alpha")
+
+	// Symlink install first.
+	e.runIn(t, project, "install", "alpha", "--local")
+	assertLinkResolvesIntoHome(t, e, claudePath, "alpha")
+	if got, _ := loadState(t, e).Get("alpha"); len(got.VendoredAt) != 0 {
+		t.Fatalf("symlink install must not record a vendored root: %v", got.VendoredAt)
+	}
+
+	// Convert to a copy.
+	e.runIn(t, project, "install", "alpha", "--local", "--copy")
+	assertVendoredCopy(t, claudePath, "alpha body")
+	if got, _ := loadState(t, e).Get("alpha"); len(got.VendoredAt) != 1 || got.VendoredAt[0] != project {
+		t.Fatalf("convert to copy must record the vendored root; got %v", got.VendoredAt)
+	}
+
+	// Convert back to a symlink with a plain local install.
+	e.runIn(t, project, "install", "alpha", "--local")
+	assertLinkResolvesIntoHome(t, e, claudePath, "alpha")
+	if got, _ := loadState(t, e).Get("alpha"); len(got.VendoredAt) != 0 {
+		t.Fatalf("convert back to symlink must drop the vendored root; got %v", got.VendoredAt)
+	}
+}
+
 // TestInstallUninstallMulti exercises the multi-skill behaviour added with the
 // install/uninstall rename: variadic ids, --all, atomic failure on an unknown
 // id, and the non-interactive guards (no picker / no scope on a non-TTY). The

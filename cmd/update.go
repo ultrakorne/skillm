@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/gitx"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -60,60 +62,91 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 	if err != nil {
 		return err
 	}
-
-	// Resolve the set of git skills to consider, honouring an explicit id.
-	targets, err := selectUpdateTargets(st, id)
+	cfg, err := config.Load(home)
 	if err != nil {
 		return err
 	}
-	if len(targets) == 0 {
+
+	// Resolve the git skills to fetch and the local skills in scope, honouring an
+	// explicit id. Local skills have no upstream but their Vendored copies are
+	// still re-synced from Home below.
+	targets, localIDs, err := selectUpdateTargets(st, id)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 && len(localIDs) == 0 {
 		ui.Successf("Nothing to update.")
 		return nil
 	}
 
-	// Each target requires its own treeless clone and tree-SHA comparison. That
-	// per-skill network/git work is run concurrently (bounded by ui's fan-out)
-	// and shown as a live spinner row per skill with an aggregate progress bar
-	// underneath. Because the workers run in parallel, the shared bookkeeping
-	// below is guarded by mu; the registry is persisted once after they finish.
+	// Each git target requires its own treeless clone and tree-SHA comparison.
+	// That per-skill network/git work is run concurrently (bounded by ui's
+	// fan-out) and shown as a live spinner row per skill with an aggregate
+	// progress bar underneath. Because the workers run in parallel, the shared
+	// bookkeeping below is guarded by mu; the registry is persisted once after.
 	var (
-		mu       sync.Mutex
-		updated  []string
-		failures []string
-		dirty    bool // whether the registry needs persisting
+		mu         sync.Mutex
+		updated    []string
+		updatedSet = map[string]bool{}
+		failures   []string
+		dirty      bool // whether the registry needs persisting
 	)
 
-	labels := make([]string, len(targets))
-	for i, t := range targets {
-		labels[i] = t.entry.ID
-	}
+	if len(targets) > 0 {
+		labels := make([]string, len(targets))
+		for i, t := range targets {
+			labels[i] = t.entry.ID
+		}
 
-	work := func(ctx context.Context, i int) ui.Result {
-		t := targets[i] // copy; updateOne mutates t.entry in place
-		changed, upErr := updateOne(ctx, home, &t.entry)
+		work := func(ctx context.Context, i int) ui.Result {
+			t := targets[i] // copy; updateOne mutates t.entry in place
+			changed, upErr := updateOne(ctx, home, &t.entry)
 
-		mu.Lock()
-		defer mu.Unlock()
-		switch {
-		case upErr != nil:
-			msg := fmt.Sprintf("%s: %v", t.entry.ID, upErr)
-			failures = append(failures, msg)
-			return ui.Result{Level: ui.LevelError, Text: msg}
-		case changed:
-			st.Upsert(t.entry)
-			dirty = true
-			updated = append(updated, t.entry.ID)
-			return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("Updated %s.", t.entry.ID)}
-		default:
-			return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("%s is already up to date.", t.entry.ID)}
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case upErr != nil:
+				msg := fmt.Sprintf("%s: %v", t.entry.ID, upErr)
+				failures = append(failures, msg)
+				return ui.Result{Level: ui.LevelError, Text: msg}
+			case changed:
+				st.Upsert(t.entry)
+				dirty = true
+				updated = append(updated, t.entry.ID)
+				updatedSet[t.entry.ID] = true
+				return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("Updated %s.", t.entry.ID)}
+			default:
+				return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("%s is already up to date.", t.entry.ID)}
+			}
+		}
+
+		// The rows themselves report each skill's outcome (Updated / up to date /
+		// failed), so there is no separate per-skill print pass afterwards.
+		ui.RunChecklistProgress(ctx, labels, work)
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 	}
 
-	// The rows themselves report each skill's outcome (Updated / up to date /
-	// failed), so there is no separate per-skill print pass afterwards.
-	ui.RunChecklistProgress(ctx, labels, work)
-	if err := ctx.Err(); err != nil {
-		return err
+	// Re-sync Vendored copies. A git skill's copies are refreshed only if it was
+	// actually updated above; a local skill's copies are refreshed whenever their
+	// content differs from Home. Recorded roots whose copies have vanished are
+	// reported and pruned. Done after the git pass so updatedSet is complete.
+	inScope := make([]string, 0, len(targets)+len(localIDs))
+	for _, t := range targets {
+		inScope = append(inScope, t.entry.ID)
+	}
+	inScope = append(inScope, localIDs...)
+	if refreshVendoredCopies(home, cfg.AllAgents(), st, inScope, updatedSet) {
+		dirty = true
+	}
+
+	// A local skill with no Vendored copy has nothing to update at all — note it,
+	// preserving the pre-vendoring behaviour ("edit it in Home directly").
+	for _, lid := range localIDs {
+		if len(st.VendoredRoots(lid)) == 0 {
+			ui.Warnf("%s is a local skill and has no upstream — edit it in Home directly.", lid)
+		}
 	}
 
 	// Persist registry changes once, after all updates, so a mid-batch failure
@@ -136,21 +169,86 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 	return nil
 }
 
-// selectUpdateTargets resolves which git skills to process. With an empty id it
-// returns every git-sourced skill (local skills are noted and skipped). With an
-// explicit id it returns just that skill, erroring if it is unknown and noting
-// (without erroring) when it is a local skill that cannot be updated.
-func selectUpdateTargets(st *state.State, id string) ([]updateTarget, error) {
+// refreshVendoredCopies re-syncs and prunes the Vendored copies of the skills in
+// ids. A git skill's copies are overwritten from Home only when it was just
+// updated (updated[id] is true); a local skill's copies are overwritten whenever
+// their content differs from Home (so an unchanged skill produces no git churn).
+// A recorded root whose copies have all vanished — the project was moved or the
+// files were deleted — is reported and pruned from the registry. It mutates st
+// in place and returns whether anything was pruned (so the caller persists).
+func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool) bool {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+
+	changed := false
+	for i := range st.Skills {
+		e := &st.Skills[i]
+		if !want[e.ID] || len(e.VendoredAt) == 0 {
+			continue
+		}
+		src := store.SkillDir(home, e.ID)
+		isGit := e.Kind == state.KindGit
+		kept := make([]string, 0, len(e.VendoredAt))
+
+		for _, root := range e.VendoredAt {
+			have := vendorScan(home, e.ID, agents, root)
+			if len(have) == 0 {
+				ui.Warnf("forgetting vendored %s: no copy remains in %s", e.ID, root)
+				changed = true
+				continue // prune
+			}
+			for _, a := range have {
+				target, ok := agentdir.LinkPath(a, agentdir.Local, root, e.ID)
+				if !ok {
+					continue
+				}
+				switch {
+				case isGit && updated[e.ID]:
+					if err := store.ReplaceDir(src, target); err != nil {
+						ui.Warnf("refresh copy %s: %v", target, err)
+						continue
+					}
+					ui.Successf("refreshed copy of %s for %s (%s)", e.ID, a.Name, root)
+				case !isGit:
+					if store.DirContentEqual(src, target) {
+						continue // identical — no rewrite, no git churn
+					}
+					if err := store.ReplaceDir(src, target); err != nil {
+						ui.Warnf("sync copy %s: %v", target, err)
+						continue
+					}
+					ui.Successf("synced copy of %s for %s (%s)", e.ID, a.Name, root)
+				}
+			}
+			kept = append(kept, root)
+		}
+
+		if len(kept) == 0 {
+			e.VendoredAt = nil
+		} else {
+			e.VendoredAt = kept
+		}
+	}
+	return changed
+}
+
+// selectUpdateTargets resolves which skills to process: the git skills to fetch
+// (targets) and the local skills in scope (localIDs, whose Vendored copies are
+// re-synced but which have no upstream to fetch). With an empty id it returns
+// every git skill and every local skill; with an explicit id it returns just
+// that one in the appropriate bucket, erroring only if the id is unknown.
+func selectUpdateTargets(st *state.State, id string) ([]updateTarget, []string, error) {
 	if id != "" {
 		entry, ok := st.Get(id)
 		if !ok {
-			return nil, fmt.Errorf("skill %q is not in the registry; run `skillm list` to see installed skills", id)
+			return nil, nil, fmt.Errorf("skill %q is not in the registry; run `skillm list` to see installed skills", id)
 		}
 		if entry.Kind != state.KindGit {
-			ui.Warnf("%s is a local skill and has no upstream — edit it in Home directly.", id)
-			return nil, nil
+			return nil, []string{id}, nil
 		}
-		return []updateTarget{{entry: entry}}, nil
+		return []updateTarget{{entry: entry}}, nil, nil
 	}
 
 	var targets []updateTarget
@@ -162,10 +260,7 @@ func selectUpdateTargets(st *state.State, id string) ([]updateTarget, error) {
 		}
 		locals = append(locals, e.ID)
 	}
-	for _, l := range locals {
-		ui.Warnf("%s is a local skill and has no upstream — edit it in Home directly.", l)
-	}
-	return targets, nil
+	return targets, locals, nil
 }
 
 // updateOne clones the skill's source treeless, compares the current upstream

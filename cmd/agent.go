@@ -107,7 +107,8 @@ func runAgent() error {
 	// Confirm only when links will be removed (a disable is present); an
 	// enable-only change is additive and safe, so it applies without a prompt.
 	if len(newlyDisabled) > 0 && ui.IsTTY() && !flagYes && !flagForce {
-		ok, err := ui.Confirm(confirmAgentPrompt(newlyEnabled, newlyDisabled))
+		copyDirs := vendoredDirsForAgents(home, st, newlyDisabled)
+		ok, err := ui.Confirm(confirmAgentPrompt(newlyEnabled, newlyDisabled, copyDirs))
 		if err != nil {
 			return err
 		}
@@ -136,10 +137,13 @@ func runAgent() error {
 		disableAgent(home, a, st, cwd)
 	}
 
-	// A project that lost its last skillm link is no longer worth tracking. Scan
-	// across all defined agents so a root kept alive by a still-enabled agent
-	// survives.
+	// A project that lost its last skillm link is no longer worth tracking, and a
+	// vendored root that lost its last copy is no longer current. Scan across all
+	// defined agents so a root kept alive by a still-enabled agent survives.
 	if reconcileLocalRoots(home, cfg.AllAgents(), st) {
+		stateChanged = true
+	}
+	if reconcileVendoredRoots(home, cfg.AllAgents(), st) {
 		stateChanged = true
 	}
 	if stateChanged {
@@ -210,11 +214,38 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 		}
 	}
 
+	// Mirror Vendored copies too: at every recorded vendored root where a
+	// before-enabled peer still has a copy, write a copy for the newly-enabled
+	// agent so it reaches parity. recorded=false/force=false here means a foreign
+	// directory at the agent's own path is skipped with a warning, never clobbered.
+	if a.Supports(agentdir.Local) {
+		for _, e := range st.Skills {
+			for _, root := range e.VendoredAt {
+				if agentdir.LocalAliasesGlobal(a, root) {
+					continue
+				}
+				if len(vendorScan(home, e.ID, beforeEnabled, root)) == 0 {
+					continue // peers no longer hold a copy here; nothing to mirror
+				}
+				outcomes, verr := vendorApply(home, e.ID, []agentdir.Agent{a}, root, false, false)
+				if verr != nil {
+					ui.Warnf("%v", verr)
+				}
+				for _, o := range outcomes {
+					if o.touched() {
+						skills[e.ID] = true
+						places = append(places, scopeLabel(agentdir.Local, root, cwd))
+					}
+				}
+			}
+		}
+	}
+
 	if len(skills) == 0 {
-		ui.Successf("enabled %s — nothing to link yet (run `skillm install`)", a.Name)
+		ui.Successf("enabled %s — nothing to install yet (run `skillm install`)", a.Name)
 		return stateChanged
 	}
-	ui.Successf("enabled %s — linked %d skill%s (%s)", a.Name, len(skills), plural(len(skills)), strings.Join(places, ", "))
+	ui.Successf("enabled %s — installed %d skill%s (%s)", a.Name, len(skills), plural(len(skills)), strings.Join(dedupeStrings(places), ", "))
 	return stateChanged
 }
 
@@ -267,11 +298,32 @@ func disableAgent(home string, a agentdir.Agent, st *state.State, cwd string) {
 		}
 	}
 
+	// Delete the disabled agent's Vendored copies too (its committed files in
+	// every recorded project). Emptied roots are pruned by the reconcile pass in
+	// runAgent. The Home copy and the other agents' copies are left intact.
+	if a.Supports(agentdir.Local) {
+		for _, e := range st.Skills {
+			for _, root := range e.VendoredAt {
+				if agentdir.LocalAliasesGlobal(a, root) {
+					continue
+				}
+				removed, rerr := vendorRemove(home, e.ID, []agentdir.Agent{a}, root)
+				if rerr != nil {
+					ui.Warnf("%v", rerr)
+				}
+				if len(removed) > 0 {
+					skills[e.ID] = true
+					places = append(places, scopeLabel(agentdir.Local, root, cwd))
+				}
+			}
+		}
+	}
+
 	if len(skills) == 0 {
-		ui.Successf("disabled %s — no links to remove", a.Name)
+		ui.Successf("disabled %s — nothing to remove", a.Name)
 		return
 	}
-	ui.Successf("disabled %s — unlinked %d skill%s (%s)", a.Name, len(skills), plural(len(skills)), strings.Join(places, ", "))
+	ui.Successf("disabled %s — removed %d skill%s (%s)", a.Name, len(skills), plural(len(skills)), strings.Join(dedupeStrings(places), ", "))
 }
 
 // footprintIDs returns the sorted, de-duplicated skill ids that any of agents
@@ -296,13 +348,42 @@ func footprintIDs(home string, agents []agentdir.Agent, scope agentdir.Scope, ba
 
 // confirmAgentPrompt builds the single confirmation shown before a reconcile
 // that removes links, naming the agents and reassuring that Home is untouched.
-func confirmAgentPrompt(newlyEnabled, newlyDisabled []agentdir.Agent) string {
+// When the disabled agents have Vendored copies, it also warns that committed
+// copies in the named projects will be deleted.
+func confirmAgentPrompt(newlyEnabled, newlyDisabled []agentdir.Agent, copyDirs []string) string {
 	dis := strings.Join(agentNames(newlyDisabled), ", ")
+	var head string
 	if len(newlyEnabled) == 0 {
-		return fmt.Sprintf("Disable %s? This removes its links from every scope and project; the skills stay in Home.", dis)
+		head = fmt.Sprintf("Disable %s? This removes its links from every scope and project; the skills stay in Home.", dis)
+	} else {
+		en := strings.Join(agentNames(newlyEnabled), ", ")
+		head = fmt.Sprintf("Enable %s and disable %s? Disabling removes links from every scope and project; the skills stay in Home.", en, dis)
 	}
-	en := strings.Join(agentNames(newlyEnabled), ", ")
-	return fmt.Sprintf("Enable %s and disable %s? Disabling removes links from every scope and project; the skills stay in Home.", en, dis)
+	if len(copyDirs) > 0 {
+		head += fmt.Sprintf("\nIt also DELETES the disabled agent's committed copies in: %s", strings.Join(copyDirs, ", "))
+	}
+	return head
+}
+
+// vendoredDirsForAgents returns the sorted, de-duplicated project roots where
+// any of the given agents currently has a Vendored copy of any skill — the
+// directories a disable would delete committed files from, named in the prompt.
+func vendoredDirsForAgents(home string, st *state.State, agents []agentdir.Agent) []string {
+	seen := make(map[string]bool)
+	var dirs []string
+	for _, e := range st.Skills {
+		for _, root := range e.VendoredAt {
+			if seen[root] {
+				continue
+			}
+			if len(vendorScan(home, e.ID, agents, root)) > 0 {
+				seen[root] = true
+				dirs = append(dirs, root)
+			}
+		}
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // agentNames returns the names of agents in slice order.

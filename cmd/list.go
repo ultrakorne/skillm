@@ -72,7 +72,7 @@ func runList() error {
 		rows = append(rows, ui.Row{
 			ID:        e.ID,
 			Source:    sourceLabel(e),
-			Installed: linkedLabel(home, e.ID, agents, st.LocalRoots, cwd),
+			Installed: linkedLabel(home, e.ID, agents, st.LocalRoots, e.VendoredAt, cwd),
 			Kind:      e.Kind,
 		})
 	}
@@ -150,9 +150,11 @@ func sourceLabel(e state.SkillEntry) string {
 // linkedLabel scans, live from disk, which enabled agents have a link to skill
 // id and renders a compact summary: "global: a,b; local: a; local(/proj): b".
 // Local links are looked for in the current directory (shown as bare "local")
-// and in every tracked root (shown as "local(<path>)"). A skill linked nowhere
-// renders as "-".
-func linkedLabel(home, id string, agents []agentdir.Agent, roots []string, cwd string) string {
+// and in every tracked root (shown as "local(<path>)"). Vendored copies — read
+// from the recorded vendoredRoots, since a copy cannot be discovered by a link
+// scan — are shown with a "copy" tag: "local(copy): a" / "local(/proj, copy): b".
+// A skill installed nowhere renders as "-".
+func linkedLabel(home, id string, agents []agentdir.Agent, roots, vendoredRoots []string, cwd string) string {
 	var parts []string
 
 	if names := scanLinkNames(home, id, agents, agentdir.Global, ""); len(names) > 0 {
@@ -176,6 +178,21 @@ func linkedLabel(home, id string, agents []agentdir.Agent, roots []string, cwd s
 			label = fmt.Sprintf("local(%s)", dir)
 		}
 		parts = append(parts, label+": "+strings.Join(names, ","))
+	}
+
+	// Vendored copies, read only from the recorded roots — never from an
+	// injected cwd — so a foreign directory in the current folder is never
+	// mistaken for skillm's copy.
+	for _, dir := range uniqueAbs(vendoredRoots) {
+		have := vendorScan(home, id, agents, dir)
+		if len(have) == 0 {
+			continue
+		}
+		label := "local(copy)"
+		if dir != cwdAbs {
+			label = fmt.Sprintf("local(%s, copy)", dir)
+		}
+		parts = append(parts, label+": "+strings.Join(agentNames(have), ","))
 	}
 
 	if len(parts) == 0 {
@@ -227,6 +244,27 @@ func localScanDirs(roots []string, cwd string) []string {
 	return out
 }
 
+// uniqueAbs returns roots as absolute, de-duplicated, sorted paths. Unlike
+// localScanDirs it does NOT inject the current directory — vendored copies are
+// read only from roots that were explicitly recorded, so a stray directory in
+// cwd is never mistaken for a managed copy.
+func uniqueAbs(roots []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, r := range roots {
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			abs = r
+		}
+		if !seen[abs] {
+			seen[abs] = true
+			out = append(out, abs)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // reconcileLocalRoots prunes tracked local roots that hold none of skillm's
 // links — because every linked skill there was unlinked or removed, or the
 // directory is gone — mutating st.LocalRoots in place. It scans across ALL
@@ -252,5 +290,34 @@ func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) 
 		kept = append(kept, root)
 	}
 	st.LocalRoots = kept
+	return changed
+}
+
+// reconcileVendoredRoots prunes each skill's vendored roots that no longer hold
+// a copy for any defined agent — because the copies were deleted (e.g. an agent
+// was disabled) or the project moved away. It scans across ALL defined agents so
+// a root kept alive by a still-enabled agent survives. It mutates st in place
+// and returns true if anything changed; the caller persists via state.Save.
+func reconcileVendoredRoots(home string, agents []agentdir.Agent, st *state.State) bool {
+	changed := false
+	for i := range st.Skills {
+		roots := st.Skills[i].VendoredAt
+		if len(roots) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(roots))
+		for _, root := range roots {
+			if len(vendorScan(home, st.Skills[i].ID, agents, root)) == 0 {
+				changed = true
+				continue
+			}
+			kept = append(kept, root)
+		}
+		if len(kept) == 0 {
+			st.Skills[i].VendoredAt = nil
+		} else {
+			st.Skills[i].VendoredAt = kept
+		}
+	}
 	return changed
 }

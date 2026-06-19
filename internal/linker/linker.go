@@ -371,6 +371,77 @@ func ScanAll(home string, agents []agentdir.Agent, scope agentdir.Scope, cwd str
 	return out, nil
 }
 
+// TargetKind classifies what currently occupies an install target path
+// (<agent-folder>/<id>). It lets the vendoring layer decide whether a copy can
+// be written there: skillm freely replaces its own symlink (TargetOurLink) or
+// refreshes a copy it recorded, but treats a foreign file/dir/symlink as
+// off-limits unless the caller forces it.
+type TargetKind int
+
+const (
+	// TargetAbsent: nothing exists at the path.
+	TargetAbsent TargetKind = iota
+	// TargetOurLink: a symlink resolving into Home's skills/ subtree — a
+	// skillm-managed symlink install.
+	TargetOurLink
+	// TargetForeignLink: a symlink resolving outside Home (or dangling) — not
+	// skillm's.
+	TargetForeignLink
+	// TargetDir: a real directory. Whether it is a skillm Vendored copy or a
+	// foreign directory cannot be told from disk alone (a copy carries no
+	// marker); the caller decides using the recorded vendored roots.
+	TargetDir
+	// TargetFile: a real (non-directory, non-symlink) file.
+	TargetFile
+)
+
+// String renders the kind as a short lowercase label for diagnostics.
+func (k TargetKind) String() string {
+	switch k {
+	case TargetAbsent:
+		return "absent"
+	case TargetOurLink:
+		return "skillm-symlink"
+	case TargetForeignLink:
+		return "foreign-symlink"
+	case TargetDir:
+		return "directory"
+	case TargetFile:
+		return "file"
+	default:
+		return fmt.Sprintf("TargetKind(%d)", int(k))
+	}
+}
+
+// Classify inspects path (without following symlinks) and reports what occupies
+// it, relative to Home. For TargetOurLink and TargetForeignLink, dest is the
+// symlink's resolved target; it is empty otherwise. A non-existent path is
+// TargetAbsent with a nil error; only unexpected stat/readlink failures return
+// an error.
+func Classify(home, path string) (kind TargetKind, dest string, err error) {
+	info, lerr := os.Lstat(path)
+	switch {
+	case errors.Is(lerr, fs.ErrNotExist):
+		return TargetAbsent, "", nil
+	case lerr != nil:
+		return TargetAbsent, "", fmt.Errorf("inspect %s: %w", path, lerr)
+	case info.Mode()&fs.ModeSymlink != 0:
+		ours, d, err := linkIntoHome(home, path)
+		if err != nil {
+			// A dangling or unreadable symlink: treat as foreign, never ours.
+			return TargetForeignLink, "", nil
+		}
+		if ours {
+			return TargetOurLink, d, nil
+		}
+		return TargetForeignLink, d, nil
+	case info.IsDir():
+		return TargetDir, "", nil
+	default:
+		return TargetFile, "", nil
+	}
+}
+
 // linkIntoHome reports whether linkPath is a symlink whose target resolves to a
 // location inside Home's skills/ subtree. It returns:
 //
@@ -414,4 +485,3 @@ func underDir(dir, path string) bool {
 	}
 	return true
 }
-
