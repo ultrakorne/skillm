@@ -7,12 +7,12 @@ Claude and Codex read. One copy, symlinked everywhere.
 
 **macOS / Linux**
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ultrakorne/skillm/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ultrakorne/skillm/master/install.sh | sh
 ```
 
 **Windows** (PowerShell — requires [Developer Mode](ms-settings:developers) for symlinks)
 ```powershell
-irm https://raw.githubusercontent.com/ultrakorne/skillm/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/ultrakorne/skillm/master/install.ps1 | iex
 ```
 
 **Go**

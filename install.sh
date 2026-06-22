@@ -2,7 +2,7 @@
 # install.sh — download and install the skillm binary.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/ultrakorne/skillm/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ultrakorne/skillm/master/install.sh | sh
 #
 # Honours:
 #   SKILLM_VERSION   pin a release tag (default: latest)

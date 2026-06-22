@@ -1,7 +1,7 @@
 # install.ps1 — download and install the skillm binary on Windows.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/ultrakorne/skillm/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/ultrakorne/skillm/master/install.ps1 | iex
 #
 # Honours:
 #   $env:SKILLM_VERSION   pin a release tag (default: latest)
