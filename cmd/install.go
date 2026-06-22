@@ -13,19 +13,22 @@ import (
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/linker"
+	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
-// install-command flags. The scope helpers below (resolveScope, scopeLabel,
-// splitByScope, addLocalRoot) live in this file but, because the cmd package is
-// shared, they are reused by uninstall.go and add.go.
+// install-command flags. Several scope helpers below (scopeLabel,
+// splitLocalAliased) live in this file but, because the cmd package is shared,
+// are reused by uninstall.go, list.go, and agent.go.
 var (
 	installFlagGlobal bool
 	installFlagLocal  bool
 	installFlagAll    bool
 	installFlagCopy   bool
+	installFlagAs     string
+	installFlagRef    string
 )
 
 func init() {
@@ -34,16 +37,26 @@ func init() {
 
 func newInstallCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "install [skill_id...]",
+		Use:   "install [<url|local-path>] [skill_id...]",
 		Short: "Install skills into every enabled agent at the chosen scope",
 		Long: "install makes skills visible to your agents by symlinking them from Home " +
 			"into every enabled agent's skill folder (see config.agents) at one scope. Pass " +
-			"one or more skill ids, --all to install every skill in Home, or no arguments to " +
-			"pick interactively from the skills in Home. With no flag, skillm asks where to " +
-			"install: Global (the agents' user-level ~/.<agent>/skills folders), Local (this " +
-			"directory's <cwd>/.<agent>/skills folders), or a custom directory you type with " +
-			"Tab path-completion; the chosen scope applies to every selected skill. --global " +
-			"or --local skip the prompt; on a non-interactive terminal pass skill ids (or " +
+			"one or more in-Home skill ids, --all to install every skill in Home, or no " +
+			"arguments to pick interactively from the skills in Home.\n\n" +
+			"The first argument may instead be a Source — a git repository URL or an " +
+			"explicitly path-shaped local path (./, ../, /, ~, or a *.git suffix). skillm " +
+			"then fetches it (treelessly for git), lets you pick which skills when it is a " +
+			"catalog of several (or pass skill ids / --all / --as / --ref as with `add`), " +
+			"adds them to Home, and installs the result — fetch, pick, and install in one " +
+			"step. A bare name is always an in-Home id, never a Source. A skill already in " +
+			"Home from the same Source is installed from the existing copy without " +
+			"re-fetching (run `skillm update` to refresh); the same id from a different " +
+			"Source is a collision you resolve with --as.\n\n" +
+			"With no scope flag, skillm asks where to install: Global (the agents' " +
+			"user-level ~/.<agent>/skills folders), Local (this directory's " +
+			"<cwd>/.<agent>/skills folders), or a custom directory you type with Tab " +
+			"path-completion; the chosen scope applies to every selected skill. --global or " +
+			"--local skip the prompt; on a non-interactive terminal pass skill ids (or " +
 			"--all) together with --global or --local. Folders are created if missing. " +
 			"Re-installing an already-correct symlink is a no-op; skillm refuses to overwrite " +
 			"anything it did not create. For a local install, --copy (or the interactive " +
@@ -52,19 +65,30 @@ func newInstallCmd() *cobra.Command {
 			"teammates; --copy is rejected at global scope.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInstall(args, installFlagGlobal, installFlagLocal, installFlagAll, installFlagCopy)
+			return runInstall(cmd, args, installFlagGlobal, installFlagLocal, installFlagAll, installFlagCopy)
 		},
 	}
 	f := c.Flags()
 	f.BoolVar(&installFlagGlobal, "global", false, "install into the agents' user-level skill folders")
 	f.BoolVar(&installFlagLocal, "local", false, "install into the current directory's project skill folders")
-	f.BoolVar(&installFlagAll, "all", false, "install every skill in Home (no interactive picker)")
+	f.BoolVar(&installFlagAll, "all", false, "install every skill (in Home, or in a source catalog); no interactive picker")
 	f.BoolVar(&installFlagCopy, "copy", false, "vendor a real copy into the project (commit to git) instead of a symlink; local scope only")
+	f.StringVar(&installFlagAs, "as", "", "override the Skill ID when installing from a source (resolves a collision; single skill only)")
+	f.StringVar(&installFlagRef, "ref", "", "pin a branch, tag, or commit when installing from a git source")
 	c.MarkFlagsMutuallyExclusive("global", "local")
 	return c
 }
 
-func runInstall(args []string, global, local, all, vendor bool) error {
+func runInstall(cmd *cobra.Command, args []string, global, local, all, vendor bool) error {
+	// Pure-flag guard, checked before any work — config load, network fetch, or
+	// Home mutation: --copy is local-only. Hoisted here so an impossible flag
+	// combo fails fast in source mode too, before the fetch (matching the old
+	// fetch-only `add` path). resolveInstallTarget below still enforces it as the
+	// authority for the interactive path.
+	if vendor && global {
+		return errors.New("--copy is only valid for a local install; drop --global (a global install is always a symlink)")
+	}
+
 	home, err := store.Home(flagHome)
 	if err != nil {
 		return err
@@ -75,8 +99,9 @@ func runInstall(args []string, global, local, all, vendor bool) error {
 		return err
 	}
 
-	// Require at least one enabled agent before anything else, so we never
-	// prompt for a selection or a scope that could not link anywhere.
+	// Require at least one enabled agent before anything else — and, crucially,
+	// before any network fetch in source mode — so we never fetch, prompt, or
+	// resolve a scope that could not link anywhere.
 	agents := cfg.EnabledAgents()
 	if len(agents) == 0 {
 		return fmt.Errorf("no enabled agents in %s; run `skillm agent` to enable at least one", config.Path(home))
@@ -92,15 +117,46 @@ func runInstall(args []string, global, local, all, vendor bool) error {
 		return fmt.Errorf("determine current directory: %w", err)
 	}
 
-	// Resolve which skills to install: explicit ids (validated against Home),
-	// --all (every skill in Home), or an interactive multiselect (which annotates
-	// each skill with where it is already installed — see installedMark).
-	ids, err := selectInstallIDs(home, st, agents, cwd, args, all)
-	if err != nil {
-		return err
+	// Resolve which skills to install. The first argument decides the mode and a
+	// Source cannot be mixed with in-Home ids: a Source-shaped first arg (a git
+	// URL or an explicitly path-shaped path) triggers source mode — fetch into
+	// Home, then install — while a bare name (or no arg) is an in-Home id.
+	var ids []string
+	if len(args) > 0 && source.LooksLikeSource(args[0]) {
+		ids, err = fetchToHome(cmd, home, args[0], fetchOpts{
+			As:              installFlagAs,
+			Ref:             installFlagRef,
+			All:             all,
+			SelectArgs:      args[1:],
+			ReuseSameSource: true,
+		})
+		if err != nil {
+			return err
+		}
+		// fetchToHome wrote new registry entries via its own State; reload so the
+		// install pipeline below (vendored-root recording in particular) sees them.
+		st, err = state.Load(home)
+		if err != nil {
+			return err
+		}
+	} else {
+		// --as/--ref only make sense when fetching a source.
+		if installFlagAs != "" {
+			return errors.New("the --as flag only applies when installing from a source (a git URL or local path)")
+		}
+		if installFlagRef != "" {
+			return errors.New("the --ref flag only applies when installing from a git source")
+		}
+		// Explicit ids (validated against Home), --all (every skill in Home), or an
+		// interactive multiselect (which annotates each skill with where it is
+		// already installed — see installedMark).
+		ids, err = selectInstallIDs(home, st, agents, cwd, args, all)
+		if err != nil {
+			return err
+		}
 	}
 	if len(ids) == 0 {
-		return nil // selectInstallIDs already reported why (empty Home / nothing picked)
+		return nil // the selection step already reported why (empty Home / nothing picked)
 	}
 
 	// One scope (and method) applies to every selected skill. Resolved after
@@ -413,24 +469,6 @@ func linkedAny(res linker.Result) bool {
 		}
 	}
 	return false
-}
-
-// addLocalRoot records dir (made absolute) in Home's tracked local roots so
-// later commands scan it for links. It loads, mutates, and saves state only
-// when dir is new.
-func addLocalRoot(home, dir string) error {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	st, err := state.Load(home)
-	if err != nil {
-		return err
-	}
-	if st.AddLocalRoot(abs) {
-		return state.Save(home, st)
-	}
-	return nil
 }
 
 // resolveInstallTarget maps the --global/--local/--copy flags to a Scope, the

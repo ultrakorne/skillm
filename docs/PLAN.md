@@ -119,9 +119,11 @@ root never lets stale link state survive: a folder with no skillm link is pruned
 ## 3. Command surface
 
 ```
-skillm add <url> [skill_id] [--as <name>] [--ref <ref>] [--global|--local] [--copy]
-skillm add <local-path>      [--as <name>]              [--global|--local] [--copy]
-skillm install   [skill_id...] [--all] [--global|--local] [--copy]  # no id = interactive multiselect
+skillm add <url> [skill_id] [--as <name>] [--ref <ref>] [--all]    # fetch into Home only
+skillm add <local-path>      [--as <name>]                         # fetch into Home only
+skillm install <url> [skill_id...] [--as <name>] [--ref <ref>] [--all] [--global|--local] [--copy]
+skillm install <local-path>        [--as <name>]               [--all] [--global|--local] [--copy]
+skillm install   [skill_id...] [--all] [--global|--local] [--copy]  # in-Home ids; no id = interactive multiselect
 skillm uninstall [skill_id...] [--all]                      # no id = interactive multiselect
 skillm list
 skillm check
@@ -129,12 +131,17 @@ skillm update [skill_id]            # no arg = all outdated; also re-syncs vendo
 skillm agent                        # interactive multiselect of Enabled agents
 ```
 
-`--copy` vendors a real copy of the skill into the project instead of a symlink (Local scope
-only; see §3a). It is rejected with `--global`, and implies `--local` when given alone.
+`add` **only fetches** into Home; `install` is the **only** command that exposes skills to
+agents — whether from an in-Home Skill ID or directly from a Source (a `<url>`/`<local-path>`,
+which it fetches first; see install §3). `--global`/`--local`/`--copy` therefore live on
+`install` alone. `--copy` vendors a real copy into the project instead of a symlink (Local scope
+only; see §3a); it is rejected with `--global`, and implies `--local` when given alone.
 
 Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (override Home).
 
 ### add
+`add` **only fetches** into Home — it never installs (that is `install`'s job). It takes no
+scope/copy flags.
 - `<url>` is a git repo (a catalog of one or more skills). skillm does a **treeless fetch**
   (`git clone --filter=tree:0 --depth 1` into a temp dir, or `--filter=blob:none`), then scans
   for directories containing `SKILL.md`.
@@ -146,17 +153,33 @@ Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (overrid
 - `<local-path>` (a directory containing `SKILL.md`) → copy into Home as `kind=local`.
 - `--as <name>` overrides the Skill ID (resolves collisions). `--ref <ref>` pins a
   branch/tag/sha (default: repo's default branch).
-- `--global` / `--local` → after adding, also **install** at that scope (see install). Bare
-  `add` is fetch-only.
 - **Collision:** if the target ID already exists in Home → error suggesting `update` or `--as`.
+- This fetch → discover → select → add-to-Home pipeline is **shared code** with `install`'s
+  source mode (extracted into one helper, not duplicated).
 
 ### install
 - Symlink the selected skills into **every Enabled agent** at the chosen Scope, using each
-  agent's location for that scope from `config.toml`.
-- **Selection:** one or more `skill_id` args act on exactly those skills; `--all` acts on every
-  skill in Home; with neither, skillm shows an interactive **huh** multiselect over the skills
-  in Home (refused on a non-TTY, which names the `skill_id` / `--all` escape hatch). An explicit
-  id that is not in Home is an **atomic error** — nothing is installed.
+  agent's location for that scope from `config.toml`. `install` is the **only** command that
+  installs — from an in-Home Skill ID or directly from a Source.
+- **Source mode (`install <url>` / `install <local-path>`):** when the first arg is a git URL
+  or an **explicitly path-shaped** local path (`./`, `../`, `/`, `~`, or a `*.git` suffix), it
+  is a **Source**. skillm runs the **same** fetch → discover → select → add-to-Home pipeline as
+  `add` (interactive multiselect over a multi-skill catalog, or `[skill_id...]` / `--all` to
+  select non-interactively; `--as` / `--ref` behave as in `add`), then installs the result at
+  the chosen Scope — fetch → choose → expose in one command. A **bare name** is *always* an
+  in-Home id, never a Source, even if a same-named directory exists in cwd (to install a local
+  dir, path-qualify it: `install ./my-skill`). A Source cannot be mixed with in-Home ids in one
+  invocation. Requires ≥1 Enabled agent **before** fetching; on a non-TTY, source mode needs a
+  selector (`skill_id` / `--all`) **and** a scope flag, else it errors.
+- **Source collision:** a selected skill already in Home from the **same** Source is installed
+  from the existing Home copy *without re-fetching* (skillm says so and points at `update` to
+  refresh); the same id arriving from a **different** Source is a collision error suggesting
+  `--as`. This is checked across the **whole** selection before anything is added or installed
+  (atomic — one different-source clash installs nothing).
+- **Selection (in-Home mode):** one or more `skill_id` args act on exactly those skills; `--all`
+  acts on every skill in Home; with neither, skillm shows an interactive **huh** multiselect over
+  the skills in Home (refused on a non-TTY, which names the `skill_id` / `--all` escape hatch). An
+  explicit id that is not in Home is an **atomic error** — nothing is installed.
 - **Scope:** `--global`/`--local` selects scope explicitly; with neither flag skillm asks
   interactively — **Global**, **Local** (the current directory), or a **custom path** typed with
   Tab path-completion (on a non-TTY it refuses and requires a flag). A single chosen Scope
@@ -345,13 +368,16 @@ One-line install (`curl | sh`), a 4–5 line quickstart (`add` → `agent` → `
    `config.toml` when absent, startup git check.
 2. **Core libs** — `skill` (frontmatter), `source` (classify + discover), `gitx` (treeless
    fetch, `ls-tree`, sparse-checkout), `store` (copy skill into Home).
-3. **add** — git (discover + huh select, `--as`/`--ref`), local copy, optional `--global/--local`.
+3. **add** — git (discover + huh select, `--as`/`--ref`), local copy. Fetch-only (no scope/copy
+   flags); the fetch → discover → select → add-to-Home pipeline is factored into one helper
+   shared with install's source mode.
 4. **agentdir + linker** — folder mapping from config-supplied agents (global/local
    templates, skip a scope an agent doesn't define), symlink create/remove, scan-for-links,
    safe overwrite.
 5. **install** — wire linker to Enabled agents + scope (variadic ids / `--all` / interactive
-   multiselect, one scope for all); skip agents missing the scope (error if none has it);
-   `add --global/--local` reuses it.
+   multiselect, one scope for all); skip agents missing the scope (error if none has it).
+   **Source mode** (`install <url|path>`) reuses add's fetch helper, then installs the result;
+   smart same-Source-installs / different-Source-errors collision, atomic across the selection.
 6. **agent** — huh multiselect over defined agents → toggle `enabled` flags in config.
 7. **list / check** — registry + live link scan + per-skill tree-SHA compare.
 8. **update** — all/one, registry rewrite, bubbles/progress bar.

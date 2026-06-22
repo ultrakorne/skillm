@@ -193,8 +193,8 @@ func selectVendorMethod() (bool, error) {
 		Title("How should it be installed here?").
 		Description("A copy can be committed to the project's git repo; a symlink cannot.").
 		Options(
-			huh.NewOption("Symlink into Home — personal, not tracked in git", choiceLink),
-			huh.NewOption("Copy the files in — commit to git, share with teammates", choiceCopy),
+			huh.NewOption("Symlink — (best for personal use)", choiceLink),
+			huh.NewOption("Copy the files in — (best for git)", choiceCopy),
 		).
 		Height(4).
 		Value(&choice)

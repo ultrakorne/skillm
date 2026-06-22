@@ -100,8 +100,14 @@ Make a skill visible to agents by creating a symlink from each Enabled agent's s
 agent can actually see. An Install always targets **every Enabled agent** at the chosen
 Scope — there is no per-command agent choice — and a single Install command applies one Scope
 to every skill it acts on. Acts on one or more named skills, or interactively on a multiselect
-of every skill in Home. Passing a Scope (`--global`/`--local`) to `add` installs in the same
-step; bare `add` is fetch-only. Which symlink installs currently exist is never stored — it is
+of every skill in Home. Install can also act directly on a **Source** (a git repo or local
+path) instead of an already-added Skill: given a Source it first **Adds** it to Home — choosing
+interactively which skills when the Source is a catalog of several — and then installs the
+result, making the whole fetch → choose → expose path one step. A Source whose Skill is already
+in Home from the **same** Source reuses the Home copy without re-fetching (refresh it with
+**Update**); the same Skill ID arriving from a **different** Source is a collision the user
+resolves by renaming. **Add itself never installs** — exposing a skill is always Install's job.
+Which symlink installs currently exist is never stored — it is
 read live by scanning agents' skill folders for symlinks pointing into Home, so it never
 drifts. A **Local** Install may instead be materialized as a **Vendored copy** (`--copy`, or
 the interactive prompt) — a real copy of the files committed to the project; switching a

@@ -239,10 +239,12 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		bin:     bin,
 	}
 
-	// --- add (git, single id, with --global so it also links) ---------------
-	out := e.run(t, "add", url, "alpha", "--global")
+	// --- install from a source (git, single id, --global) -------------------
+	// install's source mode fetches alpha into Home AND links it in one step,
+	// the way `add --global` used to before add became fetch-only.
+	out := e.run(t, "install", url, "alpha", "--global")
 	if !strings.Contains(out, "added alpha") {
-		t.Fatalf("add alpha: unexpected output:\n%s", out)
+		t.Fatalf("install alpha from source: unexpected output:\n%s", out)
 	}
 
 	// Registry: one git entry for alpha with the right source/path/ref and a

@@ -76,6 +76,35 @@ func Classify(arg string) (Kind, error) {
 	return Local, nil
 }
 
+// LooksLikeSource reports whether arg has the SHAPE of a Source — a git remote,
+// or an explicitly path-shaped local path — as opposed to a bare in-Home Skill
+// ID. It is purely lexical and never touches the filesystem: a bare name (a
+// single segment with no path separator, no scheme, and no leading "~") is
+// treated as an in-Home id even when a same-named directory exists in the
+// current directory. To install a local directory you must path-qualify it
+// (e.g. "./my-skill").
+//
+// Callers route on this to choose source mode vs in-Home-id mode, and only call
+// Classify — which does stat the filesystem — once they have decided it is a
+// Source. The recognised Source shapes are:
+//   - a git remote (see looksLikeGitRemote): a scheme, scp-like syntax, or ".git";
+//   - a "~"-prefixed (home-relative) path;
+//   - anything containing a path separator ("/" or "\\"): "./x", "../x",
+//     "/abs/x", "a/b", "dir\\x".
+func LooksLikeSource(arg string) bool {
+	s := strings.TrimSpace(arg)
+	if s == "" {
+		return false
+	}
+	if looksLikeGitRemote(s) {
+		return true
+	}
+	if strings.HasPrefix(s, "~") {
+		return true
+	}
+	return strings.ContainsAny(s, `/\`)
+}
+
 // looksLikeGitRemote reports whether s has the shape of a git remote URL.
 //
 // Recognised forms:

@@ -3,15 +3,15 @@ package cmd
 import (
 	"testing"
 
-	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/skill"
 	"github.com/ultrakorne/skillm/internal/source"
 )
 
 // TestNewAddCmdWiring verifies the command's argument arity and the flags add
-// declares, so the cobra wiring stays in sync with PLAN §3's surface:
+// declares, so the cobra wiring stays in sync with PLAN §3's surface. add is
+// strictly fetch-only, so it carries no scope/copy flags:
 //
-//	skillm add <url|local-path> [skill_id] [--as] [--ref] [--all] [--global|--local]
+//	skillm add <url|local-path> [skill_id] [--as] [--ref] [--all]
 func TestNewAddCmdWiring(t *testing.T) {
 	c := newAddCmd()
 
@@ -43,58 +43,16 @@ func TestNewAddCmdWiring(t *testing.T) {
 		})
 	}
 
-	for _, name := range []string{"as", "ref", "all", "global", "local"} {
+	for _, name := range []string{"as", "ref", "all"} {
 		if c.Flags().Lookup(name) == nil {
 			t.Errorf("expected --%s flag to be registered", name)
 		}
 	}
-}
-
-func TestAddLinkScope(t *testing.T) {
-	cases := []struct {
-		name       string
-		global     bool
-		local      bool
-		copy       bool
-		wantScope  agentdir.Scope
-		wantDoLink bool
-		wantVendor bool
-		wantErr    bool
-	}{
-		{"bare add is fetch-only", false, false, false, agentdir.Global, false, false, false},
-		{"--global links global", true, false, false, agentdir.Global, true, false, false},
-		{"--local links local", false, true, false, agentdir.Local, true, false, false},
-		{"--copy implies local vendor", false, false, true, agentdir.Local, true, true, false},
-		{"--local --copy vendors", false, true, true, agentdir.Local, true, true, false},
-		{"--global --copy is an error", true, false, true, agentdir.Global, false, false, true},
-		{"both global and local is an error", true, true, false, agentdir.Global, false, false, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			// addLinkScope reads the package-level flag vars.
-			addGlobal, addLocal, addCopy = tc.global, tc.local, tc.copy
-			t.Cleanup(func() { addGlobal, addLocal, addCopy = false, false, false })
-
-			scope, doLink, vendor, err := addLinkScope()
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for global=%v local=%v copy=%v", tc.global, tc.local, tc.copy)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if scope != tc.wantScope {
-				t.Errorf("scope = %v, want %v", scope, tc.wantScope)
-			}
-			if doLink != tc.wantDoLink {
-				t.Errorf("doLink = %v, want %v", doLink, tc.wantDoLink)
-			}
-			if vendor != tc.wantVendor {
-				t.Errorf("vendor = %v, want %v", vendor, tc.wantVendor)
-			}
-		})
+	// add is fetch-only: the scope/copy flags must NOT exist on it.
+	for _, name := range []string{"global", "local", "copy"} {
+		if c.Flags().Lookup(name) != nil {
+			t.Errorf("add must not declare --%s (it is fetch-only)", name)
+		}
 	}
 }
 
@@ -106,26 +64,25 @@ func TestSelectFound(t *testing.T) {
 	single := []source.Found{mk("solo")}
 
 	cases := []struct {
-		name      string
-		found     []source.Found
-		selectArg string
-		all       bool
-		wantIDs   []string
-		wantErr   bool
+		name       string
+		found      []source.Found
+		selectArgs []string
+		all        bool
+		wantIDs    []string
+		wantErr    bool
 	}{
-		{"single auto-selects without prompt", single, "", false, []string{"solo"}, false},
-		{"explicit id selects that one", multi, "beta", false, []string{"beta"}, false},
-		{"--all selects everything", multi, "", true, []string{"alpha", "beta", "gamma"}, false},
-		{"unknown id errors", multi, "nope", false, nil, true},
-		{"single with matching id", single, "solo", false, []string{"solo"}, false},
-		{"single with mismatched id errors", single, "other", false, nil, true},
+		{"single auto-selects without prompt", single, nil, false, []string{"solo"}, false},
+		{"explicit id selects that one", multi, []string{"beta"}, false, []string{"beta"}, false},
+		{"multiple ids select those, in discovery order", multi, []string{"gamma", "alpha"}, false, []string{"alpha", "gamma"}, false},
+		{"--all selects everything", multi, nil, true, []string{"alpha", "beta", "gamma"}, false},
+		{"unknown id errors", multi, []string{"nope"}, false, nil, true},
+		{"one unknown among known errors (atomic)", multi, []string{"alpha", "nope"}, false, nil, true},
+		{"single with matching id", single, []string{"solo"}, false, []string{"solo"}, false},
+		{"single with mismatched id errors", single, []string{"other"}, false, nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			addAll = tc.all
-			t.Cleanup(func() { addAll = false })
-
-			got, err := selectFound(tc.found, tc.selectArg)
+			got, err := selectFound(tc.found, tc.selectArgs, tc.all)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got %v", ids(got))

@@ -23,10 +23,10 @@ go install github.com/ultrakorne/skillm@latest
 ## Quickstart
 
 ```sh
-skillm add https://github.com/ultrakorne/skill-collection   # fetch a skill into Home
-skillm agent                                                # pick which agents get links
-skillm install grill-with-docs --global                     # symlink it into your agents
-skillm install grill-with-docs --local --copy               # or vendor a copy you can commit to git
+skillm agent                                                # pick which agents get skills
+skillm install https://github.com/ultrakorne/skill-collection   # fetch + pick + install, one step
+skillm install grill-with-docs --local --copy               # vendor a committable copy into a project
+skillm add https://github.com/ultrakorne/skill-collection   # or just fetch into Home, install later
 skillm check                                                # see what has updates
 skillm update                                               # pull the updates in
 ```
@@ -40,8 +40,8 @@ in sync, and `uninstall` removes them.
 
 | Command                              | Description                                           |
 | ------------------------------------ | ----------------------------------------------------- |
-| `add <url\|path> [id] [--as <name>] [--ref <ref>] [--global\|--local] [--copy]` | Fetch a skill into Home (optionally install it). |
-| `install [id...] [--all] [--global\|--local] [--copy]` | Install skills into every enabled agent — symlink, or `--copy` to vendor a committable copy locally (interactive picker if no id). |
+| `add <url\|path> [id] [--as <name>] [--ref <ref>] [--all]` | Fetch a skill into Home. Fetch only — never installs. |
+| `install [<url\|path>] [id...] [--all] [--as <name>] [--ref <ref>] [--global\|--local] [--copy]` | Install into every enabled agent — from an in-Home id, or straight from a repo URL/path (fetch + pick + install in one step). `--copy` vendors a committable copy locally; interactive pickers if no id. |
 | `uninstall [id...] [--all]`           | Unlink everywhere, delete any vendored copies, then delete from Home (interactive picker if no id). |
 | `list`                               | Show every skill, where it is installed, and its status. |
 | `check`                              | Report which git skills have upstream updates.        |

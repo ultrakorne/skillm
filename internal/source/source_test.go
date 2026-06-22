@@ -64,6 +64,49 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestLooksLikeSource(t *testing.T) {
+	tests := []struct {
+		name string
+		arg  string
+		want bool
+	}{
+		// Git remotes are Sources (shape only, no filesystem access).
+		{"https url", "https://github.com/ultrakorne/skill-collection", true},
+		{"https .git", "https://github.com/x/y.git", true},
+		{"scp git@host", "git@github.com:ultrakorne/repo.git", true},
+		{"scp bare host with dot", "github.com:ultrakorne/repo", true},
+		{"trailing .git path", "some/thing.git", true},
+
+		// Explicitly path-shaped local paths are Sources.
+		{"dot-slash", "./my-skill", true},
+		{"dot-dot-slash", "../my-skill", true},
+		{"absolute", "/abs/path/skill", true},
+		{"nested relative", "a/b", true},
+		{"backslash (windows)", `dir\skill`, true},
+		{"tilde", "~", true},
+		{"tilde slash", "~/skills/foo", true},
+		{"tilde user", "~bob/skill", true},
+
+		// Bare single-segment names are in-Home ids, never Sources — even when a
+		// same-named directory exists in cwd (this is shape-only, so we can't tell
+		// and deliberately don't look).
+		{"bare name", "grill-with-docs", false},
+		{"bare name with dot", "my.skill", false},
+		{"empty", "", false},
+		{"blank", "   ", false},
+		// Padding is trimmed before shape detection.
+		{"padded url", "  https://github.com/x/y  ", true},
+		{"padded bare name", "  grill  ", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := LooksLikeSource(tt.arg); got != tt.want {
+				t.Errorf("LooksLikeSource(%q) = %v, want %v", tt.arg, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestKindString(t *testing.T) {
 	if Git.String() != "git" {
 		t.Errorf("Git.String() = %q, want %q", Git.String(), "git")
