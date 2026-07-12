@@ -316,11 +316,12 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "beta"), "beta")
 	assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, "beta"), "beta")
 
-	// --- install --local creates project-scoped links under cwd -------------
+	// --- install --local writes the committable project install -------------
 	// Run with the working directory set to a temp project so .claude/.agents
 	// land there and not in the developer's tree. beta stays installed globally
-	// too — uninstall must later tear down every scope.
-	project := t.TempDir()
+	// too — uninstall must later tear down every scope. A local install is a
+	// real copy in .agents/skills plus a relative claude link plus a lockfile.
+	project := evalProject(t, t.TempDir())
 	localCmd := exec.Command(bin, "install", "beta", "--local")
 	localCmd.Dir = project
 	localCmd.Env = append(os.Environ(),
@@ -332,8 +333,11 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if b, err := localCmd.CombinedOutput(); err != nil {
 		t.Fatalf("install beta --local: %v\n%s", err, b)
 	}
-	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".claude", "skills", "beta"), "beta")
-	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".agents", "skills", "beta"), "beta")
+	assertVendoredCopy(t, filepath.Join(project, ".agents", "skills", "beta"), "beta body")
+	assertLinkResolvesToCanonical(t, project, filepath.Join(project, ".claude", "skills", "beta"), "beta")
+	if _, err := os.Stat(filepath.Join(project, "skills-lock.json")); err != nil {
+		t.Fatalf("install --local must write skills-lock.json: %v", err)
+	}
 
 	// --- check (read-only) before any upstream change: all up-to-date -------
 	out = e.run(t, "check")
@@ -387,8 +391,8 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Errorf("beta revision not advanced by update: still %q", gotBeta.Revision)
 	}
 
-	// The Home copy now holds the changed content, and the surviving local link
-	// transparently exposes the update (agents see Home through the symlink).
+	// The Home copy now holds the changed content, the project's committed copy
+	// was re-synced from it, and the claude link exposes it transparently.
 	homeBeta, err := os.ReadFile(filepath.Join(store.SkillDir(e.home, "beta"), "SKILL.md"))
 	if err != nil {
 		t.Fatalf("read updated beta in Home: %v", err)
@@ -396,12 +400,13 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if !strings.Contains(string(homeBeta), "CHANGED") {
 		t.Fatalf("Home beta not updated; content:\n%s", homeBeta)
 	}
+	assertVendoredCopy(t, filepath.Join(project, ".agents", "skills", "beta"), "CHANGED")
 	linkedBeta, err := os.ReadFile(filepath.Join(project, ".claude", "skills", "beta", "SKILL.md"))
 	if err != nil {
 		t.Fatalf("read beta through local link: %v", err)
 	}
 	if !strings.Contains(string(linkedBeta), "CHANGED") {
-		t.Fatalf("update did not propagate through the symlink; linked content:\n%s", linkedBeta)
+		t.Fatalf("update did not propagate through the claude link; linked content:\n%s", linkedBeta)
 	}
 
 	// A second check is now clean again.
@@ -454,10 +459,17 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if _, ok := loadState(t, e).Get("beta"); ok {
 		t.Fatal("beta still in registry after uninstall")
 	}
-	// The local link and BOTH global links must be gone (no dangling symlinks
-	// left behind), since beta was installed at every scope.
+	// The local install (copy + link + lock entry) and BOTH global links must
+	// be gone (no dangling symlinks left behind), since beta was installed at
+	// every scope.
 	if _, err := os.Lstat(filepath.Join(project, ".claude", "skills", "beta")); !os.IsNotExist(err) {
 		t.Fatalf("beta local link not removed by uninstall, err = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(project, ".agents", "skills", "beta")); !os.IsNotExist(err) {
+		t.Fatalf("beta canonical copy not removed by uninstall, err = %v", err)
+	}
+	if lockRaw, err := os.ReadFile(filepath.Join(project, "skills-lock.json")); err == nil && strings.Contains(string(lockRaw), "\"beta\"") {
+		t.Fatalf("beta still in skills-lock.json after uninstall:\n%s", lockRaw)
 	}
 	if _, err := os.Lstat(claudeGlobalLink(e, "beta")); !os.IsNotExist(err) {
 		t.Fatalf("beta claude global link not removed by uninstall, err = %v", err)
@@ -612,14 +624,36 @@ func evalProject(t *testing.T, dir string) string {
 	return resolved
 }
 
-// TestVendoredCopyLifecycle drives the real binary through the full vendoring
-// lifecycle: install --local --copy writes self-contained copies (per agent,
-// not symlinks) and records the root; a Global symlink coexists; update refreshes
-// the committed copies in place AND the global symlink; uninstall deletes the
-// copies, the Home copy, and the registry entry. It also covers the guard rails:
-// --copy --global is rejected, and a foreign directory is not clobbered without
-// --force.
-func TestVendoredCopyLifecycle(t *testing.T) {
+// assertLinkResolvesToCanonical verifies linkPath is a RELATIVE symlink
+// resolving to the canonical copy <project>/.agents/skills/<id>, with SKILL.md
+// reachable through it.
+func assertLinkResolvesToCanonical(t *testing.T, project, linkPath, id string) {
+	t.Helper()
+	raw, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink %s: %v", linkPath, err)
+	}
+	if filepath.IsAbs(raw) {
+		t.Fatalf("local link %s is absolute (%q), want relative (committable)", linkPath, raw)
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(linkPath), raw))
+	want := filepath.Clean(filepath.Join(project, ".agents", "skills", id))
+	if resolved != want {
+		t.Fatalf("link %s resolves to %s, want %s", linkPath, resolved, want)
+	}
+	if _, err := os.Stat(filepath.Join(linkPath, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md not reachable through link %s: %v", linkPath, err)
+	}
+}
+
+// TestLocalInstallLifecycle drives the real binary through the full local
+// install lifecycle: install --local writes the canonical copy + relative
+// claude link + skills-lock.json entry and records the root; a Global symlink
+// coexists; update refreshes the committed copy and its lock entry in place;
+// uninstall deletes the copy, link, lock entry, Home copy, and registry entry.
+// It also covers the guard rail: a foreign directory at the canonical slot is
+// not clobbered without --force.
+func TestLocalInstallLifecycle(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -631,30 +665,39 @@ func TestVendoredCopyLifecycle(t *testing.T) {
 	// Fetch alpha into Home, no install yet.
 	e.run(t, "add", url, "alpha")
 
-	// --- install --local --copy: real copies per agent, root recorded ---------
+	// --- install --local: canonical copy + relative link + lock entry ---------
 	project := evalProject(t, t.TempDir())
-	out := e.runIn(t, project, "install", "alpha", "--local", "--copy")
-	if !strings.Contains(out, "copied alpha") {
-		t.Fatalf("install --copy: expected a 'copied' line, got:\n%s", out)
+	out := e.runIn(t, project, "install", "alpha", "--local")
+	if !strings.Contains(out, "installed alpha") {
+		t.Fatalf("install --local: expected an 'installed' line, got:\n%s", out)
 	}
-	claudeCopy := filepath.Join(project, ".claude", "skills", "alpha")
+	claudeLnk := filepath.Join(project, ".claude", "skills", "alpha")
 	agentsCopy := filepath.Join(project, ".agents", "skills", "alpha")
-	assertVendoredCopy(t, claudeCopy, "alpha body")
 	assertVendoredCopy(t, agentsCopy, "alpha body")
+	assertLinkResolvesToCanonical(t, project, claudeLnk, "alpha")
 
-	// The registry records the project as a vendored root (and only that).
+	// The registry records the project as an install root (and only that).
 	alpha, _ := loadState(t, e).Get("alpha")
 	if got := alpha.VendoredAt; len(got) != 1 || got[0] != project {
 		t.Fatalf("vendored_at = %v, want [%s]", got, project)
 	}
+	// The lockfile has a vercel-compatible entry.
+	lockRaw, err := os.ReadFile(filepath.Join(project, "skills-lock.json"))
+	if err != nil {
+		t.Fatalf("skills-lock.json missing: %v", err)
+	}
+	for _, needle := range []string{`"alpha"`, `"sourceType": "git"`, `"skillPath": "alpha/SKILL.md"`, `"computedHash"`} {
+		if !strings.Contains(string(lockRaw), needle) {
+			t.Fatalf("skills-lock.json missing %s:\n%s", needle, lockRaw)
+		}
+	}
 
-	// --- a Global symlink coexists with the Local copy ------------------------
+	// --- a Global symlink coexists with the Local install ---------------------
 	e.run(t, "install", "alpha", "--global")
 	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
-	// The local copies are still real directories, untouched by the global link.
-	assertVendoredCopy(t, claudeCopy, "alpha body")
+	assertVendoredCopy(t, agentsCopy, "alpha body")
 
-	// --- update refreshes the committed copies in place -----------------------
+	// --- update refreshes the committed copy and the lock entry in place ------
 	if err := os.WriteFile(filepath.Join(repo, "alpha", "SKILL.md"),
 		[]byte("---\nname: alpha\ndescription: alpha skill\n---\nalpha body CHANGED\n"), 0o644); err != nil {
 		t.Fatalf("rewrite alpha upstream: %v", err)
@@ -666,19 +709,27 @@ func TestVendoredCopyLifecycle(t *testing.T) {
 	if !strings.Contains(out, "Updated alpha") {
 		t.Fatalf("update: expected alpha updated, got:\n%s", out)
 	}
-	// Both committed copies now hold the new content...
-	assertVendoredCopy(t, claudeCopy, "CHANGED")
 	assertVendoredCopy(t, agentsCopy, "CHANGED")
-	// ...and the global symlink transparently exposes it via Home.
+	// The claude link exposes the refreshed copy, and the global symlink sees
+	// Home's new content.
+	lb, err := os.ReadFile(filepath.Join(claudeLnk, "SKILL.md"))
+	if err != nil || !strings.Contains(string(lb), "CHANGED") {
+		t.Fatalf("claude link did not see the update: err=%v content=%s", err, lb)
+	}
 	gb, err := os.ReadFile(filepath.Join(claudeGlobalLink(e, "alpha"), "SKILL.md"))
 	if err != nil || !strings.Contains(string(gb), "CHANGED") {
 		t.Fatalf("global symlink did not see the update: err=%v content=%s", err, gb)
 	}
+	// The lock entry's hash was refreshed alongside the copy.
+	lockAfter, _ := os.ReadFile(filepath.Join(project, "skills-lock.json"))
+	if string(lockAfter) == string(lockRaw) {
+		t.Fatal("skills-lock.json not refreshed by update (computedHash should have changed)")
+	}
 
-	// --- uninstall deletes copies + Home + registry entry ---------------------
+	// --- uninstall deletes copy + link + lock entry + Home + registry ----------
 	e.runIn(t, project, "uninstall", "alpha", "--yes")
-	assertNoLink(t, claudeCopy, "uninstall must delete the vendored copy")
-	assertNoLink(t, agentsCopy, "uninstall must delete the vendored copy")
+	assertNoLink(t, claudeLnk, "uninstall must remove the claude link")
+	assertNoLink(t, agentsCopy, "uninstall must delete the canonical copy")
 	assertNoLink(t, claudeGlobalLink(e, "alpha"), "uninstall must remove the global symlink")
 	if store.Exists(e.home, "alpha") {
 		t.Fatal("alpha still in Home after uninstall")
@@ -686,44 +737,41 @@ func TestVendoredCopyLifecycle(t *testing.T) {
 	if _, ok := loadState(t, e).Get("alpha"); ok {
 		t.Fatal("alpha still in registry after uninstall")
 	}
-
-	// --- guard: --copy --global is rejected -----------------------------------
-	e.run(t, "add", url, "beta")
-	if out, err := e.tryRun(t, "install", "beta", "--global", "--copy"); err == nil ||
-		!strings.Contains(out, "only valid for a local install") {
-		t.Fatalf("--copy --global should be rejected; err=%v out=%s", err, out)
+	// alpha was the only entry, so the emptied lockfile is removed.
+	if _, err := os.Stat(filepath.Join(project, "skills-lock.json")); !os.IsNotExist(err) {
+		t.Fatalf("emptied skills-lock.json should be removed; err = %v", err)
 	}
 
-	// --- guard: a foreign directory is not clobbered without --force ----------
+	// --- guard: a foreign directory at the canonical slot refuses -------------
+	e.run(t, "add", url, "beta")
 	proj2 := evalProject(t, t.TempDir())
-	foreign := filepath.Join(proj2, ".claude", "skills", "beta")
+	foreign := filepath.Join(proj2, ".agents", "skills", "beta")
 	if err := os.MkdirAll(foreign, 0o755); err != nil {
 		t.Fatalf("create foreign dir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(foreign, "MINE.txt"), []byte("hand-written\n"), 0o644); err != nil {
 		t.Fatalf("write foreign file: %v", err)
 	}
-	if out, err := e.tryRunIn(t, proj2, "install", "beta", "--local", "--copy"); err == nil ||
+	if out, err := e.tryRunIn(t, proj2, "install", "beta", "--local"); err == nil ||
 		!strings.Contains(out, "--force") {
-		t.Fatalf("vendoring over a foreign dir should refuse on a non-TTY naming --force; err=%v out=%s", err, out)
+		t.Fatalf("installing over a foreign dir should refuse on a non-TTY naming --force; err=%v out=%s", err, out)
 	}
 	// The foreign file survives the refusal.
 	if _, err := os.Stat(filepath.Join(foreign, "MINE.txt")); err != nil {
 		t.Fatalf("refusal must not touch the foreign files: %v", err)
 	}
-	// With --force it overwrites and adopts the directory as a vendored copy.
-	e.runIn(t, proj2, "install", "beta", "--local", "--copy", "--force")
+	// With --force it overwrites and adopts the directory as skillm's copy.
+	e.runIn(t, proj2, "install", "beta", "--local", "--force")
 	assertVendoredCopy(t, foreign, "beta body")
 	if _, err := os.Stat(filepath.Join(foreign, "MINE.txt")); !os.IsNotExist(err) {
 		t.Fatalf("--force should have replaced the foreign dir; MINE.txt err = %v", err)
 	}
 }
 
-// TestVendorSymlinkConversion proves install converts between skillm's own
-// symlink and copy forms in place: a symlinked local install becomes a copy
-// under --copy (recording the root), and a plain re-install turns it back into a
-// symlink (dropping the vendored root).
-func TestVendorSymlinkConversion(t *testing.T) {
+// TestLegacySymlinkConversion proves a re-run of `install --local` upgrades a
+// pre-refactor local install in place: a legacy absolute symlink into Home at
+// the canonical slot becomes a real committed copy, recording the root.
+func TestLegacySymlinkConversion(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -734,27 +782,23 @@ func TestVendorSymlinkConversion(t *testing.T) {
 	e.run(t, "add", url, "alpha")
 
 	project := evalProject(t, t.TempDir())
-	claudePath := filepath.Join(project, ".claude", "skills", "alpha")
+	slot := filepath.Join(project, ".agents", "skills", "alpha")
 
-	// Symlink install first.
-	e.runIn(t, project, "install", "alpha", "--local")
-	assertLinkResolvesIntoHome(t, e, claudePath, "alpha")
-	if got, _ := loadState(t, e).Get("alpha"); len(got.VendoredAt) != 0 {
-		t.Fatalf("symlink install must not record a vendored root: %v", got.VendoredAt)
+	// Hand-build the legacy shape: an absolute symlink into Home.
+	if err := os.MkdirAll(filepath.Dir(slot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store.SkillDir(e.home, "alpha"), slot); err != nil {
+		t.Fatal(err)
 	}
 
-	// Convert to a copy.
-	e.runIn(t, project, "install", "alpha", "--local", "--copy")
-	assertVendoredCopy(t, claudePath, "alpha body")
+	out := e.runIn(t, project, "install", "alpha", "--local")
+	if !strings.Contains(out, "converted to copy") {
+		t.Fatalf("expected the legacy link to be converted, got:\n%s", out)
+	}
+	assertVendoredCopy(t, slot, "alpha body")
 	if got, _ := loadState(t, e).Get("alpha"); len(got.VendoredAt) != 1 || got.VendoredAt[0] != project {
-		t.Fatalf("convert to copy must record the vendored root; got %v", got.VendoredAt)
-	}
-
-	// Convert back to a symlink with a plain local install.
-	e.runIn(t, project, "install", "alpha", "--local")
-	assertLinkResolvesIntoHome(t, e, claudePath, "alpha")
-	if got, _ := loadState(t, e).Get("alpha"); len(got.VendoredAt) != 0 {
-		t.Fatalf("convert back to symlink must drop the vendored root; got %v", got.VendoredAt)
+		t.Fatalf("conversion must record the install root; got %v", got.VendoredAt)
 	}
 }
 

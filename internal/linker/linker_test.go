@@ -10,7 +10,8 @@ import (
 )
 
 // fixture wires a temp Home (with a populated skill dir) and a temp project cwd
-// so Local-scope links land entirely inside the test sandbox.
+// so links land entirely inside the test sandbox. Local-scope links point at
+// the project's canonical copy, so newFixture materializes one there too.
 type fixture struct {
 	home string
 	cwd  string
@@ -22,32 +23,49 @@ func newFixture(t *testing.T, id string) fixture {
 	if err := store.EnsureHome(home); err != nil {
 		t.Fatalf("EnsureHome: %v", err)
 	}
-	// Materialize the skill dir in Home so the link has a real target.
+	// Materialize the skill dir in Home so global links have a real target.
 	if err := os.MkdirAll(store.SkillDir(home, id), 0o755); err != nil {
 		t.Fatalf("create skill dir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(store.SkillDir(home, id), "SKILL.md"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("write SKILL.md: %v", err)
 	}
-	return fixture{home: home, cwd: t.TempDir()}
+	fx := fixture{home: home, cwd: t.TempDir()}
+	fx.materializeCanonical(t, id)
+	return fx
 }
 
-// claude returns a claude test agent. Agent definitions now come from config;
+// materializeCanonical writes the canonical local copy of id at cwd, the
+// target every local link resolves to.
+func (fx fixture) materializeCanonical(t *testing.T, id string) {
+	t.Helper()
+	dir := agentdir.CanonicalSkillDir(fx.cwd, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// claude returns a claude test agent. Agent definitions come from config;
 // tests construct them directly with the conventional locations.
 func claude(t *testing.T) agentdir.Agent {
 	t.Helper()
 	return agentdir.Agent{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"}
 }
 
+// agents returns claude plus a second non-canonical agent, so multi-agent
+// linking is exercised.
 func agents(t *testing.T) []agentdir.Agent {
 	t.Helper()
 	return []agentdir.Agent{
-		{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"},
-		{Name: "codex", Global: "~/.codex/skills", Local: ".codex/skills"},
+		claude(t),
+		{Name: "cursor", Global: "~/.cursor/skills", Local: ".cursor/skills"},
 	}
 }
 
-func TestLink_FreshCreatesSymlink(t *testing.T) {
+func TestLink_LocalCreatesRelativeSymlinkToCanonical(t *testing.T) {
 	const id = "demo"
 	fx := newFixture(t, id)
 
@@ -62,14 +80,18 @@ func TestLink_FreshCreatesSymlink(t *testing.T) {
 		if ar.Action != ActionCreated {
 			t.Errorf("agent %s: action = %s, want created", ar.Agent.Name, ar.Action)
 		}
-		// The link must exist and point at the Home skill dir.
-		got, err := os.Readlink(ar.Path)
+		// The link must be RELATIVE (committable) and resolve to the canonical copy.
+		raw, err := os.Readlink(ar.Path)
 		if err != nil {
 			t.Fatalf("readlink %s: %v", ar.Path, err)
 		}
-		want := store.SkillDir(fx.home, id)
-		if filepath.Clean(got) != filepath.Clean(want) {
-			t.Errorf("link %s -> %s, want %s", ar.Path, got, want)
+		if filepath.IsAbs(raw) {
+			t.Errorf("local link %s is absolute (%q), want relative", ar.Path, raw)
+		}
+		resolved := filepath.Clean(filepath.Join(filepath.Dir(ar.Path), raw))
+		want := filepath.Clean(agentdir.CanonicalSkillDir(fx.cwd, id))
+		if resolved != want {
+			t.Errorf("link %s resolves to %s, want %s", ar.Path, resolved, want)
 		}
 		// And it must resolve to a real directory.
 		fi, err := os.Stat(ar.Path)
@@ -79,13 +101,53 @@ func TestLink_FreshCreatesSymlink(t *testing.T) {
 	}
 }
 
+func TestLink_LocalSkipsCanonicalAgent(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	ag := []agentdir.Agent{{Name: "agents", Global: "~/.agents/skills", Local: ".agents/skills"}}
+
+	res, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if len(res.Agents) != 0 {
+		t.Fatalf("canonical agent must be skipped, got %+v", res.Agents)
+	}
+	// Nothing may have been written over the canonical copy.
+	fi, err := os.Lstat(agentdir.CanonicalSkillDir(fx.cwd, id))
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("canonical copy disturbed: %v %v", fi, err)
+	}
+}
+
+func TestLink_GlobalCreatesAbsoluteSymlinkToHome(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	// An absolute Global template keeps the test inside the sandbox.
+	globalDir := filepath.Join(t.TempDir(), "skills")
+	ag := []agentdir.Agent{{Name: "claude", Global: globalDir, Local: ".claude/skills"}}
+
+	res, err := Link(fx.home, id, ag, agentdir.Global, fx.cwd)
+	if err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].Action != ActionCreated {
+		t.Fatalf("global link not created: %+v", res.Agents)
+	}
+	got, err := os.Readlink(res.Agents[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(got) != filepath.Clean(store.SkillDir(fx.home, id)) {
+		t.Errorf("global link -> %s, want Home skill dir", got)
+	}
+}
+
 func TestLink_IdempotentRelink(t *testing.T) {
 	const id = "demo"
 	fx := newFixture(t, id)
 	ag := []agentdir.Agent{claude(t)}
 
-	// Local scope keeps the link inside the temp cwd sandbox (Global would
-	// resolve to the real ~/.claude/skills and leak across runs).
 	if _, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd); err != nil {
 		t.Fatalf("first Link: %v", err)
 	}
@@ -155,7 +217,8 @@ func TestLink_RefusesForeignSymlink(t *testing.T) {
 	fx := newFixture(t, id)
 	ag := []agentdir.Agent{claude(t)}
 
-	// A symlink pointing OUTSIDE Home -> must not be touched.
+	// A symlink pointing outside Home and outside the canonical store -> must
+	// not be touched.
 	foreign := t.TempDir()
 	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
@@ -179,14 +242,11 @@ func TestLink_RefusesForeignSymlink(t *testing.T) {
 	}
 }
 
-func TestLink_RepointsManagedLinkToDifferentSkill(t *testing.T) {
+func TestLink_RepointsLegacyHomeLinkToCanonical(t *testing.T) {
+	// A pre-refactor local install was an absolute symlink into Home. Link
+	// recognizes it as skillm's and repoints it to the canonical relative form.
 	const id = "demo"
 	fx := newFixture(t, id)
-	// A second skill in Home that the link currently (wrongly) points at.
-	other := "other"
-	if err := os.MkdirAll(store.SkillDir(fx.home, other), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	ag := []agentdir.Agent{claude(t)}
 
 	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
@@ -194,25 +254,28 @@ func TestLink_RepointsManagedLinkToDifferentSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(folder, id)
-	// Existing managed link -> points into Home but at the wrong skill.
-	if err := os.Symlink(store.SkillDir(fx.home, other), linkPath); err != nil {
+	if err := os.Symlink(store.SkillDir(fx.home, id), linkPath); err != nil {
 		t.Fatal(err)
 	}
 
 	res, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd)
 	if err != nil {
-		t.Fatalf("Link should repoint a managed link, got %v", err)
+		t.Fatalf("Link should repoint a legacy Home link, got %v", err)
 	}
 	if res.Agents[0].Action != ActionCreated {
 		t.Errorf("action = %s, want created (repointed)", res.Agents[0].Action)
 	}
-	got, _ := os.Readlink(linkPath)
-	if filepath.Clean(got) != filepath.Clean(store.SkillDir(fx.home, id)) {
-		t.Errorf("link not repointed: %q", got)
+	raw, _ := os.Readlink(linkPath)
+	if filepath.IsAbs(raw) {
+		t.Errorf("repointed link still absolute: %q", raw)
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(linkPath), raw))
+	if resolved != filepath.Clean(agentdir.CanonicalSkillDir(fx.cwd, id)) {
+		t.Errorf("link not repointed to canonical copy: %q", raw)
 	}
 }
 
-func TestUnlink_RemovesOnlyHomePointingSymlink(t *testing.T) {
+func TestUnlink_RemovesOwnedSymlink(t *testing.T) {
 	const id = "demo"
 	fx := newFixture(t, id)
 	ag := agents(t)
@@ -232,6 +295,32 @@ func TestUnlink_RemovesOnlyHomePointingSymlink(t *testing.T) {
 			t.Errorf("link %s still present after unlink: %v", ar.Path, err)
 		}
 	}
+	// The canonical copy must survive an unlink pass.
+	if fi, err := os.Stat(agentdir.CanonicalSkillDir(fx.cwd, id)); err != nil || !fi.IsDir() {
+		t.Errorf("canonical copy disturbed by Unlink: %v", err)
+	}
+}
+
+func TestUnlink_RemovesLegacyHomeLink(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	ag := []agentdir.Agent{claude(t)}
+
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store.SkillDir(fx.home, id), filepath.Join(folder, id)); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Unlink(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].Action != ActionRemoved {
+		t.Fatalf("legacy Home link not removed: %+v", res.Agents)
+	}
 }
 
 func TestUnlink_AbsentIsIdempotent(t *testing.T) {
@@ -245,6 +334,23 @@ func TestUnlink_AbsentIsIdempotent(t *testing.T) {
 		if ar.Action != ActionAbsent {
 			t.Errorf("agent %s: action = %s, want absent", ar.Agent.Name, ar.Action)
 		}
+	}
+}
+
+func TestUnlink_SkipsCanonicalAgent(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	ag := []agentdir.Agent{{Name: "agents", Global: "~/.agents/skills", Local: ".agents/skills"}}
+
+	res, err := Unlink(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if err != nil {
+		t.Fatalf("Unlink must skip the canonical agent, got %v", err)
+	}
+	if len(res.Agents) != 0 {
+		t.Fatalf("canonical agent must be skipped, got %+v", res.Agents)
+	}
+	if _, err := os.Stat(agentdir.CanonicalSkillDir(fx.cwd, id)); err != nil {
+		t.Fatalf("canonical copy wrongly removed: %v", err)
 	}
 }
 
@@ -298,7 +404,7 @@ func TestScanLinks_DetectsLinks(t *testing.T) {
 	fx := newFixture(t, id)
 	ag := agents(t)
 
-	// Link only on claude (first agent); codex stays unlinked.
+	// Link only on claude (first agent); cursor stays unlinked.
 	if _, err := Link(fx.home, id, []agentdir.Agent{claude(t)}, agentdir.Local, fx.cwd); err != nil {
 		t.Fatalf("Link: %v", err)
 	}
@@ -317,11 +423,11 @@ func TestScanLinks_DetectsLinks(t *testing.T) {
 	if byName["claude"].Action != ActionFound {
 		t.Errorf("claude action = %s, want found", byName["claude"].Action)
 	}
-	if filepath.Clean(byName["claude"].Target) != filepath.Clean(store.SkillDir(fx.home, id)) {
-		t.Errorf("claude target = %q, want Home skill dir", byName["claude"].Target)
+	if filepath.Clean(byName["claude"].Target) != filepath.Clean(agentdir.CanonicalSkillDir(fx.cwd, id)) {
+		t.Errorf("claude target = %q, want canonical copy", byName["claude"].Target)
 	}
-	if byName["codex"].Action != ActionAbsent {
-		t.Errorf("codex action = %s, want absent", byName["codex"].Action)
+	if byName["cursor"].Action != ActionAbsent {
+		t.Errorf("cursor action = %s, want absent", byName["cursor"].Action)
 	}
 }
 
@@ -350,10 +456,11 @@ func TestScanLinks_IgnoresForeignSymlink(t *testing.T) {
 
 func TestScanAll_DiscoversEveryLinkedID(t *testing.T) {
 	fx := newFixture(t, "alpha")
-	// A second skill in Home.
+	// A second skill in Home and in the canonical store.
 	if err := os.MkdirAll(store.SkillDir(fx.home, "beta"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	fx.materializeCanonical(t, "beta")
 	ag := []agentdir.Agent{claude(t)}
 
 	if _, err := Link(fx.home, "alpha", ag, agentdir.Local, fx.cwd); err != nil {
@@ -403,9 +510,9 @@ func TestScanAll_MissingFolderSkipped(t *testing.T) {
 }
 
 func TestLink_RelativeForeignSymlinkRefused(t *testing.T) {
-	// A relative symlink that climbs out of Home's skills/ subtree must be
-	// treated as foreign (regression guard for linkIntoHome's relative path
-	// resolution).
+	// A relative symlink that climbs out of both Home's skills/ subtree and the
+	// canonical store must be treated as foreign (regression guard for the
+	// relative path resolution in ownedLink).
 	const id = "demo"
 	fx := newFixture(t, id)
 	ag := []agentdir.Agent{claude(t)}
@@ -415,7 +522,8 @@ func TestLink_RelativeForeignSymlinkRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(folder, id)
-	// Relative target escaping the folder to somewhere outside Home.
+	// Relative target escaping the folder to somewhere outside Home and the
+	// canonical store.
 	if err := os.Symlink("../../../elsewhere", linkPath); err != nil {
 		t.Fatal(err)
 	}

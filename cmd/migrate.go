@@ -185,15 +185,17 @@ func migrateDeadAgentDirs() error {
 		newA := agentdir.Agent{Name: name, Global: agentsGlobal, Local: agentsLocal}
 
 		links += relocateLinks(home, oldA, newA, agentdir.Global, cwd, cwd)
+		// Local links are NOT relocated: local installs are no longer symlinks
+		// into Home but committed copies in .agents/skills, so an old link has
+		// no equivalent to move to. Point at the reinstall instead; the dead
+		// folder is unread either way.
 		for _, base := range localScanDirs(st.LocalRoots, cwd) {
-			// Where local aliases global (canonically base == home) the
-			// global pass has already moved these links.
 			if agentdir.LocalAliasesGlobal(oldA, base) {
 				continue
 			}
-			if n := relocateLinks(home, oldA, newA, agentdir.Local, base, cwd); n > 0 {
-				links += n
-				touched[base] = true
+			if infos, err := linker.ScanAll(home, []agentdir.Agent{oldA}, agentdir.Local, base); err == nil && len(infos) > 0 {
+				ui.Warnf("%s holds %d old skillm link%s no agent reads; run `skillm install --local` in %s to reinstall those skills, then delete the folder",
+					filepath.Join(base, deadCodexLocal), len(infos), plural(len(infos)), base)
 			}
 		}
 	}
@@ -228,6 +230,9 @@ func migrateDeadAgentDirs() error {
 				ui.Warnf("move vendored copy %s: %v", oldPath, err)
 				continue
 			}
+			// The copy now sits at the canonical local location; give it the
+			// lockfile entry a fresh local install would have written.
+			upsertLockEntry(e, root)
 			copies++
 			touched[root] = true
 		}
@@ -258,10 +263,11 @@ func migrateDeadAgentDirs() error {
 }
 
 // relocateLinks moves every skillm-managed link oldA holds at (scope, base)
-// into newA's folder there. The new link is created BEFORE the old one is
-// removed, so a failure can at worst leave a skill linked twice — never
-// stranded with no link at all. Blocked spots are skipped with a warning so
-// one obstruction does not abort the sweep. It returns how many links now
+// into newA's folder there. Only called at Global scope — local installs are
+// copies now and are handled separately. The new link is created BEFORE the
+// old one is removed, so a failure can at worst leave a skill linked twice —
+// never stranded with no link at all. Blocked spots are skipped with a warning
+// so one obstruction does not abort the sweep. It returns how many links now
 // exist at the new location.
 func relocateLinks(home string, oldA, newA agentdir.Agent, scope agentdir.Scope, base, cwd string) int {
 	infos, err := linker.ScanAll(home, []agentdir.Agent{oldA}, scope, base)

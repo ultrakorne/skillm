@@ -49,11 +49,28 @@ func makeSkill(t *testing.T, home, id string) {
 	}
 }
 
-// mustLink links one skill for one agent at scope/base, failing on error.
+// mustLink links one skill for one agent at scope/base, failing on error. At
+// Local scope it first materializes the canonical copy the link points at.
 func mustLink(t *testing.T, home, id string, a agentdir.Agent, scope agentdir.Scope, base string) {
 	t.Helper()
+	if scope == agentdir.Local {
+		makeCanonicalCopy(t, base, id)
+	}
 	if _, err := linker.Link(home, id, []agentdir.Agent{a}, scope, base); err != nil {
 		t.Fatalf("link %s for %s (%s): %v", id, a.Name, scope, err)
+	}
+}
+
+// makeCanonicalCopy writes a minimal canonical local copy of id at base — the
+// target every local link resolves to.
+func makeCanonicalCopy(t *testing.T, base, id string) {
+	t.Helper()
+	dir := agentdir.CanonicalSkillDir(base, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir canonical copy %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("body\n"), 0o644); err != nil {
+		t.Fatalf("write canonical SKILL.md for %s: %v", id, err)
 	}
 }
 
@@ -69,14 +86,33 @@ func linkPath(t *testing.T, a agentdir.Agent, scope agentdir.Scope, base, id str
 
 // assertResolves verifies linkPath is a symlink into Home for id, and that the
 // skill's SKILL.md is reachable through it (the link is live, not dangling).
+// Global links are absolute into Home.
 func assertResolves(t *testing.T, home, lp, id string) {
+	t.Helper()
+	assertResolvesTo(t, lp, store.SkillDir(home, id))
+}
+
+// assertResolvesLocal verifies linkPath is a (relative) symlink resolving to
+// the canonical copy of id at base, with SKILL.md reachable through it.
+func assertResolvesLocal(t *testing.T, base, lp, id string) {
+	t.Helper()
+	assertResolvesTo(t, lp, agentdir.CanonicalSkillDir(base, id))
+}
+
+// assertResolvesTo verifies lp is a symlink resolving to want and that the
+// skill's SKILL.md is reachable through it.
+func assertResolvesTo(t *testing.T, lp, want string) {
 	t.Helper()
 	target, err := os.Readlink(lp)
 	if err != nil {
 		t.Fatalf("readlink %s: %v", lp, err)
 	}
-	if filepath.Clean(target) != filepath.Clean(store.SkillDir(home, id)) {
-		t.Fatalf("link %s -> %q, want %q", lp, target, store.SkillDir(home, id))
+	resolved := target
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(filepath.Dir(lp), resolved)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(want) {
+		t.Fatalf("link %s -> %q (resolved %q), want %q", lp, target, resolved, want)
 	}
 	if _, err := os.Stat(filepath.Join(lp, "SKILL.md")); err != nil {
 		t.Fatalf("SKILL.md not reachable through %s: %v", lp, err)
@@ -115,7 +151,7 @@ func TestEnableAgentMirrorsFootprint(t *testing.T) {
 	// codex now mirrors claude exactly.
 	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
 	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
-	assertResolves(t, home, linkPath(t, codex, agentdir.Local, projA, "beta"), "beta")
+	assertResolvesLocal(t, projA, linkPath(t, codex, agentdir.Local, projA, "beta"), "beta")
 
 	// No invented links: claude had no alpha in projA and nothing in cwd.
 	assertAbsent(t, linkPath(t, codex, agentdir.Local, projA, "alpha"))
@@ -127,7 +163,7 @@ func TestEnableAgentMirrorsFootprint(t *testing.T) {
 
 	// claude's own links are untouched by enabling a peer.
 	assertResolves(t, home, linkPath(t, claude, agentdir.Global, cwd, "alpha"), "alpha")
-	assertResolves(t, home, linkPath(t, claude, agentdir.Local, projA, "beta"), "beta")
+	assertResolvesLocal(t, projA, linkPath(t, claude, agentdir.Local, projA, "beta"), "beta")
 }
 
 // TestEnableAgentRecordsUntrackedCwdWithLocalFootprint covers a project that
@@ -148,7 +184,7 @@ func TestEnableAgentRecordsUntrackedCwdWithLocalFootprint(t *testing.T) {
 		t.Fatal("enableAgent did not report a state change")
 	}
 
-	assertResolves(t, home, linkPath(t, codex, agentdir.Local, cwd, "alpha"), "alpha")
+	assertResolvesLocal(t, cwd, linkPath(t, codex, agentdir.Local, cwd, "alpha"), "alpha")
 	if len(st.LocalRoots) != 1 || st.LocalRoots[0] != cwd {
 		t.Fatalf("LocalRoots = %v, want [%s]", st.LocalRoots, cwd)
 	}
@@ -287,7 +323,7 @@ func TestAgentSwapTransfersFootprint(t *testing.T) {
 
 	// codex inherited the whole footprint.
 	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
-	assertResolves(t, home, linkPath(t, codex, agentdir.Local, projA, "alpha"), "alpha")
+	assertResolvesLocal(t, projA, linkPath(t, codex, agentdir.Local, projA, "alpha"), "alpha")
 
 	// claude has nothing left, but alpha stays in Home.
 	assertAbsent(t, linkPath(t, claude, agentdir.Global, cwd, "alpha"))
@@ -364,7 +400,7 @@ func TestConfirmAgentPrompt(t *testing.T) {
 	claude := agentdir.Agent{Name: "claude"}
 	codex := agentdir.Agent{Name: "codex"}
 
-	disableOnly := confirmAgentPrompt(nil, []agentdir.Agent{claude}, nil)
+	disableOnly := confirmAgentPrompt(nil, []agentdir.Agent{claude})
 	if !strings.Contains(disableOnly, "claude") || !strings.Contains(disableOnly, "stay in Home") {
 		t.Fatalf("disable-only prompt missing agent or Home reassurance: %q", disableOnly)
 	}
@@ -372,14 +408,8 @@ func TestConfirmAgentPrompt(t *testing.T) {
 		t.Fatalf("disable-only prompt should not mention enabling: %q", disableOnly)
 	}
 
-	swap := confirmAgentPrompt([]agentdir.Agent{codex}, []agentdir.Agent{claude}, nil)
+	swap := confirmAgentPrompt([]agentdir.Agent{codex}, []agentdir.Agent{claude})
 	if !strings.Contains(swap, "Enable codex") || !strings.Contains(swap, "disable claude") {
 		t.Fatalf("swap prompt missing enable/disable detail: %q", swap)
-	}
-
-	// With vendored copies, the prompt warns about deleting committed copies.
-	withCopies := confirmAgentPrompt(nil, []agentdir.Agent{claude}, []string{"/home/me/projA"})
-	if !strings.Contains(withCopies, "DELETES") || !strings.Contains(withCopies, "/home/me/projA") {
-		t.Fatalf("prompt with copies missing deletion warning: %q", withCopies)
 	}
 }

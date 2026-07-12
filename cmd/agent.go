@@ -107,8 +107,7 @@ func runAgent() error {
 	// Confirm only when links will be removed (a disable is present); an
 	// enable-only change is additive and safe, so it applies without a prompt.
 	if len(newlyDisabled) > 0 && ui.IsTTY() && !flagYes && !flagForce {
-		copyDirs := vendoredDirsForAgents(home, st, newlyDisabled)
-		ok, err := ui.Confirm(confirmAgentPrompt(newlyEnabled, newlyDisabled, copyDirs))
+		ok, err := ui.Confirm(confirmAgentPrompt(newlyEnabled, newlyDisabled))
 		if err != nil {
 			return err
 		}
@@ -137,13 +136,14 @@ func runAgent() error {
 		disableAgent(home, a, st, cwd)
 	}
 
-	// A project that lost its last skillm link is no longer worth tracking, and a
-	// vendored root that lost its last copy is no longer current. Scan across all
-	// defined agents so a root kept alive by a still-enabled agent survives.
+	// A project that lost its last skillm link (and holds no recorded copy) is
+	// no longer worth tracking, and a recorded root whose copy vanished is no
+	// longer current. Scan across all defined agents so a root kept alive by a
+	// still-enabled agent survives.
 	if reconcileLocalRoots(home, cfg.AllAgents(), st) {
 		stateChanged = true
 	}
-	if reconcileVendoredRoots(home, cfg.AllAgents(), st) {
+	if reconcileVendoredRoots(home, st) {
 		stateChanged = true
 	}
 	if stateChanged {
@@ -180,6 +180,12 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 		}
 		got := false
 		for _, id := range footprintIDs(home, sources, scope, base) {
+			// A local link points at the canonical copy; without one (a legacy
+			// root whose peers still hold old Home links) a new link would
+			// dangle — skip it.
+			if scope == agentdir.Local && !localCopyExists(home, id, base) {
+				continue
+			}
 			res, err := linker.Link(home, id, one, scope, base)
 			if err != nil {
 				ui.Warnf("%v", err)
@@ -214,25 +220,26 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 		}
 	}
 
-	// Mirror Vendored copies too: at every recorded vendored root where a
-	// before-enabled peer still has a copy, write a copy for the newly-enabled
-	// agent so it reaches parity. recorded=false/force=false here means a foreign
-	// directory at the agent's own path is skipped with a warning, never clobbered.
-	if a.Supports(agentdir.Local) {
+	// Link the recorded Local installs too: at every root where a skill's
+	// canonical copy exists, the newly-enabled agent gets its relative link (a
+	// canonical-folder agent is served by the copy itself and needs nothing).
+	// A foreign entry at the agent's own link path is warned about, never
+	// clobbered.
+	if a.Supports(agentdir.Local) && !agentdir.IsCanonicalLocal(a) {
 		for _, e := range st.Skills {
 			for _, root := range e.VendoredAt {
 				if agentdir.LocalAliasesGlobal(a, root) {
 					continue
 				}
-				if len(vendorScan(home, e.ID, beforeEnabled, root)) == 0 {
-					continue // peers no longer hold a copy here; nothing to mirror
+				if !localCopyExists(home, e.ID, root) {
+					continue // copy vanished; nothing to link to
 				}
-				outcomes, verr := vendorApply(home, e.ID, []agentdir.Agent{a}, root, false, false)
-				if verr != nil {
-					ui.Warnf("%v", verr)
+				res, lerr := linker.Link(home, e.ID, one, agentdir.Local, root)
+				if lerr != nil {
+					ui.Warnf("%v", lerr)
 				}
-				for _, o := range outcomes {
-					if o.touched() {
+				for _, ar := range res.Agents {
+					if ar.Action == linker.ActionCreated || ar.Action == linker.ActionAlreadyLinked {
 						skills[e.ID] = true
 						places = append(places, scopeLabel(agentdir.Local, root, cwd))
 					}
@@ -298,25 +305,12 @@ func disableAgent(home string, a agentdir.Agent, st *state.State, cwd string) {
 		}
 	}
 
-	// Delete the disabled agent's Vendored copies too (its committed files in
-	// every recorded project). Emptied roots are pruned by the reconcile pass in
-	// runAgent. The Home copy and the other agents' copies are left intact.
-	if a.Supports(agentdir.Local) {
-		for _, e := range st.Skills {
-			for _, root := range e.VendoredAt {
-				if agentdir.LocalAliasesGlobal(a, root) {
-					continue
-				}
-				removed, rerr := vendorRemove(home, e.ID, []agentdir.Agent{a}, root)
-				if rerr != nil {
-					ui.Warnf("%v", rerr)
-				}
-				if len(removed) > 0 {
-					skills[e.ID] = true
-					places = append(places, scopeLabel(agentdir.Local, root, cwd))
-				}
-			}
-		}
+	// The canonical .agents/skills copies are NOT deleted, even when the
+	// "agents" entry itself is disabled: they are the project's committed skill
+	// store and the target of every other agent's local link. Removing a
+	// project's copies is `skillm uninstall`'s job.
+	if agentdir.IsCanonicalLocal(a) && anyVendoredRoot(st) {
+		ui.Hintf("committed copies in the projects' %s folders stay in place; use `skillm uninstall` to remove skills entirely", agentdir.CanonicalLocalRel)
 	}
 
 	if len(skills) == 0 {
@@ -347,43 +341,25 @@ func footprintIDs(home string, agents []agentdir.Agent, scope agentdir.Scope, ba
 }
 
 // confirmAgentPrompt builds the single confirmation shown before a reconcile
-// that removes links, naming the agents and reassuring that Home is untouched.
-// When the disabled agents have Vendored copies, it also warns that committed
-// copies in the named projects will be deleted.
-func confirmAgentPrompt(newlyEnabled, newlyDisabled []agentdir.Agent, copyDirs []string) string {
+// that removes links, naming the agents and reassuring that Home and the
+// projects' committed copies are untouched.
+func confirmAgentPrompt(newlyEnabled, newlyDisabled []agentdir.Agent) string {
 	dis := strings.Join(agentNames(newlyDisabled), ", ")
-	var head string
 	if len(newlyEnabled) == 0 {
-		head = fmt.Sprintf("Disable %s? This removes its links from every scope and project; the skills stay in Home.", dis)
-	} else {
-		en := strings.Join(agentNames(newlyEnabled), ", ")
-		head = fmt.Sprintf("Enable %s and disable %s? Disabling removes links from every scope and project; the skills stay in Home.", en, dis)
+		return fmt.Sprintf("Disable %s? This removes its links from every scope and project; the skills stay in Home (and projects keep their committed copies).", dis)
 	}
-	if len(copyDirs) > 0 {
-		head += fmt.Sprintf("\nIt also DELETES the disabled agent's committed copies in: %s", strings.Join(copyDirs, ", "))
-	}
-	return head
+	en := strings.Join(agentNames(newlyEnabled), ", ")
+	return fmt.Sprintf("Enable %s and disable %s? Disabling removes links from every scope and project; the skills stay in Home (and projects keep their committed copies).", en, dis)
 }
 
-// vendoredDirsForAgents returns the sorted, de-duplicated project roots where
-// any of the given agents currently has a Vendored copy of any skill — the
-// directories a disable would delete committed files from, named in the prompt.
-func vendoredDirsForAgents(home string, st *state.State, agents []agentdir.Agent) []string {
-	seen := make(map[string]bool)
-	var dirs []string
+// anyVendoredRoot reports whether any skill has a recorded Local install root.
+func anyVendoredRoot(st *state.State) bool {
 	for _, e := range st.Skills {
-		for _, root := range e.VendoredAt {
-			if seen[root] {
-				continue
-			}
-			if len(vendorScan(home, e.ID, agents, root)) > 0 {
-				seen[root] = true
-				dirs = append(dirs, root)
-			}
+		if len(e.VendoredAt) > 0 {
+			return true
 		}
 	}
-	sort.Strings(dirs)
-	return dirs
+	return false
 }
 
 // agentNames returns the names of agents in slice order.

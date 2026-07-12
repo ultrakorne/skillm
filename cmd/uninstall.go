@@ -160,21 +160,23 @@ func selectUninstallIDs(home string, st *state.State, args []string, all bool) (
 	return ids, nil
 }
 
-// uninstallOne removes a single skill: it unlinks the skill from every supplied
-// agent at the global scope and in every tracked local folder, deletes any
-// Vendored copies it has in tracked projects, deletes the Home copy, and drops
-// the registry entry from st (in memory — the caller persists). linker.Unlink is
-// idempotent for absent links and refuses to touch foreign symlinks or real
-// files; under --force such refusals are downgraded to warnings so the Home copy
-// can still be deleted (the foreign entry stays put).
+// uninstallOne removes a single skill: it removes its Local installs (agent
+// links, canonical copy, and skills-lock.json entry) from every recorded
+// project, unlinks it from every supplied agent at the global scope and in
+// every tracked local folder, deletes the Home copy, and drops the registry
+// entry from st (in memory — the caller persists). linker.Unlink is idempotent
+// for absent links and refuses to touch foreign symlinks or real files; under
+// --force such refusals are downgraded to warnings so the Home copy can still
+// be deleted (the foreign entry stays put).
 func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd string) error {
-	// Delete the committed Vendored copies in every recorded project FIRST, so a
+	// Delete the committed Local installs in every recorded project FIRST, so a
 	// later symlink sweep over the same root sees an empty slot rather than
 	// refusing on a real directory. This edits the user's git working tree; the
 	// batch confirmation already named these directories. A missing copy (project
 	// moved/deleted) is silently skipped.
 	for _, dir := range st.VendoredRoots(id) {
-		removed, err := vendorRemove(home, id, agents, dir)
+		localAgents, _ := splitLocalAliased(agents, dir)
+		removed, err := localRemove(home, id, localAgents, dir)
 		if err != nil {
 			if flagForce {
 				ui.Warnf("%v", err)
@@ -182,9 +184,10 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 				return err
 			}
 		}
-		for _, a := range removed {
-			ui.Successf("deleted copy of %s for %s (%s)", id, a.Name, scopeLabel(agentdir.Local, dir, cwd))
+		if removed {
+			ui.Successf("deleted copy of %s in %s (%s)", id, agentdir.CanonicalLocalRel, scopeLabel(agentdir.Local, dir, cwd))
 		}
+		removeLockEntry(id, dir)
 	}
 
 	type target struct {

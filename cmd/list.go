@@ -147,13 +147,15 @@ func sourceLabel(e state.SkillEntry) string {
 	return e.Source
 }
 
-// linkedLabel scans, live from disk, which enabled agents have a link to skill
-// id and renders a compact summary: "global: a,b; local: a; local(/proj): b".
-// Local links are looked for in the current directory (shown as bare "local")
-// and in every tracked root (shown as "local(<path>)"). Vendored copies — read
-// from the recorded vendoredRoots, since a copy cannot be discovered by a link
-// scan — are shown with a "copy" tag: "local(copy): a" / "local(/proj, copy): b".
-// A skill installed nowhere renders as "-".
+// linkedLabel scans, live from disk, where skill id is installed for the
+// enabled agents and renders a compact summary: "global: a,b; local: a;
+// local(/proj): b". Global links are read from the agents' user-level folders.
+// Local installs are looked for in the current directory, every tracked root,
+// and every recorded install root: an agent is served locally when it holds a
+// skillm link there or — for the canonical .agents/skills agent — when the
+// recorded copy exists. The canonical copy is only counted at roots recorded in
+// vendoredRoots, so a foreign directory in the current folder is never mistaken
+// for skillm's install. A skill installed nowhere renders as "-".
 func linkedLabel(home, id string, agents []agentdir.Agent, roots, vendoredRoots []string, cwd string) string {
 	var parts []string
 
@@ -165,34 +167,29 @@ func linkedLabel(home, id string, agents []agentdir.Agent, roots, vendoredRoots 
 	if err != nil {
 		cwdAbs = cwd
 	}
-	for _, dir := range localScanDirs(roots, cwd) {
+	recorded := make(map[string]bool)
+	for _, dir := range uniqueAbs(vendoredRoots) {
+		recorded[dir] = true
+	}
+	for _, dir := range localScanDirs(append(append([]string{}, roots...), vendoredRoots...), cwd) {
 		// Skip agents whose local folder aliases their global one at dir, so a
 		// global link (e.g. when dir is home) is never also rendered as local.
 		localAgents, _ := splitLocalAliased(agents, dir)
-		names := scanLinkNames(home, id, localAgents, agentdir.Local, dir)
+		var names []string
+		if recorded[dir] {
+			names = localServedAgents(home, id, localAgents, dir)
+		} else {
+			names = scanLinkNames(home, id, localAgents, agentdir.Local, dir)
+		}
 		if len(names) == 0 {
 			continue
 		}
+		sort.Strings(names)
 		label := "local"
 		if dir != cwdAbs {
 			label = fmt.Sprintf("local(%s)", dir)
 		}
 		parts = append(parts, label+": "+strings.Join(names, ","))
-	}
-
-	// Vendored copies, read only from the recorded roots — never from an
-	// injected cwd — so a foreign directory in the current folder is never
-	// mistaken for skillm's copy.
-	for _, dir := range uniqueAbs(vendoredRoots) {
-		have := vendorScan(home, id, agents, dir)
-		if len(have) == 0 {
-			continue
-		}
-		label := "local(copy)"
-		if dir != cwdAbs {
-			label = fmt.Sprintf("local(%s, copy)", dir)
-		}
-		parts = append(parts, label+": "+strings.Join(agentNames(have), ","))
 	}
 
 	if len(parts) == 0 {
@@ -265,19 +262,34 @@ func uniqueAbs(roots []string) []string {
 	return out
 }
 
-// reconcileLocalRoots prunes tracked local roots that hold none of skillm's
-// links — because every linked skill there was unlinked or removed, or the
-// directory is gone — mutating st.LocalRoots in place. It scans across ALL
-// supported agents (not just the enabled ones) so a root with links for a
-// currently-disabled agent is kept. It returns true if it changed st; the
-// caller persists via state.Save.
+// reconcileLocalRoots prunes tracked local roots that hold neither any of
+// skillm's links nor any skill's recorded canonical copy — because everything
+// there was removed, or the directory is gone — mutating st.LocalRoots in
+// place. It scans across ALL supported agents (not just the enabled ones) so a
+// root with links for a currently-disabled agent is kept. It returns true if
+// it changed st; the caller persists via state.Save.
 func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) bool {
 	if len(st.LocalRoots) == 0 {
 		return false
 	}
+	// Roots where some skill's recorded copy still exists stay tracked even
+	// with zero links (e.g. when only .agents-native agents are enabled).
+	hasCopy := make(map[string]bool)
+	for _, e := range st.Skills {
+		for _, root := range e.VendoredAt {
+			if !hasCopy[root] && localCopyExists(home, e.ID, root) {
+				hasCopy[root] = true
+			}
+		}
+	}
+
 	kept := make([]string, 0, len(st.LocalRoots))
 	changed := false
 	for _, root := range st.LocalRoots {
+		if hasCopy[root] {
+			kept = append(kept, root)
+			continue
+		}
 		// Only agents with a real local scope at root count toward keeping it.
 		// A legacy root that aliases global for every agent (e.g. home) exposes
 		// only global links there and must be pruned, not kept alive by them.
@@ -293,12 +305,11 @@ func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) 
 	return changed
 }
 
-// reconcileVendoredRoots prunes each skill's vendored roots that no longer hold
-// a copy for any defined agent — because the copies were deleted (e.g. an agent
-// was disabled) or the project moved away. It scans across ALL defined agents so
-// a root kept alive by a still-enabled agent survives. It mutates st in place
-// and returns true if anything changed; the caller persists via state.Save.
-func reconcileVendoredRoots(home string, agents []agentdir.Agent, st *state.State) bool {
+// reconcileVendoredRoots prunes each skill's recorded install roots whose
+// canonical copy no longer exists — because the files were deleted or the
+// project moved away. It mutates st in place and returns true if anything
+// changed; the caller persists via state.Save.
+func reconcileVendoredRoots(home string, st *state.State) bool {
 	changed := false
 	for i := range st.Skills {
 		roots := st.Skills[i].VendoredAt
@@ -307,7 +318,7 @@ func reconcileVendoredRoots(home string, agents []agentdir.Agent, st *state.Stat
 		}
 		kept := make([]string, 0, len(roots))
 		for _, root := range roots {
-			if len(vendorScan(home, st.Skills[i].ID, agents, root)) == 0 {
+			if !localCopyExists(home, st.Skills[i].ID, root) {
 				changed = true
 				continue
 			}

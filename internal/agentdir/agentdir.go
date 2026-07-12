@@ -22,6 +22,33 @@ import (
 	"strings"
 )
 
+// CanonicalLocalRel is the project-relative directory that holds the real
+// files of a Local install: the cross-agent ".agents/skills" convention (the
+// same canonical store vercel's skills CLI uses). Agents whose Local folder is
+// exactly this directory read the copies natively; every other agent's local
+// folder gets a relative symlink into it. It is also the layout skills-lock.json
+// describes, which is what makes skillm's local installs interoperable.
+const CanonicalLocalRel = ".agents/skills"
+
+// CanonicalLocalDir returns the canonical local skill store for a project
+// base: <base>/.agents/skills.
+func CanonicalLocalDir(base string) string {
+	return filepath.Join(base, filepath.FromSlash(CanonicalLocalRel))
+}
+
+// CanonicalSkillDir returns the canonical on-disk location of one skill's
+// Local install: <base>/.agents/skills/<id>.
+func CanonicalSkillDir(base, id string) string {
+	return filepath.Join(CanonicalLocalDir(base), id)
+}
+
+// IsCanonicalLocal reports whether the agent's Local folder IS the canonical
+// store — such an agent is served directly by the installed copy and never
+// needs a link.
+func IsCanonicalLocal(a Agent) bool {
+	return a.Local != "" && filepath.ToSlash(filepath.Clean(filepath.FromSlash(a.Local))) == CanonicalLocalRel
+}
+
 // Scope is where a skill is made available to an agent.
 type Scope int
 

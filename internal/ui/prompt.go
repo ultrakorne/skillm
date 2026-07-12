@@ -101,16 +101,13 @@ func SelectAgents(all []string, enabled []string) ([]string, error) {
 }
 
 // ScopeSelection is the outcome of SelectScope. Global is true when the user
-// chose the agents' user-level scope; otherwise the link is project-level and
-// Path is the base directory it is rooted at (the current directory for the
-// "Local" choice, or a directory the user typed for the "Custom path" choice).
-// Copy is set for a project-level selection when the user chose to vendor a real
-// copy (committed to git) instead of a symlink into Home; it is always false for
-// a Global selection.
+// chose the agents' user-level scope; otherwise the install is project-level
+// and Path is the base directory it is rooted at (the current directory for
+// the "Local" choice, or a directory the user typed for the "Custom path"
+// choice).
 type ScopeSelection struct {
 	Global bool
 	Path   string
-	Copy   bool
 }
 
 // errNonInteractiveScope is returned by SelectScope on a non-TTY: there is no
@@ -136,7 +133,7 @@ func SelectScope(cwd string) (ScopeSelection, error) {
 
 	// Show the current directory's full path on the Local option: a bare "./"
 	// hides which folder the user is actually in.
-	localLabel := "Local — this folder (" + filepath.Join(cwd, ".<agent>", "skills") + ")"
+	localLabel := "Local — this project (" + filepath.Join(cwd, ".agents", "skills") + ", committable)"
 
 	var choice string
 	// Height must be set explicitly — see SelectSkills for why huh v2 collapses
@@ -158,50 +155,16 @@ func SelectScope(cwd string) (ScopeSelection, error) {
 	case choiceGlobal:
 		return ScopeSelection{Global: true}, nil
 	case choiceLocal:
-		vendor, err := selectVendorMethod()
-		if err != nil {
-			return ScopeSelection{}, err
-		}
-		return ScopeSelection{Path: cwd, Copy: vendor}, nil
+		return ScopeSelection{Path: cwd}, nil
 	case choicePath:
 		path, err := selectPath(cwd)
 		if err != nil {
 			return ScopeSelection{}, err
 		}
-		vendor, err := selectVendorMethod()
-		if err != nil {
-			return ScopeSelection{}, err
-		}
-		return ScopeSelection{Path: path, Copy: vendor}, nil
+		return ScopeSelection{Path: path}, nil
 	default:
 		return ScopeSelection{}, errors.New("no scope selected")
 	}
-}
-
-// selectVendorMethod asks, for a project-level install, whether to symlink the
-// skill into Home (the default — not committable to git) or to write a real
-// copy into the project (committable, shareable with teammates). The cursor
-// starts on the safe Symlink choice, but the user always picks. It is only
-// reached on a TTY (SelectScope already refused otherwise).
-func selectVendorMethod() (bool, error) {
-	const (
-		choiceLink = "link"
-		choiceCopy = "copy"
-	)
-	choice := choiceLink
-	sel := huh.NewSelect[string]().
-		Title("How should it be installed here?").
-		Description("A copy can be committed to the project's git repo; a symlink cannot.").
-		Options(
-			huh.NewOption("Symlink — (best for personal use)", choiceLink),
-			huh.NewOption("Copy the files in — (best for git)", choiceCopy),
-		).
-		Height(4).
-		Value(&choice)
-	if err := runForm(sel); err != nil {
-		return false, err
-	}
-	return choice == choiceCopy, nil
 }
 
 // selectPath prompts for a directory with Tab path-completion. It seeds the
@@ -211,8 +174,8 @@ func selectVendorMethod() (bool, error) {
 func selectPath(cwd string) (string, error) {
 	value := withTrailingSep(cwd)
 	field := huh.NewInput().
-		Title("Directory to link into").
-		Description("Type a path; press Tab to complete. Links go in <path>/.<agent>/skills.").
+		Title("Project directory to install into").
+		Description("Type a path; press Tab to complete. Copies go in <path>/.agents/skills.").
 		Value(&value).
 		// Bind the suggestions to the input's own value so they refresh on every
 		// keystroke (huh re-evaluates the func whenever the binding's hash changes).

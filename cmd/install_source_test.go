@@ -246,10 +246,11 @@ func TestInstallSourceNonTTYRefusals(t *testing.T) {
 	assertNoLink(t, claudeGlobalLink(e, "alpha"), "refused source install must not link")
 }
 
-// TestInstallSourceCopy covers --copy via source mode: fetch + vendor a real,
-// committable copy into the project in one step, recording the vendored root
-// (which requires the registry to be reloaded after the fetch).
-func TestInstallSourceCopy(t *testing.T) {
+// TestInstallSourceLocalScope covers local installs via source mode: fetch +
+// write the committable project install (canonical copy, relative claude link,
+// lockfile) in one step, recording the install root (which requires the
+// registry to be reloaded after the fetch).
+func TestInstallSourceLocalScope(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -258,41 +259,19 @@ func TestInstallSourceCopy(t *testing.T) {
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
 
 	project := evalProject(t, t.TempDir())
-	out := e.runIn(t, project, "install", url, "alpha", "--local", "--copy")
-	if !strings.Contains(out, "copied alpha") {
-		t.Fatalf("install --copy from source: expected a 'copied' line, got:\n%s", out)
+	out := e.runIn(t, project, "install", url, "alpha", "--local")
+	if !strings.Contains(out, "installed alpha") {
+		t.Fatalf("install --local from source: expected an 'installed' line, got:\n%s", out)
 	}
-	assertVendoredCopy(t, filepath.Join(project, ".claude", "skills", "alpha"), "alpha body")
 	assertVendoredCopy(t, filepath.Join(project, ".agents", "skills", "alpha"), "alpha body")
+	assertLinkResolvesToCanonical(t, project, filepath.Join(project, ".claude", "skills", "alpha"), "alpha")
+	if _, err := os.Stat(filepath.Join(project, "skills-lock.json")); err != nil {
+		t.Fatalf("skills-lock.json missing after source install: %v", err)
+	}
 
 	a, _ := loadState(t, e).Get("alpha")
 	if got := a.VendoredAt; len(got) != 1 || got[0] != project {
 		t.Fatalf("vendored_at = %v, want [%s]", got, project)
-	}
-}
-
-// TestInstallSourceCopyGlobalRejectedBeforeFetch proves the pure-flag guard
-// fails fast: --copy with --global is rejected BEFORE any network fetch or Home
-// mutation, so a failed source install is a true no-op (nothing added to Home).
-func TestInstallSourceCopyGlobalRejectedBeforeFetch(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH")
-	}
-	bin := skillmBinary(t)
-	_, url := initSkillRepo(t)
-	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
-
-	out, err := e.tryRun(t, "install", url, "alpha", "--global", "--copy")
-	if err == nil || !strings.Contains(out, "only valid for a local install") {
-		t.Fatalf("--copy --global from a source should be rejected; err=%v out=%s", err, out)
-	}
-	// The rejection must precede the fetch: alpha must not have been added to
-	// Home, and the registry must stay empty.
-	if store.Exists(e.home, "alpha") {
-		t.Fatal("--copy --global must fail before fetching: alpha must not be in Home")
-	}
-	if n := len(loadState(t, e).Skills); n != 0 {
-		t.Fatalf("registry has %d entries, want 0 (no fetch should have happened)", n)
 	}
 }
 

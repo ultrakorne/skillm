@@ -47,11 +47,13 @@ type SkillEntry struct {
 	Revision string `toml:"revision,omitempty"`
 	// InstalledAt is when the skill was added, serialized as RFC3339.
 	InstalledAt time.Time `toml:"installed_at"`
-	// VendoredAt is the set of project roots (absolute paths) where this skill's
-	// Local Install was materialized as a Vendored copy rather than a symlink.
-	// It is the one piece of install state skillm stores: unlike a symlink, a
-	// copy cannot be re-discovered by a live disk scan, so the roots holding one
-	// are recorded here. Empty for the common (symlinked / not-installed) case.
+	// VendoredAt is the set of project roots (absolute paths) holding this
+	// skill's Local Install — a canonical copy in <root>/.agents/skills plus
+	// relative agent links. It is the one piece of install state skillm stores:
+	// unlike a symlink, a copy cannot be re-discovered by a live disk scan, so
+	// the roots holding one are recorded here. (The TOML key keeps its historic
+	// "vendored_at" name so existing state files stay valid.) Empty when the
+	// skill has no Local Install.
 	VendoredAt []string `toml:"vendored_at,omitempty"`
 }
 

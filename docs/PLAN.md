@@ -127,21 +127,22 @@ root never lets stale link state survive: a folder with no skillm link is pruned
 ```
 skillm add <url> [skill_id] [--as <name>] [--ref <ref>] [--all]    # fetch into Home only
 skillm add <local-path>      [--as <name>]                         # fetch into Home only
-skillm install <url> [skill_id...] [--as <name>] [--ref <ref>] [--all] [--global|--local] [--copy]
-skillm install <local-path>        [--as <name>]               [--all] [--global|--local] [--copy]
-skillm install   [skill_id...] [--all] [--global|--local] [--copy]  # in-Home ids; no id = interactive multiselect
+skillm install <url> [skill_id...] [--as <name>] [--ref <ref>] [--all] [--global|--local]
+skillm install <local-path>        [--as <name>]               [--all] [--global|--local]
+skillm install   [skill_id...] [--all] [--global|--local]   # in-Home ids; no id = interactive multiselect
+skillm import [dir]                 # adopt a project's skills-lock.json (default: cwd)
 skillm uninstall [skill_id...] [--all]                      # no id = interactive multiselect
 skillm list
 skillm check
-skillm update [skill_id]            # no arg = all outdated; also re-syncs vendored copies
+skillm update [skill_id]            # no arg = all outdated; re-syncs Local installs + adopts lockfile entries
 skillm agent                        # interactive multiselect of Enabled agents
 ```
 
 `add` **only fetches** into Home; `install` is the **only** command that exposes skills to
 agents — whether from an in-Home Skill ID or directly from a Source (a `<url>`/`<local-path>`,
-which it fetches first; see install §3). `--global`/`--local`/`--copy` therefore live on
-`install` alone. `--copy` vendors a real copy into the project instead of a symlink (Local scope
-only; see §3a); it is rejected with `--global`, and implies `--local` when given alone.
+which it fetches first; see install §3). `--global`/`--local` therefore live on `install`
+alone. A Global install is a symlink into Home; a Local install is the committable project
+form — canonical copy + relative agent links + lockfile entry (see §3a).
 
 Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (override Home).
 
@@ -164,9 +165,10 @@ scope/copy flags.
   source mode (extracted into one helper, not duplicated).
 
 ### install
-- Symlink the selected skills into **every Enabled agent** at the chosen Scope, using each
-  agent's location for that scope from `config.toml`. `install` is the **only** command that
-  installs — from an in-Home Skill ID or directly from a Source.
+- Expose the selected skills to **every Enabled agent** at the chosen Scope: Global scope
+  symlinks each agent's user-level folder (from `config.toml`) into Home; Local scope writes
+  the committable project form (§3a). `install` is the **only** command that installs — from
+  an in-Home Skill ID or directly from a Source.
 - **Source mode (`install <url>` / `install <local-path>`):** when the first arg is a git URL
   or an **explicitly path-shaped** local path (`./`, `../`, `/`, `~`, or a `*.git` suffix), it
   is a **Source**. skillm runs the **same** fetch → discover → select → add-to-Home pipeline as
@@ -198,35 +200,49 @@ scope/copy flags.
   (i.e. not a symlink into Home) — it errors and leaves your own skill untouched. Re-installing
   an already-correct symlink is a no-op.
 
-### 3a. Vendored copies (`--copy`)
+### 3a. Local installs (canonical copy + lockfile)
 
-A **Local** install can be materialized as a real, committed copy instead of a symlink, so the
-skill travels with the project's git repo to teammates (a symlink would point at the installer's
-Home and break on clone). See CONTEXT "Vendored copy".
+A **Local** install is always materialized as a real, committed copy, so the skill travels
+with the project's git repo to teammates (a symlink into the installer's Home would break on
+clone). The layout is vercel-`npx skills`-compatible by design (see CONTEXT "Canonical copy",
+"Lockfile", and docs/vercel-skills-comparison.md).
 
-- **Choosing it.** `--copy` (Local scope only — rejected with `--global`, implies `--local` when
-  alone). Interactively, after a Local/custom-path scope choice, skillm asks "symlink or copy?"
-  (cursor defaults to symlink). A bare non-interactive `--local` stays a symlink — `--copy` is the
-  explicit opt-in.
-- **What it writes.** A full copy per Enabled agent (`<base>/<agent.local>/<id>`), copied from the
-  Home skill dir. The committed dir carries no skillm marker — on another machine it is just
-  files; a teammate who uses skillm installs from the Source rather than adopting the copy.
-- **Tracking.** Each base is recorded in the skill's `vendored_at`. There is no in-skill marker;
-  this registry record is how `update`/`uninstall`/`list`/`agent` find the copies.
-- **Conflicts & conversion.** Over skillm's own symlink, `--copy` converts in place (and `install`
-  without `--copy` converts a recorded copy back to a symlink, dropping the root). Over a *foreign*
-  file/dir (a hand-authored skill, or a teammate's committed copy on a fresh clone) skillm asks
-  once on a TTY / refuses on a non-TTY unless `--force`/`--yes`; forcing adopts it into
-  `vendored_at`. After vendoring, skillm prints a hint to commit the base.
+- **What it writes.** One canonical copy at `<base>/.agents/skills/<id>` (the cross-agent
+  store, read natively by Codex, Cursor, Amp, Gemini CLI, …), copied from the Home skill dir;
+  a **relative** symlink for every other Enabled agent (`.claude/skills/<id> →
+  ../../.agents/skills/<id>`); and an entry in `<base>/skills-lock.json`
+  (source/sourceUrl/ref/sourceType/skillPath/computedHash — byte-compatible with vercel's CLI,
+  unknown keys preserved on rewrite; `internal/lockfile`).
+- **Tracking.** Each base is recorded in the skill's `vendored_at` and in `local_roots`. There
+  is no in-skill marker; the registry record is how `update`/`uninstall`/`list`/`agent` find
+  the installs machine-wide, and the lockfile is how *other machines* (via `skillm import` or
+  `npx skills`) pick them up.
+- **Conflicts & conversion.** Over skillm's own legacy absolute symlink at the canonical slot,
+  install converts to a copy in place. Over a *foreign* file/dir (a hand-authored skill) skillm
+  asks once on a TTY / refuses on a non-TTY unless `--force`/`--yes`; forcing adopts it. A
+  foreign entry at an agent's *link* path is warned about and skipped — it never blocks the
+  copy. After installing, skillm prints a hint to commit `.agents/skills` + the lockfile.
+
+### import
+
+Adopt a project's `skills-lock.json` — written by skillm on another machine or by vercel's
+`npx skills` — into this machine's tracking. Groups entries by (clone URL, ref) so each source
+repo is treeless-cloned once; for each importable entry: fetch the skill into Home at the
+locked ref (recording its subdir tree SHA as the Revision), record the root, restore a missing
+canonical copy from Home, create missing agent links. Existing copies are left untouched
+(reconciling content is `update`'s job). Non-git entries (local paths, node_modules,
+well-known) and different-Source name collisions are warned about and skipped, never
+overwritten. Per-entry failures never abort the rest.
 
 ### uninstall
 - Removes skills **entirely** — the inverse of `add`, not of `install`. For each selected skill
-  it auto-unlinks from **all** agents/scopes (the global folder and every tracked local root,
-  across all *defined* agents — even disabled ones, so nothing dangles), **deletes its Vendored
-  copies** in every recorded project (committed files in the user's repos — copies are removed
-  before the symlink sweep so the sweep never trips on a real directory), then deletes the Home
-  copy and its registry entry. There is **no per-scope uninstall**. The TTY confirmation names
-  any project a committed copy will be deleted from.
+  it removes its Local installs in every recorded project (**agent links, the canonical copy,
+  and the skills-lock.json entry** — committed files in the user's repos; the local removal runs
+  before the symlink sweep so the sweep never trips on a real directory), auto-unlinks from
+  **all** agents/scopes (the global folder and every tracked local root, across all *defined*
+  agents — even disabled ones, so nothing dangles), then deletes the Home copy and its registry
+  entry. There is **no per-scope uninstall**. The TTY confirmation names any project a committed
+  copy will be deleted from. A lockfile emptied of its last entry is removed.
 - **Selection:** same model as install — one or more `skill_id` args, `--all`, or an interactive
   multiselect; an unknown explicit id is an atomic error (nothing is removed).
 - On a TTY it confirms once for the whole batch (skip with `--yes`/`--force`); a non-TTY run
@@ -234,10 +250,10 @@ Home and break on clone). See CONTEXT "Vendored copy".
 
 ### list
 - Table (lipgloss): `ID | Source | Installed (scopes×agents, read from disk) | Status`.
-- Symlink installs are read live from disk; **Vendored copies** are read from the recorded
-  `vendored_at` roots (never an injected cwd, so a stray dir in the current folder is never
-  mistaken for a copy) and rendered with a `copy` tag: `local(copy): claude,codex` or
-  `local(/projB, copy): claude`.
+- Links are read live from disk. A Local install additionally counts the canonical-folder
+  agent when the recorded copy exists — read only from the recorded `vendored_at` roots (never
+  an injected cwd, so a stray dir in the current folder is never mistaken for skillm's copy).
+  Rendered as `local: agents,claude` / `local(/projB): claude`.
 - Status ∈ `up-to-date`, `update available`, `local`, `untracked` (git skill whose subdir
   vanished upstream).
 
@@ -249,15 +265,19 @@ Home and break on clone). See CONTEXT "Vendored copy".
 ### update
 - Default (no arg): update **all** outdated git skills; `update <id>` does one. For each, pull
   the current revision's subdir into Home (overwrite the Home copy), then update `revision` +
-  `installed_at` in the registry. Because agents see Home through symlinks, every symlink install
-  updates automatically. Shows a **bubbles/progress** bar when there is enough work to warrant
-  it. No diffs.
-- **Vendored copies** (not symlinks) are re-synced afterward from the recorded `vendored_at`
-  roots, across all *defined* agents that hold a copy: a git skill's copies are overwritten only
-  if it actually changed this run; a local skill's copies are re-synced from Home only when their
-  content differs (so an unchanged skill leaves the repo's files — and `git status` — untouched).
-  A recorded root whose copy has vanished (project moved/deleted) is reported and pruned. A local
-  skill with **no** copies still shows the "edit in Home directly" note.
+  `installed_at` in the registry. Because agents see Global installs through symlinks into Home,
+  those update automatically. Shows a **bubbles/progress** bar when there is enough work to
+  warrant it. No diffs.
+- An all-skills update first runs **import's adoption** over every tracked root, so lockfile
+  entries a teammate added (e.g. with `npx skills`) are fetched into Home and join this and
+  every future update. An explicit-id update stays surgical (no sweep).
+- **Canonical copies** (not symlinks) are re-synced afterward from the recorded `vendored_at`
+  roots: a git skill's copy is overwritten only if it actually changed this run; a local skill's
+  copies are re-synced from Home only when their content differs (so an unchanged skill leaves
+  the repo's files — and `git status` — untouched). A rewritten copy also gets missing agent
+  links recreated and its lockfile entry's `computedHash` refreshed. A recorded root whose copy
+  has vanished (project moved/deleted) is reported and pruned. A local skill with **no** copies
+  still shows the "edit in Home directly" note.
 
 ### agent
 - **huh** multiselect over the agents **defined** in `config.toml`, seeded with the current
@@ -268,14 +288,16 @@ Home and break on clone). See CONTEXT "Vendored copy".
   (disable A, enable B) lets B copy A's links while they are still on disk.
   - **Enable** a previously-disabled agent → for every place the **before-enabled** agents
     are currently linked (global + every tracked local root + cwd), create the same link for
-    the newly-enabled agent; and at every recorded vendored root where a peer still holds a copy,
-    **write a copy** for the agent too. Footprint is read live from disk. Enabling while nothing is
+    the newly-enabled agent; and at every recorded install root where the canonical copy still
+    exists, give it its relative link into the copy (a canonical-folder agent is served by the
+    copy itself). Footprint is read live from disk; a local link is only created where the
+    canonical copy exists (never a dangling link at a legacy root). Enabling while nothing is
     installed does nothing.
   - **Disable** an agent → remove **all** its skillm-managed links across global + every
-    tracked local root + cwd, and **delete its Vendored copies** in every recorded project. The
-    Home copy and the other agents' installs are left intact — this is **not** uninstall. The
-    confirmation names the projects whose committed copies will be deleted; emptied vendored roots
-    are pruned.
+    tracked local root + cwd. **Canonical copies are never deleted by a disable** — they are
+    the projects' committed store and the other agents' link target; a hint points at
+    `uninstall` when the disabled agent is the canonical entry. The Home copy and the other
+    agents' installs are left intact — this is **not** uninstall.
   - Unchanged agents are never touched (`agent` toggles, it does not repair drift — use
     `install` for that).
 - **At least one agent must stay enabled**: an empty selection is refused (pointing at
@@ -301,21 +323,27 @@ v0.1.0). This covers dotfiles/CI bootstrap via deterministic commands.
 ```
 skillm/
 ├── main.go                 # thin: fang.Execute(ctx, cmd.Root())
-├── cmd/                    # cobra commands, one file each (add, install,
-│                           #   uninstall, list, check, update, agent, root)
+├── cmd/                    # cobra commands, one file each (add, install, import,
+│                           #   uninstall, list, check, update, agent, root) +
+│                           #   localinstall.go / locksync.go (Local-install orchestration)
 └── internal/
     ├── config/             # load/save ~/.skillm/config.toml (go-toml/v2); agent
     │                       #   definitions (name → enabled/global/local) + seed defaults
     ├── state/              # load/save ~/.skillm/state.toml registry
     ├── store/              # Home bootstrap + layout; add/remove skill dirs; copy/replace
-    │                       #   dir + content-equality (for vendored copies)
+    │                       #   dir + content-equality (for canonical copies)
     ├── skill/              # Skill model; parse SKILL.md YAML frontmatter
     ├── source/             # parse URL vs local path; discover SKILL.md dirs
     ├── gitx/               # shell-out git: treeless fetch, ls-tree, sparse-checkout
     ├── agentdir/           # pure path computation from a config-supplied agent
-    │                       #   (global/local templates) → skill-folder path per scope
-    ├── linker/             # create/remove symlinks; scan-for-links; safe overwrite;
-    │                       #   Classify (target-kind for the vendoring layer in cmd)
+    │                       #   (global/local templates) → skill-folder path per scope;
+    │                       #   the canonical .agents/skills constants
+    ├── lockfile/           # skills-lock.json: vercel-byte-compatible read/write (unknown
+    │                       #   keys preserved), ICU-collated SHA-256 content hash,
+    │                       #   source↔lock-entry mapping (both directions)
+    ├── linker/             # create/remove symlinks (absolute→Home at global scope,
+    │                       #   relative→canonical copy at local); scan-for-links; safe
+    │                       #   overwrite; Classify (target-kind for cmd's local layer)
     └── ui/                 # lipgloss v2 styles, huh pickers, progress, tables, isatty
 ```
 
@@ -356,13 +384,18 @@ One-line install (`curl | sh`), a 4–5 line quickstart (`add` → `agent` → `
 - **Integration:** spin up a temp Home + a local git repo (init, commit several skill dirs),
   then exercise `add`/`link`/`check`/`update`/`remove` and assert symlink targets and registry
   contents. System git is available in CI.
-- **Vendoring:** the vendored-copy decision matrix (write / convert-from-symlink / refresh /
-  foreign-refuse-then-force / remove) is unit-tested in-process (`cmd/vendor_test.go`), plus an
-  end-to-end test (`TestVendoredCopyLifecycle`, `TestVendorSymlinkConversion`) driving the real
-  binary: copies are real dirs not symlinks, a global symlink coexists, `update` refreshes both
-  copy and symlink, `uninstall` deletes the copies, and `--copy --global`/foreign-overwrite
-  guards hold. `store.ReplaceDir`/`DirContentEqual` and the `state` vendored-root helpers are
-  unit-tested too.
+- **Local installs:** the canonical-slot decision matrix (write / convert-legacy-symlink /
+  refresh / foreign-refuse-then-force / remove) is unit-tested in-process
+  (`cmd/localinstall_test.go`), plus end-to-end tests (`TestLocalInstallLifecycle`,
+  `TestLegacySymlinkConversion`) driving the real binary: the copy is a real dir, the claude
+  link is relative, a global symlink coexists, `update` refreshes copy + lock hash,
+  `uninstall` deletes copy/link/lock entry, and the foreign-overwrite guard holds.
+  `store.ReplaceDir`/`DirContentEqual` and the `state` root helpers are unit-tested too.
+- **Lockfile interop:** `internal/lockfile` is pinned to vercel's implementation with test
+  vectors generated from their code (exact lockfile bytes; the ICU-collated content hash,
+  including a Node-localeCompare fuzz corpus) and round-trip tests proving unknown JSON keys
+  survive rewrites. `cmd/import_test.go` drives `import` and update's auto-adoption end to
+  end, including a hand-written "teammate" lockfile.
 
 ---
 

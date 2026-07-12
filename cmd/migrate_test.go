@@ -10,6 +10,7 @@ import (
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/state"
+	"github.com/ultrakorne/skillm/internal/store"
 )
 
 // These tests exercise migrateDeadAgentDirs in-process. The user home is
@@ -93,12 +94,23 @@ func TestMigrateMovesGlobalLinkAndRewritesConfig(t *testing.T) {
 	}
 }
 
-func TestMigrateMovesLocalRootLinks(t *testing.T) {
+func TestMigrateLeavesLocalRootLinksWithNotice(t *testing.T) {
+	// Local installs are committed copies now, so the migration cannot relocate
+	// an old Home-pointing local link — it leaves it untouched and points the
+	// user at `skillm install --local` instead.
 	home, _ := migrateFixture(t, true)
 	writeOldCodexConfig(t, home, nil)
 	proj := t.TempDir()
 	makeSkill(t, home, "alpha")
-	mustLink(t, home, "alpha", oldCodexAgent(), agentdir.Local, proj)
+	// Hand-build the legacy shape: an absolute symlink into Home under the dead
+	// .codex/skills folder.
+	oldLink := filepath.Join(proj, ".codex", "skills", "alpha")
+	if err := os.MkdirAll(filepath.Dir(oldLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store.SkillDir(home, "alpha"), oldLink); err != nil {
+		t.Fatal(err)
+	}
 	if err := state.Save(home, &state.State{LocalRoots: []string{proj}}); err != nil {
 		t.Fatalf("seed state: %v", err)
 	}
@@ -107,11 +119,10 @@ func TestMigrateMovesLocalRootLinks(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	assertResolves(t, home, filepath.Join(proj, ".agents", "skills", "alpha"), "alpha")
-	assertAbsent(t, filepath.Join(proj, ".codex", "skills", "alpha"))
-	if _, err := os.Lstat(filepath.Join(proj, ".codex", "skills")); !os.IsNotExist(err) {
-		t.Errorf("old local folder should be removed once empty; lstat err = %v", err)
-	}
+	// The legacy link stays where it was (no half-migrated state, nothing
+	// deleted), and no dangling link was created in .agents/skills.
+	assertResolves(t, home, oldLink, "alpha")
+	assertAbsent(t, filepath.Join(proj, ".agents", "skills", "alpha"))
 }
 
 func TestMigrateMovesVendoredCopy(t *testing.T) {
