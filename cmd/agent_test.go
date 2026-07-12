@@ -18,6 +18,18 @@ import (
 // they validate the core behaviour directly: enabling mirrors a peer's link
 // footprint; disabling removes only that agent's links and never touches Home.
 
+// sandboxGlobalRoot creates the sandbox directory global-scope tests treat as
+// the user's home and redirects HOME/USERPROFILE to it, so the canonical
+// global store (~/.agents/skills) and every agent folder land inside the
+// sandbox and never touch the developer's dotfiles.
+func sandboxGlobalRoot(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir) // Windows: os.UserHomeDir reads USERPROFILE
+	return dir
+}
+
 // testAgents returns claude and codex wired to isolated, absolute global folders
 // under globalRoot (so they never touch the developer's dotfiles) and the
 // conventional relative local folders.
@@ -49,23 +61,22 @@ func makeSkill(t *testing.T, home, id string) {
 	}
 }
 
-// mustLink links one skill for one agent at scope/base, failing on error. At
-// Local scope it first materializes the canonical copy the link points at.
+// mustLink links one skill for one agent at scope/base, failing on error. It
+// first materializes the canonical copy the link points at: the project's at
+// Local scope, ~/.agents/skills' (under the sandboxed home) at Global.
 func mustLink(t *testing.T, home, id string, a agentdir.Agent, scope agentdir.Scope, base string) {
 	t.Helper()
-	if scope == agentdir.Local {
-		makeCanonicalCopy(t, base, id)
-	}
+	makeCanonicalCopy(t, scope, base, id)
 	if _, err := linker.Link(home, id, []agentdir.Agent{a}, scope, base); err != nil {
 		t.Fatalf("link %s for %s (%s): %v", id, a.Name, scope, err)
 	}
 }
 
-// makeCanonicalCopy writes a minimal canonical local copy of id at base — the
-// target every local link resolves to.
-func makeCanonicalCopy(t *testing.T, base, id string) {
+// makeCanonicalCopy writes a minimal canonical copy of id at (scope, base) —
+// the target every link at that scope resolves to.
+func makeCanonicalCopy(t *testing.T, scope agentdir.Scope, base, id string) {
 	t.Helper()
-	dir := agentdir.CanonicalSkillDir(base, id)
+	dir := agentdir.CanonicalSkillDirAt(scope, base, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir canonical copy %s: %v", dir, err)
 	}
@@ -84,12 +95,12 @@ func linkPath(t *testing.T, a agentdir.Agent, scope agentdir.Scope, base, id str
 	return p
 }
 
-// assertResolves verifies linkPath is a symlink into Home for id, and that the
-// skill's SKILL.md is reachable through it (the link is live, not dangling).
-// Global links are absolute into Home.
-func assertResolves(t *testing.T, home, lp, id string) {
+// assertResolvesGlobal verifies linkPath is a symlink resolving to the
+// canonical global copy of id (~/.agents/skills/<id> under the sandboxed
+// home), with SKILL.md reachable through it (the link is live, not dangling).
+func assertResolvesGlobal(t *testing.T, lp, id string) {
 	t.Helper()
-	assertResolvesTo(t, lp, store.SkillDir(home, id))
+	assertResolvesTo(t, lp, agentdir.CanonicalSkillDirAt(agentdir.Global, "", id))
 }
 
 // assertResolvesLocal verifies linkPath is a (relative) symlink resolving to
@@ -132,7 +143,7 @@ func assertAbsent(t *testing.T, lp string) {
 // claude untouched. Places where claude has no link are not invented.
 func TestEnableAgentMirrorsFootprint(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 	projA := t.TempDir()
 	cwd := t.TempDir() // an empty project: claude has nothing here, so nothing mirrors
 
@@ -149,8 +160,8 @@ func TestEnableAgentMirrorsFootprint(t *testing.T) {
 	enableAgent(home, codex, []agentdir.Agent{claude}, st, cwd)
 
 	// codex now mirrors claude exactly.
-	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
-	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
+	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
+	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
 	assertResolvesLocal(t, projA, linkPath(t, codex, agentdir.Local, projA, "beta"), "beta")
 
 	// No invented links: claude had no alpha in projA and nothing in cwd.
@@ -162,7 +173,7 @@ func TestEnableAgentMirrorsFootprint(t *testing.T) {
 	}
 
 	// claude's own links are untouched by enabling a peer.
-	assertResolves(t, home, linkPath(t, claude, agentdir.Global, cwd, "alpha"), "alpha")
+	assertResolvesGlobal(t, linkPath(t, claude, agentdir.Global, cwd, "alpha"), "alpha")
 	assertResolvesLocal(t, projA, linkPath(t, claude, agentdir.Local, projA, "beta"), "beta")
 }
 
@@ -172,7 +183,7 @@ func TestEnableAgentMirrorsFootprint(t *testing.T) {
 // tracked for later list/uninstall runs from another directory.
 func TestEnableAgentRecordsUntrackedCwdWithLocalFootprint(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)
@@ -197,7 +208,7 @@ func TestEnableAgentRecordsUntrackedCwdWithLocalFootprint(t *testing.T) {
 // the alias condition (each agent's local folder there IS its global folder).
 func TestEnableAgentFromHomeMirrorsGlobalOnly(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 
 	claude, codex := testAgents(globalRoot)
 	makeSkill(t, home, "alpha")
@@ -207,7 +218,7 @@ func TestEnableAgentFromHomeMirrorsGlobalOnly(t *testing.T) {
 	enableAgent(home, codex, []agentdir.Agent{claude}, st, globalRoot)
 
 	// codex mirrors claude's global link.
-	assertResolves(t, home, linkPath(t, codex, agentdir.Global, globalRoot, "alpha"), "alpha")
+	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, globalRoot, "alpha"), "alpha")
 
 	// Home was never recorded as a local root: the local pass is skipped because
 	// local aliases global there.
@@ -225,7 +236,7 @@ func TestEnableAgentFromHomeMirrorsGlobalOnly(t *testing.T) {
 // bogus root.
 func TestEnableAgentSkipsAliasedPeerFootprintAtHome(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 
 	// claude aliases local->global at base == globalRoot (the home-equivalent).
 	claude := agentdir.Agent{
@@ -250,7 +261,7 @@ func TestEnableAgentSkipsAliasedPeerFootprintAtHome(t *testing.T) {
 	enableAgent(home, weird, []agentdir.Agent{claude}, st, globalRoot)
 
 	// weird mirrors alpha via the GLOBAL pass — that part is correct.
-	assertResolves(t, home, linkPath(t, weird, agentdir.Global, globalRoot, "alpha"), "alpha")
+	assertResolvesGlobal(t, linkPath(t, weird, agentdir.Global, globalRoot, "alpha"), "alpha")
 
 	// But weird must get NO local link at globalRoot: claude's global-only alpha
 	// is not a real local footprint, so nothing is mirrored locally...
@@ -266,7 +277,7 @@ func TestEnableAgentSkipsAliasedPeerFootprintAtHome(t *testing.T) {
 // are untouched — disabling an agent is not uninstalling a skill.
 func TestDisableAgentUnlinksButKeepsHome(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 	projA := t.TempDir()
 	cwd := t.TempDir()
 
@@ -295,8 +306,8 @@ func TestDisableAgentUnlinksButKeepsHome(t *testing.T) {
 	}
 
 	// codex is untouched.
-	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
-	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
+	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
+	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
 }
 
 // TestAgentSwapTransfersFootprint reproduces the one-shot swap (disable claude +
@@ -305,7 +316,7 @@ func TestDisableAgentUnlinksButKeepsHome(t *testing.T) {
 // before claude is torn down.
 func TestAgentSwapTransfersFootprint(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 	projA := t.TempDir()
 	cwd := t.TempDir()
 
@@ -322,7 +333,7 @@ func TestAgentSwapTransfersFootprint(t *testing.T) {
 	disableAgent(home, claude, st, cwd)
 
 	// codex inherited the whole footprint.
-	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
+	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
 	assertResolvesLocal(t, projA, linkPath(t, codex, agentdir.Local, projA, "alpha"), "alpha")
 
 	// claude has nothing left, but alpha stays in Home.
@@ -338,7 +349,7 @@ func TestAgentSwapTransfersFootprint(t *testing.T) {
 // still created.
 func TestEnableSkipsForeignObstruction(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)
@@ -369,14 +380,14 @@ func TestEnableSkipsForeignObstruction(t *testing.T) {
 		t.Fatalf("sentinel file lost: %v", err)
 	}
 	// The sweep continued: beta was still linked for codex.
-	assertResolves(t, home, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
+	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
 }
 
 // TestFootprintIDs returns the de-duplicated, sorted union of ids linked across
 // the given agents at a scope.
 func TestFootprintIDs(t *testing.T) {
 	home := t.TempDir()
-	globalRoot := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)

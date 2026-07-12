@@ -72,7 +72,7 @@ func runList() error {
 		rows = append(rows, ui.Row{
 			ID:        e.ID,
 			Source:    sourceLabel(e),
-			Installed: linkedLabel(home, e.ID, agents, st.LocalRoots, e.VendoredAt, cwd),
+			Installed: linkedLabel(home, e, agents, st.LocalRoots, cwd),
 			Kind:      e.Kind,
 		})
 	}
@@ -147,20 +147,29 @@ func sourceLabel(e state.SkillEntry) string {
 	return e.Source
 }
 
-// linkedLabel scans, live from disk, where skill id is installed for the
+// linkedLabel scans, live from disk, where skill e is installed for the
 // enabled agents and renders a compact summary: "global: a,b; local: a;
-// local(/proj): b". Global links are read from the agents' user-level folders.
-// Local installs are looked for in the current directory, every tracked root,
-// and every recorded install root: an agent is served locally when it holds a
-// skillm link there or — for the canonical .agents/skills agent — when the
-// recorded copy exists. The canonical copy is only counted at roots recorded in
-// vendoredRoots, so a foreign directory in the current folder is never mistaken
+// local(/proj): b". At global scope an agent is served when it holds a skillm
+// link in its user-level folder or — for the canonical ~/.agents/skills agent —
+// when the recorded global copy exists. Local installs are looked for in the
+// current directory, every tracked root, and every recorded install root,
+// counting agents' links there plus the canonical agent when the recorded copy
+// exists. A canonical copy is only counted for installs recorded in the
+// registry (e.Global / e.VendoredAt), so a foreign directory is never mistaken
 // for skillm's install. A skill installed nowhere renders as "-".
-func linkedLabel(home, id string, agents []agentdir.Agent, roots, vendoredRoots []string, cwd string) string {
+func linkedLabel(home string, e state.SkillEntry, agents []agentdir.Agent, roots []string, cwd string) string {
+	id, vendoredRoots := e.ID, e.VendoredAt
 	var parts []string
 
-	if names := scanLinkNames(home, id, agents, agentdir.Global, ""); len(names) > 0 {
-		parts = append(parts, "global: "+strings.Join(names, ","))
+	var globalNames []string
+	if e.Global {
+		globalNames = servedAgents(home, id, agents, agentdir.Global, "")
+	} else {
+		globalNames = scanLinkNames(home, id, agents, agentdir.Global, "")
+	}
+	if len(globalNames) > 0 {
+		sort.Strings(globalNames)
+		parts = append(parts, "global: "+strings.Join(globalNames, ","))
 	}
 
 	cwdAbs, err := filepath.Abs(cwd)
@@ -177,7 +186,7 @@ func linkedLabel(home, id string, agents []agentdir.Agent, roots, vendoredRoots 
 		localAgents, _ := splitLocalAliased(agents, dir)
 		var names []string
 		if recorded[dir] {
-			names = localServedAgents(home, id, localAgents, dir)
+			names = servedAgents(home, id, localAgents, agentdir.Local, dir)
 		} else {
 			names = scanLinkNames(home, id, localAgents, agentdir.Local, dir)
 		}
@@ -305,13 +314,18 @@ func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) 
 	return changed
 }
 
-// reconcileVendoredRoots prunes each skill's recorded install roots whose
-// canonical copy no longer exists — because the files were deleted or the
-// project moved away. It mutates st in place and returns true if anything
+// reconcileVendoredRoots prunes each skill's recorded installs whose canonical
+// copy no longer exists — because the files were deleted or the project moved
+// away. That covers the Global install (~/.agents/skills) as well as the
+// recorded project roots. It mutates st in place and returns true if anything
 // changed; the caller persists via state.Save.
 func reconcileVendoredRoots(home string, st *state.State) bool {
 	changed := false
 	for i := range st.Skills {
+		if st.Skills[i].Global && !vendorCopyExists(home, st.Skills[i].ID, agentdir.Global, "") {
+			st.Skills[i].Global = false
+			changed = true
+		}
 		roots := st.Skills[i].VendoredAt
 		if len(roots) == 0 {
 			continue

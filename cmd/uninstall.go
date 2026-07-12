@@ -27,13 +27,14 @@ func newUninstallCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "uninstall [skill_id...]",
 		Short: "Remove skills from Home, unlinking them from every agent first",
-		Long: "uninstall removes skills entirely. For each skill it first removes the symlink " +
-			"from every agent at the global scope and in every local folder skillm linked it " +
-			"into (tracked in state.toml), then deletes the Home copy and its registry entry " +
-			"so no dangling symlinks are left behind. There is no per-scope uninstall — it " +
-			"always clears every reference. Pass one or more skill ids, --all to remove every " +
-			"skill in Home, or no arguments to pick interactively from the skills in Home. On " +
-			"a terminal it confirms first unless --yes or --force is given.",
+		Long: "uninstall removes skills entirely. For each skill it first removes its Global " +
+			"install (the ~/.agents/skills copy and every agent's symlink) and its Local " +
+			"installs in every recorded project (copy, links, and skills-lock.json entry, " +
+			"tracked in state.toml), then deletes the Home copy and its registry entry so no " +
+			"dangling symlinks are left behind. There is no per-scope uninstall — it always " +
+			"clears every reference. Pass one or more skill ids, --all to remove every skill " +
+			"in Home, or no arguments to pick interactively from the skills in Home. On a " +
+			"terminal it confirms first unless --yes or --force is given.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUninstall(args, uninstallFlagAll)
@@ -160,23 +161,38 @@ func selectUninstallIDs(home string, st *state.State, args []string, all bool) (
 	return ids, nil
 }
 
-// uninstallOne removes a single skill: it removes its Local installs (agent
-// links, canonical copy, and skills-lock.json entry) from every recorded
-// project, unlinks it from every supplied agent at the global scope and in
-// every tracked local folder, deletes the Home copy, and drops the registry
-// entry from st (in memory — the caller persists). linker.Unlink is idempotent
-// for absent links and refuses to touch foreign symlinks or real files; under
-// --force such refusals are downgraded to warnings so the Home copy can still
-// be deleted (the foreign entry stays put).
+// uninstallOne removes a single skill: it removes its Global install (agent
+// links and the ~/.agents/skills copy) and its Local installs (agent links,
+// canonical copy, and skills-lock.json entry) from every recorded project,
+// unlinks it from every tracked local folder, deletes the Home copy, and drops
+// the registry entry from st (in memory — the caller persists). linker.Unlink
+// is idempotent for absent links and refuses to touch foreign symlinks or real
+// files; under --force such refusals are downgraded to warnings so the Home
+// copy can still be deleted (the foreign entry stays put).
 func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd string) error {
-	// Delete the committed Local installs in every recorded project FIRST, so a
-	// later symlink sweep over the same root sees an empty slot rather than
-	// refusing on a real directory. This edits the user's git working tree; the
-	// batch confirmation already named these directories. A missing copy (project
-	// moved/deleted) is silently skipped.
+	// Delete the canonical copies FIRST — the Global one, then the committed
+	// Local ones in every recorded project — so a later symlink sweep over the
+	// same place sees an empty slot rather than refusing on a real directory.
+	// vendorRemove also clears each scope's agent links, and only deletes a
+	// directory the registry records as skillm's own copy. The Local removals
+	// edit the user's git working tree; the batch confirmation already named
+	// those directories. A missing copy (project moved/deleted) is silently
+	// skipped.
+	removedGlobal, err := vendorRemove(home, id, agents, agentdir.Global, cwd, st.IsGlobal(id), agentdir.Global.String())
+	if err != nil {
+		if flagForce {
+			ui.Warnf("%v", err)
+		} else {
+			return err
+		}
+	}
+	if removedGlobal {
+		ui.Successf("deleted copy of %s in %s (global)", id, canonicalDisplay(agentdir.Global))
+	}
+
 	for _, dir := range st.VendoredRoots(id) {
 		localAgents, _ := splitLocalAliased(agents, dir)
-		removed, err := localRemove(home, id, localAgents, dir)
+		removed, err := vendorRemove(home, id, localAgents, agentdir.Local, dir, true, scopeLabel(agentdir.Local, dir, cwd))
 		if err != nil {
 			if flagForce {
 				ui.Warnf("%v", err)
@@ -190,14 +206,8 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 		removeLockEntry(id, dir)
 	}
 
-	type target struct {
-		scope  agentdir.Scope
-		agents []agentdir.Agent
-		dir    string
-	}
-	targets := []target{{agentdir.Global, agents, cwd}}
-	// Sweep tracked local roots AND vendored roots for symlinks: a vendored root
-	// may also hold a stray symlink, and need not be in LocalRoots.
+	// Sweep tracked local roots AND vendored roots for stray symlinks: a
+	// vendored root may also hold one, and need not be in LocalRoots.
 	sweepDirs := append(append([]string{}, st.LocalRoots...), st.VendoredRoots(id)...)
 	for _, dir := range localScanDirs(sweepDirs, cwd) {
 		// Skip a local dir where every agent's local folder is its global one
@@ -207,11 +217,7 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 		if len(real) == 0 {
 			continue
 		}
-		targets = append(targets, target{agentdir.Local, real, dir})
-	}
-
-	for _, tg := range targets {
-		res, err := linker.Unlink(home, id, tg.agents, tg.scope, tg.dir)
+		res, err := linker.Unlink(home, id, real, agentdir.Local, dir)
 		if err != nil {
 			if flagForce {
 				ui.Warnf("%v", err)
@@ -221,7 +227,7 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 		}
 		for _, ar := range res.Agents {
 			if ar.Action == linker.ActionRemoved {
-				ui.Successf("unlinked %s from %s (%s)", id, ar.Agent.Name, scopeLabel(tg.scope, tg.dir, cwd))
+				ui.Successf("unlinked %s from %s (%s)", id, ar.Agent.Name, scopeLabel(agentdir.Local, dir, cwd))
 			}
 		}
 	}
@@ -229,7 +235,7 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 	if err := store.RemoveSkillDir(home, id); err != nil {
 		return err
 	}
-	st.Remove(id) // drops the entry, including its VendoredAt record
+	st.Remove(id) // drops the entry, including its VendoredAt/Global records
 	return nil
 }
 

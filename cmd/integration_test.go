@@ -186,38 +186,50 @@ func loadState(t *testing.T, e env) *state.State {
 	return st
 }
 
-// assertLinkResolvesIntoHome verifies that linkPath is a symlink whose resolved
-// target is store.SkillDir(home, id) and that the linked SKILL.md is readable
-// through the link (i.e. the link is live, not dangling).
-func assertLinkResolvesIntoHome(t *testing.T, e env, linkPath, id string) {
+// assertGlobalInstalled verifies skill id's Global install shape: a real
+// canonical copy at <userDir>/.agents/skills/<id> (a directory, not a link),
+// and an absolute claude symlink at <userDir>/.claude/skills/<id> resolving to
+// that copy, with SKILL.md readable through the link (i.e. the link is live,
+// not dangling).
+func assertGlobalInstalled(t *testing.T, e env, id string) {
 	t.Helper()
-	fi, err := os.Lstat(linkPath)
+	canonical := agentsGlobalCopy(e, id)
+	fi, err := os.Lstat(canonical)
+	if err != nil {
+		t.Fatalf("lstat canonical global copy %s: %v", canonical, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		t.Fatalf("%s should be a real directory (the canonical global copy), mode %v", canonical, fi.Mode())
+	}
+
+	linkPath := claudeGlobalLink(e, id)
+	li, err := os.Lstat(linkPath)
 	if err != nil {
 		t.Fatalf("lstat %s: %v", linkPath, err)
 	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("%s is not a symlink (mode %v)", linkPath, fi.Mode())
+	if li.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink (mode %v)", linkPath, li.Mode())
 	}
 	target, err := os.Readlink(linkPath)
 	if err != nil {
 		t.Fatalf("readlink %s: %v", linkPath, err)
 	}
-	want := store.SkillDir(e.home, id)
-	if filepath.Clean(target) != filepath.Clean(want) {
-		t.Fatalf("link %s -> %q, want %q", linkPath, target, want)
+	if filepath.Clean(target) != filepath.Clean(canonical) {
+		t.Fatalf("link %s -> %q, want the canonical global copy %q", linkPath, target, canonical)
 	}
-	// The link must resolve to a real directory inside Home, with a SKILL.md.
+	// The link must resolve to the copy, with a SKILL.md.
 	if _, err := os.Stat(filepath.Join(linkPath, "SKILL.md")); err != nil {
 		t.Fatalf("SKILL.md not reachable through link %s: %v", linkPath, err)
 	}
 }
 
-// claudeGlobalLink and agentsGlobalLink compute the expected global link paths
-// under the sandbox HOME.
+// claudeGlobalLink and agentsGlobalCopy compute the expected global install
+// paths under the sandbox HOME: claude's symlink and the canonical copy it
+// points at.
 func claudeGlobalLink(e env, id string) string {
 	return filepath.Join(e.userDir, ".claude", "skills", id)
 }
-func agentsGlobalLink(e env, id string) string {
+func agentsGlobalCopy(e env, id string) string {
 	return filepath.Join(e.userDir, ".agents", "skills", id)
 }
 
@@ -281,8 +293,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if !store.Exists(e.home, "alpha") {
 		t.Fatalf("alpha not present in Home %s", store.SkillsDir(e.home))
 	}
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
-	assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, "alpha"), "alpha")
+	assertGlobalInstalled(t, e, "alpha")
 
 	// --- add (fetch-only, no link) ------------------------------------------
 	e.run(t, "add", url, "beta")
@@ -313,8 +324,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 
 	// --- install (default scope is global per config default) ---------------
 	e.run(t, "install", "beta", "--global")
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "beta"), "beta")
-	assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, "beta"), "beta")
+	assertGlobalInstalled(t, e, "beta")
 
 	// --- install --local writes the committable project install -------------
 	// Run with the working directory set to a temp project so .claude/.agents
@@ -474,7 +484,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if _, err := os.Lstat(claudeGlobalLink(e, "beta")); !os.IsNotExist(err) {
 		t.Fatalf("beta claude global link not removed by uninstall, err = %v", err)
 	}
-	if _, err := os.Lstat(agentsGlobalLink(e, "beta")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(agentsGlobalCopy(e, "beta")); !os.IsNotExist(err) {
 		t.Fatalf("beta agents global link not removed by uninstall, err = %v", err)
 	}
 
@@ -482,7 +492,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if !store.Exists(e.home, "alpha") {
 		t.Fatal("alpha removed as a side effect of removing beta")
 	}
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
+	assertGlobalInstalled(t, e, "alpha")
 
 	// --- final registry shape ----------------------------------------------
 	st = loadState(t, e)
@@ -694,7 +704,7 @@ func TestLocalInstallLifecycle(t *testing.T) {
 
 	// --- a Global symlink coexists with the Local install ---------------------
 	e.run(t, "install", "alpha", "--global")
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
+	assertGlobalInstalled(t, e, "alpha")
 	assertVendoredCopy(t, agentsCopy, "alpha body")
 
 	// --- update refreshes the committed copy and the lock entry in place ------
@@ -802,6 +812,45 @@ func TestLegacySymlinkConversion(t *testing.T) {
 	}
 }
 
+// TestLegacyGlobalSymlinkConversion proves a re-run of `install --global`
+// upgrades a pre-refactor global install in place: the legacy absolute
+// symlinks into Home — at the canonical ~/.agents/skills slot and in
+// ~/.claude/skills — become a real canonical copy plus a link into it, and the
+// install is recorded as global.
+func TestLegacyGlobalSymlinkConversion(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	bin := skillmBinary(t)
+	_, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+	e.run(t, "add", url, "alpha")
+
+	// Hand-build the legacy shape: both agent folders hold absolute symlinks
+	// into Home.
+	for _, folder := range []string{
+		filepath.Join(e.userDir, ".agents", "skills"),
+		filepath.Join(e.userDir, ".claude", "skills"),
+	} {
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(store.SkillDir(e.home, "alpha"), filepath.Join(folder, "alpha")); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := e.run(t, "install", "alpha", "--global")
+	if !strings.Contains(out, "converted to copy") {
+		t.Fatalf("expected the legacy links to be converted, got:\n%s", out)
+	}
+	assertGlobalInstalled(t, e, "alpha")
+	if got, _ := loadState(t, e).Get("alpha"); !got.Global {
+		t.Fatal("conversion must record the global install")
+	}
+}
+
 // TestInstallUninstallMulti exercises the multi-skill behaviour added with the
 // install/uninstall rename: variadic ids, --all, atomic failure on an unknown
 // id, and the non-interactive guards (no picker / no scope on a non-TTY). The
@@ -841,15 +890,14 @@ func TestInstallUninstallMulti(t *testing.T) {
 	// --- variadic install ---------------------------------------------------
 	e.run(t, "install", "alpha", "beta", "--global")
 	for _, id := range []string{"alpha", "beta"} {
-		assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, id), id)
-		assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, id), id)
+		assertGlobalInstalled(t, e, id)
 	}
 	// gamma was not named, so it stays uninstalled.
 	assertNoLink(t, claudeGlobalLink(e, "gamma"), "gamma must not be installed yet")
 
 	// --- install --all picks up the rest (already-linked ones are no-ops) ---
 	e.run(t, "install", "--all", "--global")
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "gamma"), "gamma")
+	assertGlobalInstalled(t, e, "gamma")
 
 	// --- atomic uninstall: one bad id removes nothing -----------------------
 	if out, err := e.tryRun(t, "uninstall", "beta", "nope", "--yes"); err == nil {
@@ -877,7 +925,7 @@ func TestInstallUninstallMulti(t *testing.T) {
 	if !store.Exists(e.home, "beta") {
 		t.Fatal("beta removed as a side effect of uninstalling alpha/gamma")
 	}
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "beta"), "beta")
+	assertGlobalInstalled(t, e, "beta")
 
 	// --- uninstall --all clears whatever remains ----------------------------
 	e.run(t, "uninstall", "--all", "--yes")

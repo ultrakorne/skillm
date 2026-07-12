@@ -293,7 +293,7 @@ func adoptLocalInstall(home string, st *state.State, agents []agentdir.Agent, e 
 		}
 		upsertLockEntry(e, root)
 	}
-	linkLocalAgents(home, e.ID, localAgents, root, scopeLabel(agentdir.Local, root, ""))
+	linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""))
 	return changed
 }
 

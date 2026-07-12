@@ -1,21 +1,26 @@
 // Package linker creates, removes, and discovers the symlinks that expose a
-// skill to the agents that read it. The link shape depends on the scope:
+// skill to the agents that read it. Both scopes point at a canonical
+// .agents/skills copy; the link shape depends on the scope:
 //
-//   - Global: an absolute symlink at <agent-folder>/<id> pointing at the Home
-//     copy, <home>/skills/<id>;
+//   - Global: an absolute symlink at <agent-global-folder>/<id> pointing at
+//     the canonical global copy, ~/.agents/skills/<id>;
 //   - Local: a RELATIVE symlink at <base>/<agent-local>/<id> pointing at the
 //     project's canonical copy, <base>/.agents/skills/<id> (e.g.
 //     .claude/skills/x -> ../../.agents/skills/x). Relative links survive a
 //     clone, so they are committable alongside the canonical copy — the same
-//     layout vercel's skills CLI writes. Agents whose local folder IS the
-//     canonical store need no link at all and are skipped.
+//     layout vercel's skills CLI writes.
+//
+// At either scope, an agent whose folder IS the canonical store needs no link
+// at all and is skipped.
 //
 // The package is safe by default. It only ever creates, inspects, or removes
-// symlinks it recognizes as its own — those resolving into Home's skills/
-// subtree or into the project's canonical .agents/skills store; it refuses to
-// clobber or delete anything else (a real file, a real directory, or a symlink
-// pointing somewhere foreign). Which links currently exist is never persisted —
-// ScanLinks reads them live from disk so they cannot drift.
+// symlinks it recognizes as its own — those resolving into the scope's
+// canonical .agents/skills store, or into Home's skills/ subtree (the legacy
+// link shape, still recognized so re-running install converts old layouts in
+// place); it refuses to clobber or delete anything else (a real file, a real
+// directory, or a symlink pointing somewhere foreign). Which links currently
+// exist is never persisted — ScanLinks reads them live from disk so they
+// cannot drift.
 package linker
 
 import (
@@ -119,8 +124,8 @@ type AgentResult struct {
 	// (SkillsFolder/<id>).
 	Path string
 	// Target is the symlink's target. For Link it is the intended target
-	// (the Home skill dir). For ScanLinks it is the resolved on-disk target
-	// of the discovered link. Empty when there is no link.
+	// (the scope's canonical skill dir). For ScanLinks it is the resolved
+	// on-disk target of the discovered link. Empty when there is no link.
 	Target string
 	// Action is what happened (or was found) for this agent.
 	Action Action
@@ -133,11 +138,11 @@ type Result struct {
 }
 
 // Link symlinks skill id into every supplied agent's skill folder at scope.
-// At Global scope the link is absolute and points at the Home copy,
-// store.SkillDir(home, id); at Local scope it is relative and points at the
-// project's canonical copy, <cwd>/.agents/skills/<id> — an agent whose local
-// folder IS the canonical store is skipped (the copy itself serves it). For
-// each agent:
+// At Global scope the link is absolute and points at the canonical global
+// copy, ~/.agents/skills/<id>; at Local scope it is relative and points at the
+// project's canonical copy, <cwd>/.agents/skills/<id>. At either scope an
+// agent whose folder IS the canonical store is skipped (the copy itself serves
+// it). For each agent:
 //
 //   - the agent's skill folder is created if missing;
 //   - if no entry exists at the link path, a fresh symlink is created
@@ -145,8 +150,8 @@ type Result struct {
 //   - if a symlink already resolves to the correct target, it is left
 //     as-is (ActionAlreadyLinked, a no-op);
 //   - if a symlink resolves to a *different* skillm-managed place (another
-//     skill, or — at local scope — a legacy absolute link into Home), it is
-//     repointed to the correct target (ActionCreated);
+//     skill, or a legacy absolute link into Home's store), it is repointed
+//     to the correct target (ActionCreated);
 //   - if the entry is a real file, a real directory, or a foreign symlink,
 //     Link refuses: it returns an error and leaves that entry untouched.
 //
@@ -156,7 +161,7 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 	var res Result
 
 	for _, a := range agents {
-		if scope == agentdir.Local && agentdir.IsCanonicalLocal(a) {
+		if agentdir.IsCanonicalAt(a, scope) {
 			continue // served directly by the canonical copy; no link needed
 		}
 		folder, ok := agentdir.SkillsFolder(a, scope, cwd)
@@ -165,9 +170,9 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 		}
 		linkPath := filepath.Join(folder, id)
 
-		// The link target: absolute into Home at Global scope, relative into
-		// the canonical store at Local scope. resolved is the absolute form
-		// used for comparisons.
+		// The link target: absolute into the canonical global store at Global
+		// scope, relative into the project's canonical store at Local scope.
+		// resolved is the absolute form used for comparisons.
 		var target, resolved string
 		if scope == agentdir.Local {
 			resolved = agentdir.CanonicalSkillDir(cwd, id)
@@ -177,7 +182,7 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 			}
 			target = rel
 		} else {
-			target = store.SkillDir(home, id)
+			target = agentdir.CanonicalSkillDirAt(scope, cwd, id)
 			resolved = target
 		}
 
@@ -203,7 +208,7 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 				continue
 			}
 			// A skillm-managed link pointing elsewhere (another skill, or a
-			// legacy Home link at local scope). Repoint it.
+			// legacy link into Home's store). Repoint it.
 			if err := replaceLink(linkPath, target); err != nil {
 				return res, fmt.Errorf("repoint link %s: %w", linkPath, err)
 			}
@@ -253,9 +258,9 @@ func Unlink(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd 
 	var res Result
 
 	for _, a := range agents {
-		if scope == agentdir.Local && agentdir.IsCanonicalLocal(a) {
+		if agentdir.IsCanonicalAt(a, scope) {
 			// The canonical agent holds the copy itself, not a link; removing
-			// the copy is the local-install machinery's job, not Unlink's.
+			// the copy is the install machinery's job, not Unlink's.
 			continue
 		}
 		linkPath, ok := agentdir.LinkPath(a, scope, cwd, id)
@@ -306,8 +311,8 @@ func Unlink(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd 
 
 // ScanLinks reads the live link state of skill id across every supplied agent
 // at scope. It inspects each agent's skill folder for a symlink at <folder>/<id>
-// that skillm owns (resolving into Home's skills/ subtree, or — at local scope —
-// into the project's canonical .agents/skills store). Agents with such a link
+// that skillm owns (resolving into the scope's canonical .agents/skills store,
+// or into Home's skills/ subtree). Agents with such a link
 // get ActionFound (with Target set to the resolved destination); agents without
 // one get ActionAbsent. Foreign symlinks and real files are reported as
 // ActionAbsent (they are not skillm links) and never mutated. ScanLinks changes
@@ -356,15 +361,16 @@ type LinkInfo struct {
 	Scope agentdir.Scope
 	// Path is the absolute symlink path.
 	Path string
-	// Target is the resolved on-disk target inside Home's skills/ subtree.
+	// Target is the link's resolved on-disk target (a canonical store or,
+	// for a legacy link, Home's skills/ subtree).
 	Target string
 }
 
 // ScanAll discovers every skillm-managed link across the supplied agents at
 // scope, regardless of skill id, by listing each agent's skill folder and
-// keeping the entries that are symlinks skillm owns (into Home's skills/
-// subtree, or — at local scope — into the base's canonical .agents/skills
-// store). It is the basis for `skillm list` (which needs every linked id, not
+// keeping the entries that are symlinks skillm owns (into the scope's
+// canonical .agents/skills store, or into Home's skills/ subtree). It is the
+// basis for `skillm list` (which needs every linked id, not
 // a single one). Missing skill folders are simply skipped. ScanAll changes
 // nothing.
 //
@@ -500,17 +506,18 @@ func linkIntoHome(home, linkPath string) (ours bool, dest string, err error) {
 }
 
 // ownedLink reports whether linkPath is a symlink skillm owns at the given
-// scope: one resolving into Home's skills/ subtree (the Global link shape, and
-// the legacy local shape recognized so old links can still be repointed or
-// removed), or — at Local scope — into base's canonical .agents/skills store
-// (the current Local link shape). dest is the resolved target either way.
+// scope: one resolving into the scope's canonical .agents/skills store
+// (~/.agents/skills at Global, <base>/.agents/skills at Local — the current
+// link shapes), or into Home's skills/ subtree (the legacy shape at both
+// scopes, recognized so old links can still be repointed or removed). dest is
+// the resolved target either way.
 func ownedLink(home, base string, scope agentdir.Scope, linkPath string) (ours bool, dest string, err error) {
 	ours, dest, err = linkIntoHome(home, linkPath)
 	if err != nil || ours {
 		return ours, dest, err
 	}
-	if scope == agentdir.Local && base != "" {
-		canonical := filepath.Clean(agentdir.CanonicalLocalDir(base))
+	if scope != agentdir.Local || base != "" {
+		canonical := filepath.Clean(agentdir.CanonicalDirAt(scope, base))
 		if underDir(canonical, dest) {
 			return true, dest, nil
 		}

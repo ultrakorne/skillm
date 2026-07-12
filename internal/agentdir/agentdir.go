@@ -22,12 +22,14 @@ import (
 	"strings"
 )
 
-// CanonicalLocalRel is the project-relative directory that holds the real
-// files of a Local install: the cross-agent ".agents/skills" convention (the
-// same canonical store vercel's skills CLI uses). Agents whose Local folder is
-// exactly this directory read the copies natively; every other agent's local
-// folder gets a relative symlink into it. It is also the layout skills-lock.json
-// describes, which is what makes skillm's local installs interoperable.
+// CanonicalLocalRel is the relative directory that holds the real files of an
+// install at either scope: the cross-agent ".agents/skills" convention (the
+// same canonical store vercel's skills CLI uses). Rooted at a project base it
+// is the Local store; rooted at the user's home it is the Global store. Agents
+// whose folder at a scope is exactly this directory read the copies natively;
+// every other agent's folder gets a symlink into it. It is also the layout
+// skills-lock.json describes, which is what makes skillm's local installs
+// interoperable.
 const CanonicalLocalRel = ".agents/skills"
 
 // CanonicalLocalDir returns the canonical local skill store for a project
@@ -42,11 +44,49 @@ func CanonicalSkillDir(base, id string) string {
 	return filepath.Join(CanonicalLocalDir(base), id)
 }
 
+// CanonicalGlobalDir returns the canonical global skill store: ~/.agents/skills,
+// the cross-agent convention rooted at the user's home.
+func CanonicalGlobalDir() string {
+	return CanonicalLocalDir(homeDir())
+}
+
+// CanonicalDirAt returns the canonical skill store for the given scope: the
+// project store <base>/.agents/skills at Local, ~/.agents/skills at Global
+// (base is ignored).
+func CanonicalDirAt(scope Scope, base string) string {
+	if scope == Local {
+		return CanonicalLocalDir(base)
+	}
+	return CanonicalGlobalDir()
+}
+
+// CanonicalSkillDirAt returns the canonical on-disk location of one skill's
+// install at the given scope (see CanonicalDirAt).
+func CanonicalSkillDirAt(scope Scope, base, id string) string {
+	return filepath.Join(CanonicalDirAt(scope, base), id)
+}
+
 // IsCanonicalLocal reports whether the agent's Local folder IS the canonical
 // store — such an agent is served directly by the installed copy and never
 // needs a link.
 func IsCanonicalLocal(a Agent) bool {
 	return a.Local != "" && filepath.ToSlash(filepath.Clean(filepath.FromSlash(a.Local))) == CanonicalLocalRel
+}
+
+// IsCanonicalGlobal reports whether the agent's Global folder IS the canonical
+// global store (~/.agents/skills) — such an agent is served directly by the
+// installed copy and never needs a link.
+func IsCanonicalGlobal(a Agent) bool {
+	return a.Global != "" && samePath(expandGlobal(a.Global), CanonicalGlobalDir())
+}
+
+// IsCanonicalAt reports whether the agent's folder at scope is the canonical
+// store for that scope (see IsCanonicalLocal / IsCanonicalGlobal).
+func IsCanonicalAt(a Agent, scope Scope) bool {
+	if scope == Local {
+		return IsCanonicalLocal(a)
+	}
+	return IsCanonicalGlobal(a)
 }
 
 // Scope is where a skill is made available to an agent.

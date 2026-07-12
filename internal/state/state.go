@@ -49,12 +49,16 @@ type SkillEntry struct {
 	InstalledAt time.Time `toml:"installed_at"`
 	// VendoredAt is the set of project roots (absolute paths) holding this
 	// skill's Local Install — a canonical copy in <root>/.agents/skills plus
-	// relative agent links. It is the one piece of install state skillm stores:
-	// unlike a symlink, a copy cannot be re-discovered by a live disk scan, so
-	// the roots holding one are recorded here. (The TOML key keeps its historic
-	// "vendored_at" name so existing state files stay valid.) Empty when the
-	// skill has no Local Install.
+	// relative agent links. Unlike a symlink, a copy cannot be re-discovered
+	// by a live disk scan, so the roots holding one are recorded here. (The
+	// TOML key keeps its historic "vendored_at" name so existing state files
+	// stay valid.) Empty when the skill has no Local Install.
 	VendoredAt []string `toml:"vendored_at,omitempty"`
+	// Global records that the skill has a Global install — a canonical copy
+	// in ~/.agents/skills plus agent links. Like VendoredAt, it exists because
+	// a real-directory copy cannot be told apart from a foreign directory by a
+	// disk scan alone.
+	Global bool `toml:"global,omitempty"`
 }
 
 // State is the in-memory form of the whole registry.
@@ -213,6 +217,33 @@ func (s *State) RemoveVendoredRoot(id, dir string) bool {
 			}
 		}
 		return false
+	}
+	return false
+}
+
+// SetGlobal records (or clears) skill id's Global install flag. It returns
+// true if the entry changed (the caller should then Save), or false if the
+// skill is unknown or the flag already had that value.
+func (s *State) SetGlobal(id string, global bool) bool {
+	for i := range s.Skills {
+		if s.Skills[i].ID != id {
+			continue
+		}
+		if s.Skills[i].Global == global {
+			return false
+		}
+		s.Skills[i].Global = global
+		return true
+	}
+	return false
+}
+
+// IsGlobal reports whether skill id has a recorded Global install.
+func (s *State) IsGlobal(id string) bool {
+	for _, e := range s.Skills {
+		if e.ID == id {
+			return e.Global
+		}
 	}
 	return false
 }

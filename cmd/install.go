@@ -12,7 +12,6 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
-	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -38,9 +37,10 @@ func newInstallCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "install [<url|local-path>] [skill_id...]",
 		Short: "Install skills into every enabled agent at the chosen scope",
-		Long: "install makes skills visible to your agents at one scope: globally via " +
-			"symlinks from Home into each enabled agent's skill folder (see config.agents), " +
-			"or locally via a committable copy in the project. Pass " +
+		Long: "install makes skills visible to your agents at one scope: globally via a " +
+			"canonical copy in ~/.agents/skills plus symlinks in each enabled agent's own " +
+			"skill folder (see config.agents), or locally via a committable copy in the " +
+			"project. Pass " +
 			"one or more in-Home skill ids, --all to install every skill in Home, or no " +
 			"arguments to pick interactively from the skills in Home.\n\n" +
 			"The first argument may instead be a Source — a git repository URL or an " +
@@ -58,14 +58,16 @@ func newInstallCmd() *cobra.Command {
 			"every selected skill. --global or --local skip the prompt; on a " +
 			"non-interactive terminal pass skill ids (or --all) together with --global or " +
 			"--local. Folders are created if missing.\n\n" +
-			"A Global install symlinks each skill from Home into every enabled agent's " +
-			"user-level folder. A Local install writes a real copy into the project's " +
-			"canonical .agents/skills folder (read natively by Codex, Cursor, Amp, Gemini " +
-			"CLI, and more), links every other enabled agent to it with a relative in-repo " +
-			"symlink (e.g. .claude/skills/<id>), and records it in skills-lock.json — all " +
-			"committable, so teammates get working skills on clone, and the lockfile is " +
-			"interoperable with vercel's `npx skills` CLI. Re-installing something already " +
-			"correct is a no-op; skillm refuses to overwrite anything it did not create.",
+			"Both scopes write a real copy into a canonical .agents/skills store (read " +
+			"natively by Codex, Cursor, Amp, Gemini CLI, and more) and link every other " +
+			"enabled agent to it. A Global install puts the copy in ~/.agents/skills and " +
+			"absolute symlinks in the agents' user-level folders (e.g. ~/.claude/skills/<id>). " +
+			"A Local install puts it in the project's .agents/skills, links agents with " +
+			"relative in-repo symlinks (e.g. .claude/skills/<id>), and records it in " +
+			"skills-lock.json — all committable, so teammates get working skills on clone, " +
+			"and the lockfile is interoperable with vercel's `npx skills` CLI. Re-installing " +
+			"something already correct is a no-op; skillm refuses to overwrite anything it " +
+			"did not create.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInstall(cmd, args, installFlagGlobal, installFlagLocal, installFlagAll)
@@ -183,32 +185,19 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		return fmt.Errorf("no enabled agent has a %s location; define one in %s", scope, config.Path(home))
 	}
 
-	if scope == agentdir.Local {
-		return installLocal(home, st, ids, supported, base, scopeLabel(scope, base, cwd))
-	}
-
-	label := scopeLabel(scope, base, cwd)
-	var runErr error
-	for _, id := range ids {
-		res, err := linker.Link(home, id, supported, scope, base)
-		// Report whatever succeeded before any refusal, then stop on the error.
-		reportInstallResult(res, label)
-		if err != nil {
-			runErr = err
-			break
-		}
-	}
-	return runErr
+	return installVendored(home, st, ids, supported, scope, base, scopeLabel(scope, base, cwd))
 }
 
-// installLocal materializes each selected skill's Local install at base: the
-// canonical copy in <base>/.agents/skills, a relative link for every other
-// supported agent, and a skills-lock.json entry — recording base so
-// update/uninstall/list can find the install later. Foreign files at the
-// canonical slot are not clobbered silently: skillm asks once for the whole
-// batch on a TTY (or refuses on a non-TTY) unless --force/--yes was given. A
-// legacy skillm symlink at the slot is converted to a copy without asking.
-func installLocal(home string, st *state.State, ids []string, agents []agentdir.Agent, base, label string) error {
+// installVendored materializes each selected skill's install at (scope, base):
+// the canonical copy in the scope's .agents/skills store, a link for every
+// other supported agent, and — at Local scope — a skills-lock.json entry.
+// Each install is recorded in state.toml (the vendored root at Local, the
+// Global flag at Global) so update/uninstall/list can find it later. Foreign
+// files at the canonical slot are not clobbered silently: skillm asks once for
+// the whole batch on a TTY (or refuses on a non-TTY) unless --force/--yes was
+// given. A legacy skillm symlink at the slot is converted to a copy without
+// asking.
+func installVendored(home string, st *state.State, ids []string, agents []agentdir.Agent, scope agentdir.Scope, base, label string) error {
 	force := flagForce || flagYes
 
 	// Pre-scan every canonical slot for foreign entries that would be
@@ -216,8 +205,12 @@ func installLocal(home string, st *state.State, ids []string, agents []agentdir.
 	recorded := make(map[string]bool, len(ids))
 	var conflicts []string
 	for _, id := range ids {
-		recorded[id] = slices.Contains(st.VendoredRoots(id), base)
-		if c := localConflict(home, id, base, recorded[id]); c != "" {
+		if scope == agentdir.Local {
+			recorded[id] = slices.Contains(st.VendoredRoots(id), base)
+		} else {
+			recorded[id] = st.IsGlobal(id)
+		}
+		if c := vendorConflict(home, id, scope, base, recorded[id]); c != "" {
 			conflicts = append(conflicts, c)
 		}
 	}
@@ -225,7 +218,7 @@ func installLocal(home string, st *state.State, ids []string, agents []agentdir.
 		if !ui.IsTTY() {
 			return fmt.Errorf("refusing to overwrite files skillm did not create:\n  %s\npass --force to overwrite them", strings.Join(conflicts, "\n  "))
 		}
-		ok, err := ui.Confirm(confirmLocalOverwritePrompt(conflicts))
+		ok, err := ui.Confirm(confirmVendorOverwritePrompt(conflicts))
 		if err != nil {
 			return err
 		}
@@ -236,45 +229,49 @@ func installLocal(home string, st *state.State, ids []string, agents []agentdir.
 	installedAny := false
 	var runErr error
 	for _, id := range ids {
-		action, err := localInstallOne(home, id, agents, base, recorded[id], force, label)
+		action, err := vendorOne(home, id, agents, scope, base, recorded[id], force, label)
 		if err != nil {
 			runErr = err
 			break
 		}
-		if action == localBlocked {
+		if action == vendorBlocked {
 			ui.Warnf("skipped %s: installing here would overwrite files skillm did not create (pass --force)", id)
 			continue
 		}
-		ui.Successf("%s %s in %s (%s)", localActionLabel(action), id, agentdir.CanonicalLocalRel, label)
+		ui.Successf("%s %s in %s (%s)", vendorActionLabel(action), id, canonicalDisplay(scope), label)
 		installedAny = true
-		if st.AddVendoredRoot(id, base) {
+		if scope == agentdir.Local {
+			if st.AddVendoredRoot(id, base) {
+				stateDirty = true
+			}
+			if entry, ok := st.Get(id); ok {
+				upsertLockEntry(entry, base)
+			}
+		} else if st.SetGlobal(id, true) {
 			stateDirty = true
-		}
-		if entry, ok := st.Get(id); ok {
-			upsertLockEntry(entry, base)
 		}
 	}
 
 	// Remember the project directory so `list`, `update`, and `uninstall` can
 	// find this install from anywhere. Done even on a partial failure, so a
 	// copy that did land is found.
-	if installedAny && st.AddLocalRoot(base) {
+	if scope == agentdir.Local && installedAny && st.AddLocalRoot(base) {
 		stateDirty = true
 	}
 	if stateDirty {
 		if serr := state.Save(home, st); serr != nil {
-			ui.Warnf("installed, but could not record %s for `skillm list`/`update`: %v", base, serr)
+			ui.Warnf("installed, but could not record the install for `skillm list`/`update`: %v", serr)
 		}
 	}
-	if installedAny {
+	if scope == agentdir.Local && installedAny {
 		ui.Hintf("commit %s and %s to share these skills with your team", agentdir.CanonicalLocalRel, "skills-lock.json")
 	}
 	return runErr
 }
 
-// confirmLocalOverwritePrompt builds the one-shot confirmation shown before a
-// local install overwrites files skillm did not create.
-func confirmLocalOverwritePrompt(paths []string) string {
+// confirmVendorOverwritePrompt builds the one-shot confirmation shown before
+// an install overwrites files skillm did not create.
+func confirmVendorOverwritePrompt(paths []string) string {
 	return fmt.Sprintf("These paths exist and were not created by skillm:\n  %s\nOverwrite them with installed copies?",
 		strings.Join(paths, "\n  "))
 }
@@ -309,7 +306,7 @@ func selectInstallIDs(home string, st *state.State, agents []agentdir.Agent, cwd
 
 	opts := make([]ui.Option, 0, len(registered))
 	for _, id := range registered {
-		opts = append(opts, ui.Option{Label: id + installedMark(home, id, agents, cwd), Value: id})
+		opts = append(opts, ui.Option{Label: id + installedMark(home, id, agents, cwd, st.IsGlobal(id)), Value: id})
 	}
 	ids, err := ui.SelectSkills("Select skills to install", opts)
 	if err != nil {
@@ -340,15 +337,16 @@ func validateInHome(home string, ids []string) ([]string, error) {
 
 // installedMark returns a short annotation for the interactive install picker
 // describing where a skill is already installed: " (installed: global)",
-// " (installed: local)", or both. "Installed" here means linked at the global
-// scope or at the local scope of the current directory — the two places the
-// scope choices (Global / this folder) would act on. A skill linked only in some
-// OTHER project directory is deliberately treated as not installed, so the mark
-// reflects what installing from here would change. Returns "" when neither
-// applies.
-func installedMark(home, id string, agents []agentdir.Agent, cwd string) string {
+// " (installed: local)", or both. "Installed" here means installed at the
+// global scope (a recorded canonical copy or an agent link) or at the local
+// scope of the current directory — the two places the scope choices (Global /
+// this folder) would act on. A skill installed only in some OTHER project
+// directory is deliberately treated as not installed, so the mark reflects
+// what installing from here would change. Returns "" when neither applies.
+func installedMark(home, id string, agents []agentdir.Agent, cwd string, globalRecorded bool) string {
 	var where []string
-	if len(scanLinkNames(home, id, agents, agentdir.Global, "")) > 0 {
+	if (globalRecorded && vendorCopyExists(home, id, agentdir.Global, "")) ||
+		len(scanLinkNames(home, id, agents, agentdir.Global, "")) > 0 {
 		where = append(where, "global")
 	}
 	// Only count a local install for agents whose local folder is distinct from
@@ -452,16 +450,4 @@ func scopeLabel(scope agentdir.Scope, base, cwd string) string {
 		return scope.String()
 	}
 	return fmt.Sprintf("%s: %s", scope, base)
-}
-
-// reportInstallResult prints a styled line per agent describing what install did.
-func reportInstallResult(res linker.Result, label string) {
-	for _, ar := range res.Agents {
-		switch ar.Action {
-		case linker.ActionCreated:
-			ui.Successf("installed %s for %s (%s)", ar.ID, ar.Agent.Name, label)
-		case linker.ActionAlreadyLinked:
-			ui.Successf("%s already installed for %s (%s)", ar.ID, ar.Agent.Name, label)
-		}
-	}
 }

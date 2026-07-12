@@ -120,12 +120,37 @@ func TestLink_LocalSkipsCanonicalAgent(t *testing.T) {
 	}
 }
 
-func TestLink_GlobalCreatesAbsoluteSymlinkToHome(t *testing.T) {
+// sandboxUserHome redirects the user's home directory into the test sandbox
+// so global-scope paths (~/.agents/skills, ~/.claude/skills) never touch the
+// real home, and returns the sandboxed home path.
+func sandboxUserHome(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir) // Windows: os.UserHomeDir reads USERPROFILE
+	return dir
+}
+
+// materializeGlobalCanonical writes the canonical global copy of id under the
+// (sandboxed) user home, the target every global link resolves to.
+func materializeGlobalCanonical(t *testing.T, id string) string {
+	t.Helper()
+	dir := agentdir.CanonicalSkillDirAt(agentdir.Global, "", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestLink_GlobalCreatesAbsoluteSymlinkToCanonical(t *testing.T) {
 	const id = "demo"
 	fx := newFixture(t, id)
-	// An absolute Global template keeps the test inside the sandbox.
-	globalDir := filepath.Join(t.TempDir(), "skills")
-	ag := []agentdir.Agent{{Name: "claude", Global: globalDir, Local: ".claude/skills"}}
+	userHome := sandboxUserHome(t)
+	canonical := materializeGlobalCanonical(t, id)
+	ag := []agentdir.Agent{{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"}}
 
 	res, err := Link(fx.home, id, ag, agentdir.Global, fx.cwd)
 	if err != nil {
@@ -134,12 +159,93 @@ func TestLink_GlobalCreatesAbsoluteSymlinkToHome(t *testing.T) {
 	if len(res.Agents) != 1 || res.Agents[0].Action != ActionCreated {
 		t.Fatalf("global link not created: %+v", res.Agents)
 	}
+	if want := filepath.Join(userHome, ".claude", "skills", id); res.Agents[0].Path != want {
+		t.Errorf("global link at %s, want %s", res.Agents[0].Path, want)
+	}
 	got, err := os.Readlink(res.Agents[0].Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Clean(got) != filepath.Clean(store.SkillDir(fx.home, id)) {
-		t.Errorf("global link -> %s, want Home skill dir", got)
+	if !filepath.IsAbs(got) {
+		t.Errorf("global link is relative (%q), want absolute", got)
+	}
+	if filepath.Clean(got) != filepath.Clean(canonical) {
+		t.Errorf("global link -> %s, want canonical global copy %s", got, canonical)
+	}
+}
+
+func TestLink_GlobalSkipsCanonicalAgent(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	sandboxUserHome(t)
+	canonical := materializeGlobalCanonical(t, id)
+	ag := []agentdir.Agent{{Name: "agents", Global: "~/.agents/skills", Local: ".agents/skills"}}
+
+	res, err := Link(fx.home, id, ag, agentdir.Global, fx.cwd)
+	if err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if len(res.Agents) != 0 {
+		t.Fatalf("canonical global agent must be skipped, got %+v", res.Agents)
+	}
+	// Nothing may have been written over the canonical copy.
+	fi, err := os.Lstat(canonical)
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("canonical global copy disturbed: %v %v", fi, err)
+	}
+}
+
+func TestLink_GlobalRepointsLegacyHomeLinkToCanonical(t *testing.T) {
+	// A pre-refactor global install was an absolute symlink into Home. Link
+	// recognizes it as skillm's and repoints it to the canonical global copy.
+	const id = "demo"
+	fx := newFixture(t, id)
+	userHome := sandboxUserHome(t)
+	canonical := materializeGlobalCanonical(t, id)
+	ag := []agentdir.Agent{{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"}}
+
+	folder := filepath.Join(userHome, ".claude", "skills")
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(folder, id)
+	if err := os.Symlink(store.SkillDir(fx.home, id), linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Link(fx.home, id, ag, agentdir.Global, fx.cwd)
+	if err != nil {
+		t.Fatalf("Link should repoint a legacy Home link, got %v", err)
+	}
+	if res.Agents[0].Action != ActionCreated {
+		t.Errorf("action = %s, want created (repointed)", res.Agents[0].Action)
+	}
+	got, _ := os.Readlink(linkPath)
+	if filepath.Clean(got) != filepath.Clean(canonical) {
+		t.Errorf("link not repointed to canonical global copy: %q", got)
+	}
+}
+
+func TestUnlink_GlobalRemovesOwnedSymlink(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	sandboxUserHome(t)
+	materializeGlobalCanonical(t, id)
+	ag := []agentdir.Agent{{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"}}
+
+	if _, err := Link(fx.home, id, ag, agentdir.Global, fx.cwd); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	res, err := Unlink(fx.home, id, ag, agentdir.Global, fx.cwd)
+	if err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].Action != ActionRemoved {
+		t.Fatalf("global link not removed: %+v", res.Agents)
+	}
+	// The canonical global copy must survive an unlink pass.
+	if fi, err := os.Stat(agentdir.CanonicalSkillDirAt(agentdir.Global, "", id)); err != nil || !fi.IsDir() {
+		t.Errorf("canonical global copy disturbed by Unlink: %v", err)
 	}
 }
 

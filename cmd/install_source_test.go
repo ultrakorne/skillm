@@ -50,8 +50,7 @@ func TestInstallSourceGit(t *testing.T) {
 	if !strings.Contains(out, "added alpha") {
 		t.Fatalf("install alpha from source: expected an 'added' line, got:\n%s", out)
 	}
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
-	assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, "alpha"), "alpha")
+	assertGlobalInstalled(t, e, "alpha")
 	a, ok := loadState(t, e).Get("alpha")
 	if !ok || a.Kind != state.KindGit {
 		t.Fatalf("alpha not registered as a git skill: %+v ok=%v", a, ok)
@@ -68,8 +67,7 @@ func TestInstallSourceGit(t *testing.T) {
 		t.Fatalf("install --all: expected a reuse notice for alpha, got:\n%s", out)
 	}
 	for _, id := range []string{"alpha", "beta", "gamma"} {
-		assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, id), id)
-		assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, id), id)
+		assertGlobalInstalled(t, e, id)
 	}
 	if n := len(loadState(t, e).Skills); n != 3 {
 		t.Fatalf("registry has %d skills, want 3 (alpha, beta, gamma)", n)
@@ -93,7 +91,7 @@ func TestInstallSourceLocal(t *testing.T) {
 	if !strings.Contains(out, "added mylocal") {
 		t.Fatalf("install local source: expected an 'added' line, got:\n%s", out)
 	}
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "mylocal"), "mylocal")
+	assertGlobalInstalled(t, e, "mylocal")
 	entry, ok := loadState(t, e).Get("mylocal")
 	if !ok || entry.Kind != state.KindLocal {
 		t.Fatalf("mylocal not registered as a local skill: %+v ok=%v", entry, ok)
@@ -121,7 +119,7 @@ func TestInstallShapeBareNameIsId(t *testing.T) {
 	// A bare "alpha" must resolve to the in-Home (git) skill, never the ./alpha
 	// decoy — so this installs the existing Home copy, leaving it a git skill.
 	e.runIn(t, project, "install", "alpha", "--global")
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
+	assertGlobalInstalled(t, e, "alpha")
 
 	a, _ := loadState(t, e).Get("alpha")
 	if a.Kind != state.KindGit {
@@ -178,7 +176,7 @@ func TestInstallSourceSameSourceReuse(t *testing.T) {
 		t.Fatalf("Home copy was overwritten; install must not re-fetch:\n%s", body)
 	}
 	// But it IS installed now.
-	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
+	assertGlobalInstalled(t, e, "alpha")
 }
 
 // TestInstallSourceDifferentSourceCollision proves a same-id-different-Source

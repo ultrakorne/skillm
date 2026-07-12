@@ -68,7 +68,7 @@ func TestLinkedLabel(t *testing.T) {
 	agents := config.Default().AllAgents() // agents, claude (sorted)
 
 	// Nothing linked yet.
-	if got := linkedLabel(home, id, agents, nil, nil, t.TempDir()); got != "-" {
+	if got := linkedLabel(home, state.SkillEntry{ID: id}, agents, nil, t.TempDir()); got != "-" {
 		t.Fatalf("unlinked label = %q, want %q", got, "-")
 	}
 
@@ -85,7 +85,7 @@ func TestLinkedLabel(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(link) })
 
-	got := linkedLabel(home, id, agents, nil, nil, t.TempDir())
+	got := linkedLabel(home, state.SkillEntry{ID: id}, agents, nil, t.TempDir())
 	want := "global: " + a.Name
 	if got != want {
 		t.Fatalf("linked label = %q, want %q", got, want)
@@ -122,7 +122,7 @@ func TestLinkedLabelLocalRoots(t *testing.T) {
 	}
 
 	cwd := t.TempDir() // a different directory with no links of its own
-	got := linkedLabel(home, id, agents, []string{proj}, nil, cwd)
+	got := linkedLabel(home, state.SkillEntry{ID: id}, agents, []string{proj}, cwd)
 	want := fmt.Sprintf("local(%s): %s", proj, a.Name)
 	if got != want {
 		t.Fatalf("linked label = %q, want %q", got, want)
@@ -159,7 +159,7 @@ func TestLinkedLabelHomeAliasesGlobal(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	got := linkedLabel(home, id, agents, nil, nil, fakeHome)
+	got := linkedLabel(home, state.SkillEntry{ID: id}, agents, nil, fakeHome)
 	want := "global: " + a.Name
 	if got != want {
 		t.Fatalf("label from home = %q, want %q (a global link must not appear as local)", got, want)

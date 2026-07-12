@@ -180,10 +180,10 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 		}
 		got := false
 		for _, id := range footprintIDs(home, sources, scope, base) {
-			// A local link points at the canonical copy; without one (a legacy
-			// root whose peers still hold old Home links) a new link would
-			// dangle — skip it.
-			if scope == agentdir.Local && !localCopyExists(home, id, base) {
+			// A link points at the scope's canonical copy; without one (a
+			// legacy install whose peers still hold old Home links) a new link
+			// would dangle — skip it.
+			if !vendorCopyExists(home, id, scope, base) {
 				continue
 			}
 			res, err := linker.Link(home, id, one, scope, base)
@@ -220,30 +220,40 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 		}
 	}
 
-	// Link the recorded Local installs too: at every root where a skill's
-	// canonical copy exists, the newly-enabled agent gets its relative link (a
-	// canonical-folder agent is served by the copy itself and needs nothing).
-	// A foreign entry at the agent's own link path is warned about, never
-	// clobbered.
+	// Link the recorded installs too — the Global install and every root where
+	// a skill's canonical copy exists — so the newly-enabled agent gets its
+	// link even where no peer holds one (a canonical-folder agent is served by
+	// the copy itself and needs nothing). A foreign entry at the agent's own
+	// link path is warned about, never clobbered.
+	linkRecorded := func(id string, scope agentdir.Scope, base string) {
+		if !vendorCopyExists(home, id, scope, base) {
+			return // copy vanished; nothing to link to
+		}
+		res, lerr := linker.Link(home, id, one, scope, base)
+		if lerr != nil {
+			ui.Warnf("%v", lerr)
+		}
+		for _, ar := range res.Agents {
+			if ar.Action == linker.ActionCreated || ar.Action == linker.ActionAlreadyLinked {
+				skills[id] = true
+				places = append(places, scopeLabel(scope, base, cwd))
+			}
+		}
+	}
+	if a.Supports(agentdir.Global) && !agentdir.IsCanonicalGlobal(a) {
+		for _, e := range st.Skills {
+			if e.Global {
+				linkRecorded(e.ID, agentdir.Global, cwd)
+			}
+		}
+	}
 	if a.Supports(agentdir.Local) && !agentdir.IsCanonicalLocal(a) {
 		for _, e := range st.Skills {
 			for _, root := range e.VendoredAt {
 				if agentdir.LocalAliasesGlobal(a, root) {
 					continue
 				}
-				if !localCopyExists(home, e.ID, root) {
-					continue // copy vanished; nothing to link to
-				}
-				res, lerr := linker.Link(home, e.ID, one, agentdir.Local, root)
-				if lerr != nil {
-					ui.Warnf("%v", lerr)
-				}
-				for _, ar := range res.Agents {
-					if ar.Action == linker.ActionCreated || ar.Action == linker.ActionAlreadyLinked {
-						skills[e.ID] = true
-						places = append(places, scopeLabel(agentdir.Local, root, cwd))
-					}
-				}
+				linkRecorded(e.ID, agentdir.Local, root)
 			}
 		}
 	}
@@ -306,11 +316,14 @@ func disableAgent(home string, a agentdir.Agent, st *state.State, cwd string) {
 	}
 
 	// The canonical .agents/skills copies are NOT deleted, even when the
-	// "agents" entry itself is disabled: they are the project's committed skill
-	// store and the target of every other agent's local link. Removing a
-	// project's copies is `skillm uninstall`'s job.
+	// "agents" entry itself is disabled: they are the scope's skill store and
+	// the target of every other agent's link. Removing copies is
+	// `skillm uninstall`'s job.
 	if agentdir.IsCanonicalLocal(a) && anyVendoredRoot(st) {
 		ui.Hintf("committed copies in the projects' %s folders stay in place; use `skillm uninstall` to remove skills entirely", agentdir.CanonicalLocalRel)
+	}
+	if agentdir.IsCanonicalGlobal(a) && anyGlobalInstall(st) {
+		ui.Hintf("global copies in %s stay in place; use `skillm uninstall` to remove skills entirely", canonicalDisplay(agentdir.Global))
 	}
 
 	if len(skills) == 0 {
@@ -356,6 +369,16 @@ func confirmAgentPrompt(newlyEnabled, newlyDisabled []agentdir.Agent) string {
 func anyVendoredRoot(st *state.State) bool {
 	for _, e := range st.Skills {
 		if len(e.VendoredAt) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// anyGlobalInstall reports whether any skill has a recorded Global install.
+func anyGlobalInstall(st *state.State) bool {
+	for _, e := range st.Skills {
+		if e.Global {
 			return true
 		}
 	}

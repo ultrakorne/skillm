@@ -10,59 +10,73 @@ import (
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
-// Local-install orchestration shared by install, update, uninstall, list, and
-// agent. A Local install writes a real, committable copy of the skill into the
-// project's canonical store, <base>/.agents/skills/<id> — the cross-agent
-// convention read natively by Codex, Cursor, Amp, Gemini CLI and friends, and
-// the same layout vercel's skills CLI produces — plus a RELATIVE symlink into
-// that copy for every enabled agent whose local folder is elsewhere (e.g.
-// .claude/skills/<id> -> ../../.agents/skills/<id>). Copy, links, and the
-// skills-lock.json entry written alongside (see locksync.go) are all
-// committable, so teammates get working skills on clone with no tooling.
+// Vendored-install orchestration shared by install, update, uninstall, list,
+// and agent. An install at either scope writes a real copy of the skill into
+// that scope's canonical store — <base>/.agents/skills/<id> for a Local
+// install, ~/.agents/skills/<id> for a Global one: the cross-agent convention
+// read natively by Codex, Cursor, Amp, Gemini CLI and friends, and the same
+// layout vercel's skills CLI produces — plus a symlink into that copy for
+// every enabled agent whose folder at the scope is elsewhere (RELATIVE at
+// Local so links survive a clone, e.g. .claude/skills/<id> ->
+// ../../.agents/skills/<id>; absolute at Global). At Local scope a
+// skills-lock.json entry is written alongside (see locksync.go), so copy,
+// links, and lockfile are all committable and teammates get working skills on
+// clone with no tooling.
 //
 // A real-directory copy cannot be re-discovered by a live link scan, so the
-// project roots holding one are recorded per skill in state.toml
-// (SkillEntry.VendoredAt); the invariant is that a recorded root's canonical
-// slot is skillm's own copy.
+// installs holding one are recorded in state.toml: the project roots per
+// skill in SkillEntry.VendoredAt, the Global install in SkillEntry.Global.
+// The invariant is that a recorded install's canonical slot is skillm's own
+// copy.
 
-// localAction is what localInstallOne did to the canonical slot at one root.
-type localAction int
+// vendorAction is what vendorOne did to the canonical slot at one scope/base.
+type vendorAction int
 
 const (
-	// localWrote: a copy was written where nothing existed.
-	localWrote localAction = iota
-	// localConverted: a legacy skillm symlink into Home was replaced by a copy.
-	localConverted
-	// localRefreshed: an existing recorded copy was overwritten with Home's content.
-	localRefreshed
-	// localAdopted: a foreign file/dir/symlink was overwritten under --force/confirm.
-	localAdopted
-	// localBlocked: a foreign entry was left untouched (no force/confirm).
-	localBlocked
+	// vendorWrote: a copy was written where nothing existed.
+	vendorWrote vendorAction = iota
+	// vendorConverted: a legacy skillm symlink into Home was replaced by a copy.
+	vendorConverted
+	// vendorRefreshed: an existing recorded copy was overwritten with Home's content.
+	vendorRefreshed
+	// vendorAdopted: a foreign file/dir/symlink was overwritten under --force/confirm.
+	vendorAdopted
+	// vendorBlocked: a foreign entry was left untouched (no force/confirm).
+	vendorBlocked
 )
 
-// localActionLabel renders a localAction as a short past-tense verb for report
-// lines.
-func localActionLabel(a localAction) string {
+// vendorActionLabel renders a vendorAction as a short past-tense verb for
+// report lines.
+func vendorActionLabel(a vendorAction) string {
 	switch a {
-	case localWrote, localAdopted:
+	case vendorWrote, vendorAdopted:
 		return "installed"
-	case localConverted:
+	case vendorConverted:
 		return "converted to copy"
-	case localRefreshed:
+	case vendorRefreshed:
 		return "refreshed"
 	default:
 		return ""
 	}
 }
 
-// localConflict returns the canonical slot's path when a local install of id at
-// base would overwrite something skillm did not create: a real file, a foreign
-// symlink, or an unrecorded real directory. When base is already a recorded
-// root for the skill, the directory there is skillm's own copy — no conflict.
-// A legacy skillm symlink into Home is never a conflict (it is converted).
-func localConflict(home, id, base string, recorded bool) string {
-	slot := agentdir.CanonicalSkillDir(base, id)
+// canonicalDisplay names the scope's canonical store in report lines:
+// ".agents/skills" for a Local install, "~/.agents/skills" for a Global one.
+func canonicalDisplay(scope agentdir.Scope) string {
+	if scope == agentdir.Local {
+		return agentdir.CanonicalLocalRel
+	}
+	return "~/" + agentdir.CanonicalLocalRel
+}
+
+// vendorConflict returns the canonical slot's path when installing id at
+// (scope, base) would overwrite something skillm did not create: a real file,
+// a foreign symlink, or an unrecorded real directory. When the install is
+// already recorded (a vendored root for Local, the Global flag for Global),
+// the directory there is skillm's own copy — no conflict. A legacy skillm
+// symlink into Home is never a conflict (it is converted).
+func vendorConflict(home, id string, scope agentdir.Scope, base string, recorded bool) string {
+	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 	kind, _, err := linker.Classify(home, slot)
 	if err != nil {
 		return slot
@@ -78,69 +92,69 @@ func localConflict(home, id, base string, recorded bool) string {
 	return ""
 }
 
-// localInstallOne materializes skill id's Local install at base: the canonical
-// copy from Home, then a relative link for every supplied agent that needs one.
-// recorded says whether base is already a recorded root for this skill (so a
+// vendorOne materializes skill id's install at (scope, base): the canonical
+// copy from Home, then a link for every supplied agent that needs one.
+// recorded says whether the install is already recorded for this skill (so a
 // directory at the canonical slot is skillm's own copy); force permits
 // overwriting a foreign entry there; label names the scope in per-link report
-// lines. It returns what happened to the canonical slot; localBlocked means
-// nothing was written at all. Link refusals (a foreign entry at an agent's link
-// path) are warned about, never fatal: the copy is the unit that is recorded,
-// links are re-derivable from disk.
-func localInstallOne(home, id string, agents []agentdir.Agent, base string, recorded, force bool, label string) (localAction, error) {
+// lines. It returns what happened to the canonical slot; vendorBlocked means
+// nothing was written at all. Link refusals (a foreign entry at an agent's
+// link path) are warned about, never fatal: the copy is the unit that is
+// recorded, links are re-derivable from disk.
+func vendorOne(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force bool, label string) (vendorAction, error) {
 	src := store.SkillDir(home, id)
-	slot := agentdir.CanonicalSkillDir(base, id)
+	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 
 	kind, _, err := linker.Classify(home, slot)
 	if err != nil {
-		return localBlocked, err
+		return vendorBlocked, err
 	}
 
-	action := localWrote
+	action := vendorWrote
 	switch kind {
 	case linker.TargetAbsent:
 	case linker.TargetOurLink:
-		// A legacy absolute symlink into Home from before local installs were
+		// A legacy absolute symlink into Home from before installs were
 		// vendored: drop it, then write the real copy in its place.
 		if err := os.Remove(slot); err != nil && !os.IsNotExist(err) {
-			return localBlocked, fmt.Errorf("remove legacy symlink %s: %w", slot, err)
+			return vendorBlocked, fmt.Errorf("remove legacy symlink %s: %w", slot, err)
 		}
-		action = localConverted
+		action = vendorConverted
 	case linker.TargetDir:
 		if recorded {
-			action = localRefreshed
+			action = vendorRefreshed
 		} else if force {
-			action = localAdopted
+			action = vendorAdopted
 		} else {
-			return localBlocked, nil
+			return vendorBlocked, nil
 		}
 	case linker.TargetForeignLink, linker.TargetFile:
 		if !force {
-			return localBlocked, nil
+			return vendorBlocked, nil
 		}
 		if err := os.Remove(slot); err != nil && !os.IsNotExist(err) {
-			return localBlocked, fmt.Errorf("remove %s: %w", slot, err)
+			return vendorBlocked, fmt.Errorf("remove %s: %w", slot, err)
 		}
-		action = localAdopted
+		action = vendorAdopted
 	}
 
 	// ReplaceDir stages the new content before touching the slot, so a failure
 	// never destroys an existing copy.
 	if err := store.ReplaceDir(src, slot); err != nil {
-		return localBlocked, fmt.Errorf("install copy of %s: %w", id, err)
+		return vendorBlocked, fmt.Errorf("install copy of %s: %w", id, err)
 	}
 
-	linkLocalAgents(home, id, agents, base, label)
+	linkVendorAgents(home, id, agents, scope, base, label)
 	return action, nil
 }
 
-// linkLocalAgents creates (or repoints) the relative agent links into the
-// canonical copy of id at base for every supplied agent, warning on refusals
+// linkVendorAgents creates (or repoints) the agent links into the canonical
+// copy of id at (scope, base) for every supplied agent, warning on refusals
 // instead of failing — a foreign file at one agent's link path must not block
 // the others.
-func linkLocalAgents(home, id string, agents []agentdir.Agent, base, label string) {
+func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string) {
 	for _, a := range agents {
-		res, err := linker.Link(home, id, []agentdir.Agent{a}, agentdir.Local, base)
+		res, err := linker.Link(home, id, []agentdir.Agent{a}, scope, base)
 		if err != nil {
 			ui.Warnf("%v", err)
 		}
@@ -152,55 +166,76 @@ func linkLocalAgents(home, id string, agents []agentdir.Agent, base, label strin
 	}
 }
 
-// localCopyExists reports whether the canonical slot for id at base currently
-// holds a real directory (skillm's copy or otherwise — the caller decides via
-// the recorded roots).
-func localCopyExists(home, id, base string) bool {
-	kind, _, err := linker.Classify(home, agentdir.CanonicalSkillDir(base, id))
+// vendorCopyExists reports whether the canonical slot for id at (scope, base)
+// currently holds a real directory (skillm's copy or otherwise — the caller
+// decides via the recorded installs).
+func vendorCopyExists(home, id string, scope agentdir.Scope, base string) bool {
+	kind, _, err := linker.Classify(home, agentdir.CanonicalSkillDirAt(scope, base, id))
 	return err == nil && kind == linker.TargetDir
 }
 
-// localServedAgents returns the names of the supplied agents that skill id's
-// Local install at base currently serves, read live from disk: agents whose
-// local folder IS the canonical store when the copy exists, plus agents holding
-// a skillm-owned link there. Sorted by the caller if needed.
-func localServedAgents(home, id string, agents []agentdir.Agent, base string) []string {
-	copyExists := localCopyExists(home, id, base)
+// localCopyExists is vendorCopyExists at Local scope, the common case.
+func localCopyExists(home, id, base string) bool {
+	return vendorCopyExists(home, id, agentdir.Local, base)
+}
+
+// servedAgents returns the names of the supplied agents that skill id's
+// install at (scope, base) currently serves, read live from disk: agents
+// whose folder at the scope IS the canonical store when the copy exists, plus
+// agents holding a skillm-owned link there. Sorted by the caller if needed.
+func servedAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string) []string {
+	copyExists := vendorCopyExists(home, id, scope, base)
 	var names []string
 	for _, a := range agents {
-		if agentdir.IsCanonicalLocal(a) {
-			if copyExists {
-				names = append(names, a.Name)
-			}
-			continue
+		if agentdir.IsCanonicalAt(a, scope) && copyExists {
+			names = append(names, a.Name)
 		}
 	}
-	names = append(names, scanLinkNames(home, id, agents, agentdir.Local, base)...)
+	names = append(names, scanLinkNames(home, id, agents, scope, base)...)
 	return dedupeStrings(names)
 }
 
-// localRemove deletes skill id's Local install at base: every supplied agent's
-// link into the canonical copy, then the copy itself. Foreign entries are never
-// touched (link refusals are warned about); a missing copy is a no-op. It
-// returns whether a copy was removed.
-func localRemove(home, id string, agents []agentdir.Agent, base string) (removedCopy bool, err error) {
-	res, lerr := linker.Unlink(home, id, agents, agentdir.Local, base)
+// vendorRemove deletes skill id's install at (scope, base): every supplied
+// agent's link into the canonical copy, any legacy skillm symlink occupying
+// the canonical slot itself, and — when removeCopy is true, i.e. the install
+// is recorded so the directory there is skillm's own — the copy. Foreign
+// entries are never touched (link refusals are warned about); a missing copy
+// is a no-op. It returns whether a copy was removed.
+func vendorRemove(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string, removeCopy bool, label string) (removedCopy bool, err error) {
+	res, lerr := linker.Unlink(home, id, agents, scope, base)
 	if lerr != nil {
 		ui.Warnf("%v", lerr)
 	}
 	for _, ar := range res.Agents {
 		if ar.Action == linker.ActionRemoved {
-			ui.Successf("unlinked %s from %s (%s)", id, ar.Agent.Name, base)
+			ui.Successf("unlinked %s from %s (%s)", id, ar.Agent.Name, label)
 		}
 	}
 
-	if !localCopyExists(home, id, base) {
+	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
+	kind, _, cerr := linker.Classify(home, slot)
+	if cerr != nil {
+		return false, cerr
+	}
+	switch kind {
+	case linker.TargetOurLink:
+		// A legacy layout where the canonical slot itself is a symlink into
+		// Home: it is skillm's, and Unlink skipped it (the canonical agent
+		// holds no separate link), so clear it here.
+		if rerr := os.Remove(slot); rerr != nil && !os.IsNotExist(rerr) {
+			return false, fmt.Errorf("remove legacy symlink %s: %w", slot, rerr)
+		}
 		return false, nil
+	case linker.TargetDir:
+		if !removeCopy {
+			return false, nil
+		}
+		if rerr := os.RemoveAll(slot); rerr != nil {
+			return false, fmt.Errorf("remove copy %s: %w", slot, rerr)
+		}
+		return true, nil
 	}
-	if rerr := os.RemoveAll(agentdir.CanonicalSkillDir(base, id)); rerr != nil {
-		return false, fmt.Errorf("remove copy %s: %w", agentdir.CanonicalSkillDir(base, id), rerr)
-	}
-	return true, nil
+	return false, nil
 }
 
 // dedupeStrings returns s with duplicates removed, preserving first-seen order.

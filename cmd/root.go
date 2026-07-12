@@ -53,14 +53,9 @@ func newRootCmd() *cobra.Command {
 		// Quiet cobra's own error/usage printing; fang renders errors.
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		// Verify the runtime prerequisites before any command runs, then give
-		// the one-time config migration a chance (cheap when there is nothing
-		// to migrate — see migrate.go).
+		// Verify the runtime prerequisites before any command runs.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if err := checkGit(); err != nil {
-				return err
-			}
-			return migrateDeadAgentDirs()
+			return checkGit()
 		},
 	}
 
