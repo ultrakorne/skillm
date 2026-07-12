@@ -152,7 +152,11 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 		inScope = append(inScope, t.entry.ID)
 	}
 	inScope = append(inScope, localIDs...)
-	if refreshVendoredCopies(home, cfg.AllAgents(), st, inScope, updatedSet) {
+	// Only enabled agents get links (re)created by the re-sync: a disabled
+	// agent's links were removed when it was disabled, and update must not
+	// resurrect them. (Uninstall's sweep, by contrast, spans ALL defined
+	// agents — removing stale links is safe, creating them is not.)
+	if refreshVendoredCopies(home, cfg.EnabledAgents(), st, inScope, updatedSet) {
 		dirty = true
 	}
 
