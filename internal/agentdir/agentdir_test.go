@@ -16,14 +16,15 @@ func setTestHome(t *testing.T, dir string) {
 	}
 }
 
-// claudeAgent and codexAgent are the conventional definitions, constructed
-// directly: the catalog now lives in config, not in this package.
+// claudeAgent and agentsAgent are the conventional definitions, constructed
+// directly: the catalog now lives in config, not in this package. "agents" is
+// the cross-agent .agents/skills convention (Codex does not read .codex/skills).
 func claudeAgent() Agent {
 	return Agent{Name: "claude", Global: "~/.claude/skills", Local: ".claude/skills"}
 }
 
-func codexAgent() Agent {
-	return Agent{Name: "codex", Global: "~/.codex/skills", Local: ".codex/skills"}
+func agentsAgent() Agent {
+	return Agent{Name: "agents", Global: "~/.agents/skills", Local: ".agents/skills"}
 }
 
 func TestSupports(t *testing.T) {
@@ -56,7 +57,7 @@ func TestSkillsFolderGlobal(t *testing.T) {
 		want  string
 	}{
 		{claudeAgent(), filepath.Join(home, ".claude", "skills")},
-		{codexAgent(), filepath.Join(home, ".codex", "skills")},
+		{agentsAgent(), filepath.Join(home, ".agents", "skills")},
 	}
 	for _, c := range cases {
 		// base is irrelevant for Global scope.
@@ -78,7 +79,7 @@ func TestSkillsFolderLocal(t *testing.T) {
 		want  string
 	}{
 		{claudeAgent(), filepath.Join(base, ".claude", "skills")},
-		{codexAgent(), filepath.Join(base, ".codex", "skills")},
+		{agentsAgent(), filepath.Join(base, ".agents", "skills")},
 	}
 	for _, c := range cases {
 		got, ok := SkillsFolder(c.agent, Local, base)
@@ -128,7 +129,7 @@ func TestGlobalTemplateForms(t *testing.T) {
 		{"~/.config/opencode/skill", filepath.Join(home, ".config", "opencode", "skill")},
 		{"~", home},
 		{".claude/skills", filepath.Join(home, ".claude", "skills")}, // relative rooted at home
-		{absDir, absDir},                                              // absolute as-is
+		{absDir, absDir}, // absolute as-is
 	}
 	for _, c := range cases {
 		got, ok := SkillsFolder(Agent{Name: "x", Global: c.in}, Global, "")
@@ -150,9 +151,9 @@ func TestLinkPath(t *testing.T) {
 		want  string
 	}{
 		{claudeAgent(), Global, filepath.Join(home, ".claude", "skills", id)},
-		{codexAgent(), Global, filepath.Join(home, ".codex", "skills", id)},
+		{agentsAgent(), Global, filepath.Join(home, ".agents", "skills", id)},
 		{claudeAgent(), Local, filepath.Join(base, ".claude", "skills", id)},
-		{codexAgent(), Local, filepath.Join(base, ".codex", "skills", id)},
+		{agentsAgent(), Local, filepath.Join(base, ".agents", "skills", id)},
 	}
 	for _, c := range cases {
 		got, ok := LinkPath(c.agent, c.scope, base, id)
@@ -192,7 +193,7 @@ func TestLocalAliasesGlobal(t *testing.T) {
 		// claude global is ~/.claude/skills; at base == home its local
 		// .claude/skills resolves to the very same folder.
 		{"claude at home aliases", claudeAgent(), home, true},
-		{"codex at home aliases", codexAgent(), home, true},
+		{"agents at home aliases", agentsAgent(), home, true},
 		// In a real project the two diverge — a genuine local scope.
 		{"claude in project is real", claudeAgent(), project, false},
 		// Global-only and local-only agents cannot alias (need both folders).

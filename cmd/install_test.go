@@ -28,7 +28,7 @@ func TestInstalledMark(t *testing.T) {
 		t.Fatalf("mkdir skill: %v", err)
 	}
 
-	agents := config.Default().AllAgents() // claude, codex
+	agents := config.Default().AllAgents() // agents, claude (sorted)
 	a := agents[0]
 	cwd := t.TempDir()
 
@@ -76,7 +76,7 @@ func TestInstalledMarkHomeAliasesGlobal(t *testing.T) {
 		t.Fatalf("mkdir skill: %v", err)
 	}
 
-	agents := config.Default().AllAgents() // claude, codex
+	agents := config.Default().AllAgents() // agents, claude (sorted)
 	a := agents[0]
 
 	// A single global link, scanned with cwd == HOME.

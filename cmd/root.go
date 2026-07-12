@@ -45,15 +45,22 @@ func newRootCmd() *cobra.Command {
 		Use:   "skillm",
 		Short: "Manage AI-agent skills from a single central Home",
 		Long: "skillm keeps every AI-agent skill in one central Home and links them " +
-			"(via symlinks) into the skill folders that agents read. It supports the " +
-			"Claude and Codex agents, which share an identical on-disk skill format.",
+			"(via symlinks) into the skill folders that agents read. It seeds definitions " +
+			"for Claude and for the cross-agent .agents/skills folder (read by Codex, " +
+			"Cursor, Amp, Gemini CLI, and more); any other agent can be added by defining " +
+			"its folders in config.toml.",
 		Version: version,
 		// Quiet cobra's own error/usage printing; fang renders errors.
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		// Verify the runtime prerequisites before any command runs.
+		// Verify the runtime prerequisites before any command runs, then give
+		// the one-time config migration a chance (cheap when there is nothing
+		// to migrate — see migrate.go).
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return checkGit()
+			if err := checkGit(); err != nil {
+				return err
+			}
+			return migrateDeadAgentDirs()
 		},
 	}
 

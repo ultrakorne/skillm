@@ -1,7 +1,8 @@
 # skillm
 
-Manage AI-agent skills from one central home and link them into the folders
-Claude and Codex read. One copy, symlinked everywhere.
+Manage AI-agent skills from one central home and link them into the folders your
+agents read — Claude, Codex, Cursor, Amp, Gemini CLI, and more. One copy,
+symlinked everywhere.
 
 ## Install
 
@@ -31,7 +32,10 @@ skillm check                                                # see what has updat
 skillm update                                               # pull the updates in
 ```
 
-By default skillm symlinks one central copy everywhere. For a project you track in git, add
+By default skillm symlinks one central copy everywhere. The seeded `claude` entry links
+into `~/.claude/skills` / `.claude/skills`; the seeded `agents` entry links into
+`~/.agents/skills` / `.agents/skills` — the cross-agent folder read by Codex, Cursor,
+Amp, Gemini CLI, and more. For a project you track in git, add
 `--copy` to a local install: skillm writes a real, committed copy into the project's agent
 folders (so teammates get the skill on clone, not a broken symlink). `update` keeps those copies
 in sync, and `uninstall` removes them.

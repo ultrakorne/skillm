@@ -36,8 +36,8 @@ func fileURL(path string) string {
 // honours --filter=tree:0 (a plain local-path clone would silently
 // hardlink-optimise and skip the treeless filter). HOME is redirected to a temp
 // directory so the agents' *global* skill folders (~/.claude/skills,
-// ~/.codex/skills) land inside the sandbox and never touch the developer's real
-// dotfiles.
+// ~/.agents/skills) land inside the sandbox and never touch the developer's
+// real dotfiles.
 
 // builtBinary builds ./skillm once per test binary run and returns its path.
 var (
@@ -212,13 +212,13 @@ func assertLinkResolvesIntoHome(t *testing.T, e env, linkPath, id string) {
 	}
 }
 
-// claudeGlobalLink and codexGlobalLink compute the expected global link paths
+// claudeGlobalLink and agentsGlobalLink compute the expected global link paths
 // under the sandbox HOME.
 func claudeGlobalLink(e env, id string) string {
 	return filepath.Join(e.userDir, ".claude", "skills", id)
 }
-func codexGlobalLink(e env, id string) string {
-	return filepath.Join(e.userDir, ".codex", "skills", id)
+func agentsGlobalLink(e env, id string) string {
+	return filepath.Join(e.userDir, ".agents", "skills", id)
 }
 
 // TestLifecycleEndToEnd is the full PLAN §8 integration test: a temp Home + a
@@ -282,7 +282,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("alpha not present in Home %s", store.SkillsDir(e.home))
 	}
 	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
-	assertLinkResolvesIntoHome(t, e, codexGlobalLink(e, "alpha"), "alpha")
+	assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, "alpha"), "alpha")
 
 	// --- add (fetch-only, no link) ------------------------------------------
 	e.run(t, "add", url, "beta")
@@ -314,10 +314,10 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	// --- install (default scope is global per config default) ---------------
 	e.run(t, "install", "beta", "--global")
 	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "beta"), "beta")
-	assertLinkResolvesIntoHome(t, e, codexGlobalLink(e, "beta"), "beta")
+	assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, "beta"), "beta")
 
 	// --- install --local creates project-scoped links under cwd -------------
-	// Run with the working directory set to a temp project so .claude/.codex
+	// Run with the working directory set to a temp project so .claude/.agents
 	// land there and not in the developer's tree. beta stays installed globally
 	// too — uninstall must later tear down every scope.
 	project := t.TempDir()
@@ -333,7 +333,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("install beta --local: %v\n%s", err, b)
 	}
 	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".claude", "skills", "beta"), "beta")
-	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".codex", "skills", "beta"), "beta")
+	assertLinkResolvesIntoHome(t, e, filepath.Join(project, ".agents", "skills", "beta"), "beta")
 
 	// --- check (read-only) before any upstream change: all up-to-date -------
 	out = e.run(t, "check")
@@ -462,8 +462,8 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if _, err := os.Lstat(claudeGlobalLink(e, "beta")); !os.IsNotExist(err) {
 		t.Fatalf("beta claude global link not removed by uninstall, err = %v", err)
 	}
-	if _, err := os.Lstat(codexGlobalLink(e, "beta")); !os.IsNotExist(err) {
-		t.Fatalf("beta codex global link not removed by uninstall, err = %v", err)
+	if _, err := os.Lstat(agentsGlobalLink(e, "beta")); !os.IsNotExist(err) {
+		t.Fatalf("beta agents global link not removed by uninstall, err = %v", err)
 	}
 
 	// alpha must be untouched by beta's removal.
@@ -638,9 +638,9 @@ func TestVendoredCopyLifecycle(t *testing.T) {
 		t.Fatalf("install --copy: expected a 'copied' line, got:\n%s", out)
 	}
 	claudeCopy := filepath.Join(project, ".claude", "skills", "alpha")
-	codexCopy := filepath.Join(project, ".codex", "skills", "alpha")
+	agentsCopy := filepath.Join(project, ".agents", "skills", "alpha")
 	assertVendoredCopy(t, claudeCopy, "alpha body")
-	assertVendoredCopy(t, codexCopy, "alpha body")
+	assertVendoredCopy(t, agentsCopy, "alpha body")
 
 	// The registry records the project as a vendored root (and only that).
 	alpha, _ := loadState(t, e).Get("alpha")
@@ -668,7 +668,7 @@ func TestVendoredCopyLifecycle(t *testing.T) {
 	}
 	// Both committed copies now hold the new content...
 	assertVendoredCopy(t, claudeCopy, "CHANGED")
-	assertVendoredCopy(t, codexCopy, "CHANGED")
+	assertVendoredCopy(t, agentsCopy, "CHANGED")
 	// ...and the global symlink transparently exposes it via Home.
 	gb, err := os.ReadFile(filepath.Join(claudeGlobalLink(e, "alpha"), "SKILL.md"))
 	if err != nil || !strings.Contains(string(gb), "CHANGED") {
@@ -678,7 +678,7 @@ func TestVendoredCopyLifecycle(t *testing.T) {
 	// --- uninstall deletes copies + Home + registry entry ---------------------
 	e.runIn(t, project, "uninstall", "alpha", "--yes")
 	assertNoLink(t, claudeCopy, "uninstall must delete the vendored copy")
-	assertNoLink(t, codexCopy, "uninstall must delete the vendored copy")
+	assertNoLink(t, agentsCopy, "uninstall must delete the vendored copy")
 	assertNoLink(t, claudeGlobalLink(e, "alpha"), "uninstall must remove the global symlink")
 	if store.Exists(e.home, "alpha") {
 		t.Fatal("alpha still in Home after uninstall")
@@ -798,7 +798,7 @@ func TestInstallUninstallMulti(t *testing.T) {
 	e.run(t, "install", "alpha", "beta", "--global")
 	for _, id := range []string{"alpha", "beta"} {
 		assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, id), id)
-		assertLinkResolvesIntoHome(t, e, codexGlobalLink(e, id), id)
+		assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, id), id)
 	}
 	// gamma was not named, so it stays uninstalled.
 	assertNoLink(t, claudeGlobalLink(e, "gamma"), "gamma must not be installed yet")

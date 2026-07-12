@@ -51,7 +51,7 @@ func TestInstallSourceGit(t *testing.T) {
 		t.Fatalf("install alpha from source: expected an 'added' line, got:\n%s", out)
 	}
 	assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, "alpha"), "alpha")
-	assertLinkResolvesIntoHome(t, e, codexGlobalLink(e, "alpha"), "alpha")
+	assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, "alpha"), "alpha")
 	a, ok := loadState(t, e).Get("alpha")
 	if !ok || a.Kind != state.KindGit {
 		t.Fatalf("alpha not registered as a git skill: %+v ok=%v", a, ok)
@@ -69,7 +69,7 @@ func TestInstallSourceGit(t *testing.T) {
 	}
 	for _, id := range []string{"alpha", "beta", "gamma"} {
 		assertLinkResolvesIntoHome(t, e, claudeGlobalLink(e, id), id)
-		assertLinkResolvesIntoHome(t, e, codexGlobalLink(e, id), id)
+		assertLinkResolvesIntoHome(t, e, agentsGlobalLink(e, id), id)
 	}
 	if n := len(loadState(t, e).Skills); n != 3 {
 		t.Fatalf("registry has %d skills, want 3 (alpha, beta, gamma)", n)
@@ -263,7 +263,7 @@ func TestInstallSourceCopy(t *testing.T) {
 		t.Fatalf("install --copy from source: expected a 'copied' line, got:\n%s", out)
 	}
 	assertVendoredCopy(t, filepath.Join(project, ".claude", "skills", "alpha"), "alpha body")
-	assertVendoredCopy(t, filepath.Join(project, ".codex", "skills", "alpha"), "alpha body")
+	assertVendoredCopy(t, filepath.Join(project, ".agents", "skills", "alpha"), "alpha body")
 
 	a, _ := loadState(t, e).Get("alpha")
 	if got := a.VendoredAt; len(got) != 1 || got[0] != project {

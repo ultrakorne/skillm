@@ -5,10 +5,13 @@
 // so supporting a new agent is a config edit, not a source change. The seeded
 // defaults are:
 //
-//	| Scope  | Claude                      | Codex                      |
-//	|--------|-----------------------------|----------------------------|
-//	| Global | ~/.claude/skills/<id>       | ~/.codex/skills/<id>       |
-//	| Local  | <base>/.claude/skills/<id>  | <base>/.codex/skills/<id>  |
+//	| Scope  | claude                      | agents                      |
+//	|--------|-----------------------------|-----------------------------|
+//	| Global | ~/.claude/skills/<id>       | ~/.agents/skills/<id>       |
+//	| Local  | <base>/.claude/skills/<id>  | <base>/.agents/skills/<id>  |
+//
+// The "agents" entry is the cross-agent .agents/skills convention, read by
+// Codex, Cursor, Amp, Gemini CLI and others (Codex does not read .codex/skills).
 package agentdir
 
 import (

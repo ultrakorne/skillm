@@ -58,14 +58,18 @@ type Config struct {
 func boolPtr(b bool) *bool { return &b }
 
 // Default returns a freshly allocated Config holding skillm's built-in
-// defaults: the Claude and Codex agents, both enabled, with their conventional
-// skill-folder locations. This value seeds a fresh config.toml and is also the
-// fallback Load returns when the file is absent.
+// defaults, both enabled: "claude", which reads its own ~/.claude/skills
+// folders, and "agents", which points at the cross-agent .agents/skills
+// convention read by Codex, Cursor, Amp, Gemini CLI and others (Codex does
+// not read .codex/skills). That entry is named for the folder rather than any
+// one tool because toggling it affects every agent that reads it. This value
+// seeds a fresh config.toml and is also the fallback Load returns when the
+// file is absent.
 func Default() *Config {
 	return &Config{
 		Agents: map[string]AgentDef{
 			"claude": {Enabled: boolPtr(true), Global: "~/.claude/skills", Local: ".claude/skills"},
-			"codex":  {Enabled: boolPtr(true), Global: "~/.codex/skills", Local: ".codex/skills"},
+			"agents": {Enabled: boolPtr(true), Global: "~/.agents/skills", Local: ".agents/skills"},
 		},
 	}
 }

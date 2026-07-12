@@ -22,8 +22,15 @@ func TestDefault(t *testing.T) {
 	if claude.Global != "~/.claude/skills" || claude.Local != ".claude/skills" {
 		t.Errorf("claude locations = %q, %q", claude.Global, claude.Local)
 	}
-	if _, ok := c.Agents["codex"]; !ok {
-		t.Error("Default() missing codex")
+	agents, ok := c.Agents["agents"]
+	if !ok {
+		t.Fatal("Default() missing agents")
+	}
+	// The "agents" entry uses the cross-agent .agents/skills convention (read
+	// by Codex, Cursor, Amp, Gemini CLI, …) and is named for the folder, not
+	// any single tool.
+	if agents.Global != "~/.agents/skills" || agents.Local != ".agents/skills" {
+		t.Errorf("agents locations = %q, %q", agents.Global, agents.Local)
 	}
 }
 
@@ -167,13 +174,13 @@ func TestEnabledAgentsFiltersAndSorts(t *testing.T) {
 
 func TestSetEnabled(t *testing.T) {
 	c := Default()
-	c.SetEnabled([]string{"codex"})
+	c.SetEnabled([]string{"agents"})
 
 	if c.Agents["claude"].IsEnabled() {
-		t.Error("claude should be disabled after SetEnabled([codex])")
+		t.Error("claude should be disabled after SetEnabled([agents])")
 	}
-	if !c.Agents["codex"].IsEnabled() {
-		t.Error("codex should be enabled after SetEnabled([codex])")
+	if !c.Agents["agents"].IsEnabled() {
+		t.Error("agents should be enabled after SetEnabled([agents])")
 	}
 	// Toggling must preserve each agent's locations.
 	if c.Agents["claude"].Global != "~/.claude/skills" {

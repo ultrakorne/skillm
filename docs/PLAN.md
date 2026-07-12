@@ -11,9 +11,10 @@ A single, self-contained spec for building `skillm`. Pair this with
 **Home** and **Links** them (via symlinks) into the skill folders that **Agents** read.
 Agents are **defined in config**, not hardcoded: each agent declares the skill-folder
 location it reads at each Scope. skillm ships built-in definitions for **Claude** and
-**Codex** (which share an identical on-disk skill format — a directory with `SKILL.md` — so
-one Home copy serves both), and a user supports a new agent (e.g. opencode) purely by adding
-its locations to `config.toml`, never by changing skillm's source.
+**agents** — the cross-agent `.agents/skills` folder read by Codex, Cursor, Amp, Gemini CLI
+and others (all agents share an identical on-disk skill format — a directory with
+`SKILL.md` — so one Home copy serves them all), and a user supports a new agent (e.g.
+opencode) purely by adding its locations to `config.toml`, never by changing skillm's source.
 
 **Constraints:** Go; Linux + macOS only (amd64/arm64); MIT licensed; public repo at
 `github.com/ultrakorne/skillm`; binary name `skillm`.
@@ -33,12 +34,17 @@ its locations to `config.toml`, never by changing skillm's source.
 
 Agent skill folders that get symlinks into Home. **These paths are not hardcoded** — they
 come from each agent's definition in `config.toml`; the table below is just the seeded
-default for Claude and Codex:
+default for `claude` and `agents`:
 
-| Scope  | Claude                      | Codex                      |
-|--------|-----------------------------|----------------------------|
-| Global | `~/.claude/skills/<id>`     | `~/.codex/skills/<id>`     |
-| Local  | `<base>/.claude/skills/<id>`| `<base>/.codex/skills/<id>`|
+| Scope  | claude                      | agents                      |
+|--------|-----------------------------|-----------------------------|
+| Global | `~/.claude/skills/<id>`     | `~/.agents/skills/<id>`     |
+| Local  | `<base>/.claude/skills/<id>`| `<base>/.agents/skills/<id>`|
+
+The `agents` entry is the cross-agent `.agents/skills` convention, which Codex, Cursor,
+Amp, Gemini CLI and others read natively (Codex does not read `.codex/skills`). It is
+named for the folder rather than any one tool because toggling it affects every agent
+that reads it.
 
 Each entry is a symlink: `<agent-folder>/<id> → ~/.skillm/skills/<id>`. `<base>` is the
 project root for Local scope — the current directory, or a custom path passed to `link`.
@@ -54,10 +60,10 @@ enabled = true
 global  = "~/.claude/skills"   # ~ expands to home; <id> is appended
 local   = ".claude/skills"     # relative to the project base; <id> is appended
 
-[agents.codex]
+[agents.agents]
 enabled = true
-global  = "~/.codex/skills"
-local   = ".codex/skills"
+global  = "~/.agents/skills"   # cross-agent convention: Codex, Cursor, Amp, Gemini CLI, …
+local   = ".agents/skills"
 
 # Add a new agent by adding a table — no source change. Both scopes are
 # optional (at least one required); omit a scope the agent has no folder for.
@@ -72,7 +78,7 @@ at home); `local` is a relative path joined to the project base; skillm always a
 Skill ID. No `$ENV` expansion. `enabled` defaults to `true` when omitted.
 
 **Seeding & ownership.** When Home is first created (`EnsureHome`), skillm writes this file
-with the built-in Claude+Codex defaults *only if it is absent* — it never clobbers an
+with the built-in claude+agents defaults *only if it is absent* — it never clobbers an
 existing file. The same built-in defaults are the in-memory fallback if the file is missing,
 so "what's written" equals "what you fall back to". Thereafter the file is hand-edited; the
 only command that rewrites it is `skillm agent` (toggling `enabled`), which re-marshals the
@@ -364,7 +370,7 @@ One-line install (`curl | sh`), a 4–5 line quickstart (`add` → `agent` → `
 
 1. **Scaffold** — `go mod init github.com/ultrakorne/skillm`, `main.go`, cobra+fang root,
    `config`/`state` packages with TOML round-trip (agent definitions: name →
-   enabled/global/local, built-in Claude+Codex defaults), Home bootstrap that seeds
+   enabled/global/local, built-in claude+agents defaults), Home bootstrap that seeds
    `config.toml` when absent, startup git check.
 2. **Core libs** — `skill` (frontmatter), `source` (classify + discover), `gitx` (treeless
    fetch, `ls-tree`, sparse-checkout), `store` (copy skill into Home).

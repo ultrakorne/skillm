@@ -51,7 +51,7 @@ func TestSourceLabel(t *testing.T) {
 // linked nowhere renders "-".
 func TestLinkedLabel(t *testing.T) {
 	// Redirect the user's home dir so the Global agent folder lands in a temp
-	// location and the test never touches the real ~/.claude or ~/.codex.
+	// location and the test never touches the real ~/.claude or ~/.agents.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
@@ -65,7 +65,7 @@ func TestLinkedLabel(t *testing.T) {
 		t.Fatalf("mkdir skill: %v", err)
 	}
 
-	agents := config.Default().AllAgents() // claude, codex
+	agents := config.Default().AllAgents() // agents, claude (sorted)
 
 	// Nothing linked yet.
 	if got := linkedLabel(home, id, agents, nil, nil, t.TempDir()); got != "-" {

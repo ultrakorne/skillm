@@ -22,9 +22,13 @@ A tool that consumes skills by reading them from a skill folder. An Agent is **d
 by a name and the skill-folder **location** it reads at each Scope — its Global location
 and its Local location, which need not mirror each other. These definitions live in
 Config, so supporting a new agent means **declaring its locations in config**, never
-changing skillm's source. skillm ships built-in definitions for **Claude** and **Codex**;
-those are also what a fresh Config is seeded with, but neither is privileged — any defined
-agent can be disabled, including Claude.
+changing skillm's source. skillm ships built-in definitions for **Claude** and **agents**
+(the universal `.agents/skills` entry); those are also what a fresh Config is seeded with,
+but neither is privileged — any defined agent can be disabled, including Claude. The
+"agents" definition points at the cross-agent `.agents/skills` folders (`~/.agents/skills`
+/ `.agents/skills`), which Codex, Cursor, Amp, Gemini CLI and others read natively — Codex
+does not read `.codex/skills` — and is named for the folder because toggling it affects
+every agent that reads it.
 
 ### Source
 A location skills are fetched from. Primary kind is a **git repository**, which may hold
