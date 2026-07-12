@@ -205,6 +205,23 @@ easily grow one. That single property is skillm's clearest surviving reason to e
    `skillm install --global` converts a legacy layout in place, same as the local story).
    Not adopted: vercel's global lock `~/.agents/.skill-lock.json` (v3, self-wiping) —
    skillm's registry stays `state.toml`; interop remains project-lockfile-only.
+
+   **Reversed again 2026-07-13 (decided 2026-07-12, by explicit user decision):** the
+   `~/.skillm/skills` Home library — and with it the add-vs-install distinction that was
+   the whole reason to keep Home separate — was removed. `add` is gone; `install` is the
+   single entry point (fetch + pick + install into a chosen scope in one step, resolving
+   the scope up front). The canonical install copies (`~/.agents/skills/<id>` global,
+   `<project>/.agents/skills/<id>` local) are now a skill's *only* copies; `~/.skillm`
+   holds just `config.toml` and `state.toml`, and a Registry entry exists iff the skill is
+   installed somewhere. `update` writes fetched content straight into every install (no
+   library round-trip); install-by-id copies from the global canonical copy or re-fetches.
+   What was **accepted** by this reversal: installed-globally == globally active (there is
+   no way to have a globally-fetched-but-inactive skill). What was **given up**:
+   fetch-without-activating — staging a skill on the machine without exposing it to any
+   agent. Per the standing no-migration policy, there is no auto-migration off the old
+   layout: rerunning `skillm install` at the affected scope converts it in place (the
+   linker still recognizes legacy symlinks into `~/.skillm/skills`), and any leftover
+   `~/.skillm/skills` directory is inert and can be removed by hand.
 3. ✅ **DONE (2026-07-12): Local installs are vercel-project-format, interoperable.**
    Rather than inventing provenance metadata, skillm adopted vercel's project format
    wholesale as its only local install mode (the symlink-into-Home local mode and
@@ -218,8 +235,9 @@ easily grow one. That single property is skillm's clearest surviving reason to e
      vectors generated from their code). Unknown lock keys (e.g. `subagents`) survive
      rewrites.
    - `skillm import [dir]` adopts a lockfile a teammate committed (written by skillm or
-     `npx skills`): fetches each git source into Home at the locked ref (one clone per
-     source repo), records the root, restores missing copies, creates missing links.
+     `npx skills`): fetches each git source at the locked ref (one clone per source repo),
+     records the root, writes any missing canonical copy from the fetched content, creates
+     missing links.
    - An all-skills `skillm update` runs that adoption over every tracked root
      automatically, then re-syncs each root's copies and lock hashes — so
      `state.toml`'s machine-wide root index (skillm's clearest surviving reason to
