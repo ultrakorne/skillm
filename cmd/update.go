@@ -26,16 +26,17 @@ func init() {
 func newUpdateCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "update [skill_id]",
-		Short: "Pull the latest revision of outdated git skills into Home",
-		Long: "Update re-fetches the upstream revision of git-sourced skills into Home, " +
-			"overwriting the Home copy. With no argument it updates every outdated git skill; " +
-			"with a skill id it updates that one. Every install is then re-synced from Home: " +
-			"the Global install's ~/.agents/skills copy and each tracked project's Local " +
-			"install — its .agents/skills copy is rewritten and its skills-lock.json entry " +
-			"refreshed. An all-skills update also adopts skills teammates added to any " +
-			"tracked project's skills-lock.json (see `skillm import`). Local-path skills have " +
-			"no upstream and are skipped (edit them in Home directly), though their installed " +
-			"copies are still re-synced from Home.",
+		Short: "Pull the latest revision of outdated git skills into every install",
+		Long: "Update re-fetches the upstream revision of git-sourced skills. With no " +
+			"argument it updates every outdated git skill; with a skill id it updates that " +
+			"one. When a skill's upstream has advanced, its new content is written straight " +
+			"into every recorded install from a single clone: the Global install's " +
+			"~/.agents/skills copy and each tracked project's Local install — its " +
+			".agents/skills copy is rewritten and its skills-lock.json entry refreshed. An " +
+			"all-skills update also adopts skills teammates added to any tracked project's " +
+			"skills-lock.json (see `skillm import`). Local-path skills have no upstream and " +
+			"are not re-fetched, but their installed copies are re-synced from the recorded " +
+			"source directory when it still exists and its content has changed.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var id string
@@ -103,9 +104,19 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 		mu         sync.Mutex
 		updated    []string
 		updatedSet = map[string]bool{}
+		stagedByID = map[string]string{} // updated git skill id → staged content dir
+		cleanups   []func()
 		failures   []string
 		dirty      bool // whether the registry needs persisting
 	)
+	// The staged clones of updated skills are copied into every install by
+	// refreshVendoredCopies below, so they must survive until this function
+	// returns — clean them all up at the very end.
+	defer func() {
+		for _, c := range cleanups {
+			c()
+		}
+	}()
 
 	if len(targets) > 0 {
 		labels := make([]string, len(targets))
@@ -115,10 +126,13 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 
 		work := func(ctx context.Context, i int) ui.Result {
 			t := targets[i] // copy; updateOne mutates t.entry in place
-			changed, upErr := updateOne(ctx, home, &t.entry)
+			changed, staged, clean, upErr := updateOne(ctx, &t.entry)
 
 			mu.Lock()
 			defer mu.Unlock()
+			if clean != nil {
+				cleanups = append(cleanups, clean)
+			}
 			switch {
 			case upErr != nil:
 				msg := fmt.Sprintf("%s: %v", t.entry.ID, upErr)
@@ -129,6 +143,7 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 				dirty = true
 				updated = append(updated, t.entry.ID)
 				updatedSet[t.entry.ID] = true
+				stagedByID[t.entry.ID] = staged
 				return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("Updated %s.", t.entry.ID)}
 			default:
 				return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("%s is already up to date.", t.entry.ID)}
@@ -156,17 +171,8 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 	// agent's links were removed when it was disabled, and update must not
 	// resurrect them. (Uninstall's sweep, by contrast, spans ALL defined
 	// agents — removing stale links is safe, creating them is not.)
-	if refreshVendoredCopies(home, cfg.EnabledAgents(), st, inScope, updatedSet) {
+	if refreshVendoredCopies(home, cfg.EnabledAgents(), st, inScope, updatedSet, stagedByID) {
 		dirty = true
-	}
-
-	// A local skill with no installed copy anywhere has nothing to update at
-	// all — note it, preserving the pre-vendoring behaviour ("edit it in Home
-	// directly").
-	for _, lid := range localIDs {
-		if len(st.VendoredRoots(lid)) == 0 && !st.IsGlobal(lid) {
-			ui.Warnf("%s is a local skill and has no upstream — edit it in Home directly.", lid)
-		}
 	}
 
 	// Persist registry changes once, after all updates, so a mid-batch failure
@@ -191,21 +197,26 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 
 // refreshVendoredCopies re-syncs and prunes the installs of the skills in ids
 // — the Global copy in ~/.agents/skills and the Local copies in every recorded
-// project. A git skill's canonical copy is overwritten from Home only when it
-// was just updated (updated[id] is true); a local skill's copy is overwritten
-// whenever its content differs from Home (so an unchanged skill produces no
-// git churn). Whenever a copy is rewritten, any missing agent links are
-// recreated, and a Local copy's skills-lock.json entry is refreshed too. A
-// recorded install whose copy has vanished — the project was moved or the
-// files were deleted — is reported and pruned from the registry. It mutates st
-// in place and returns whether anything was pruned (so the caller persists).
-func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool) bool {
+// project. A git skill's canonical copies are overwritten from its freshly
+// staged clone (staged[id]) only when it was just updated (updated[id] is
+// true); a local skill's copies are overwritten from its recorded source
+// directory whenever their content differs from it (so an unchanged skill
+// produces no git churn), and left untouched with a one-time warning when that
+// source directory is gone. Whenever a copy is rewritten, any missing agent
+// links are recreated, and a Local copy's skills-lock.json entry is refreshed
+// too. A recorded install whose copy has vanished — the project was moved or
+// the files were deleted — is reported and pruned; a skill whose last install
+// is pruned this way has its registry entry dropped, matching "an entry exists
+// only while installed somewhere". It mutates st in place and returns whether
+// anything was pruned or dropped (so the caller persists).
+func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool, staged map[string]string) bool {
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		want[id] = true
 	}
 
 	changed := false
+	var drop []string
 	for i := range st.Skills {
 		e := &st.Skills[i]
 		if !want[e.ID] {
@@ -213,51 +224,76 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 		}
 		isGit := e.Kind == state.KindGit
 
+		// Resolve the content source and whether a refresh is possible: a
+		// just-updated git skill's staged clone; a local skill's recorded source
+		// directory (skipped, with a one-time warning, when it is gone).
+		src := ""
+		canRefresh := true
+		if isGit {
+			src = staged[e.ID] // present only when the skill was updated
+		} else {
+			src = e.Source
+			if !dirExists(src) {
+				ui.Warnf("%s is a local skill whose source %s is gone; leaving its installed copies as-is", e.ID, src)
+				canRefresh = false
+			}
+		}
+
 		if e.Global {
 			if !vendorCopyExists(home, e.ID, agentdir.Global, "") {
 				ui.Warnf("forgetting global install of %s: no copy remains in %s", e.ID, canonicalDisplay(agentdir.Global))
 				e.Global = false
 				changed = true
-			} else if refreshCopy(home, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID]) {
+			} else if canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID]) {
 				linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String())
 			}
 		}
 
-		if len(e.VendoredAt) == 0 {
-			continue
-		}
-		kept := make([]string, 0, len(e.VendoredAt))
-		for _, root := range e.VendoredAt {
-			if !localCopyExists(home, e.ID, root) {
-				ui.Warnf("forgetting local install of %s: no copy remains in %s", e.ID, root)
-				changed = true
-				continue // prune
+		if len(e.VendoredAt) > 0 {
+			kept := make([]string, 0, len(e.VendoredAt))
+			for _, root := range e.VendoredAt {
+				if !localCopyExists(home, e.ID, root) {
+					ui.Warnf("forgetting local install of %s: no copy remains in %s", e.ID, root)
+					changed = true
+					continue // prune
+				}
+				if canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID]) {
+					localAgents, _ := splitLocalAliased(agents, root)
+					linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""))
+					upsertLockEntry(*e, root)
+				}
+				kept = append(kept, root)
 			}
-			if refreshCopy(home, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID]) {
-				localAgents, _ := splitLocalAliased(agents, root)
-				linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""))
-				upsertLockEntry(*e, root)
+
+			if len(kept) == 0 {
+				e.VendoredAt = nil
+			} else {
+				e.VendoredAt = kept
 			}
-			kept = append(kept, root)
 		}
 
-		if len(kept) == 0 {
-			e.VendoredAt = nil
-		} else {
-			e.VendoredAt = kept
+		// The last install was just pruned: drop the entry so the registry never
+		// lists a skill that is installed nowhere.
+		if !e.Global && len(e.VendoredAt) == 0 {
+			drop = append(drop, e.ID)
+		}
+	}
+
+	for _, id := range drop {
+		if st.Remove(id) {
+			changed = true
 		}
 	}
 	return changed
 }
 
-// refreshCopy overwrites the canonical copy at target from skill id's Home
-// content when it is due: always for a just-updated git skill, on content
-// drift for a local-path skill. place names the install in report lines (a
-// project root or "global"). It returns whether the copy was rewritten; a
-// write failure is warned about and reported as false, leaving the install
-// recorded so the next update retries.
-func refreshCopy(home, id, target, place string, isGit, updated bool) bool {
-	src := store.SkillDir(home, id)
+// refreshCopy overwrites the canonical copy at target from src when it is due:
+// always for a just-updated git skill (src is its staged clone), on content
+// drift for a local-path skill (src is its recorded source directory). place
+// names the install in report lines (a project root or "global"). It returns
+// whether the copy was rewritten; a write failure is warned about and reported
+// as false, leaving the install recorded so the next update retries.
+func refreshCopy(src, id, target, place string, isGit, updated bool) bool {
 	switch {
 	case isGit && updated:
 		if err := store.ReplaceDir(src, target); err != nil {
@@ -306,26 +342,32 @@ func selectUpdateTargets(st *state.State, id string) ([]updateTarget, []string, 
 	return targets, locals, nil
 }
 
-// updateOne clones the skill's source treeless, compares the current upstream
-// subdir tree SHA against the recorded revision, and — when they differ —
-// overwrites the Home copy with the upstream content and rewrites entry's
-// Revision and InstalledAt in place. It returns whether the skill was changed.
-// The Home copy is only replaced after the new content has been materialized
-// into a temp directory, so a fetch failure never destroys the existing copy.
-func updateOne(ctx context.Context, home string, entry *state.SkillEntry) (bool, error) {
+// updateOne clones the skill's source treeless and compares the current
+// upstream subdir tree SHA against the recorded revision. When they differ it
+// materializes the upstream content into a staging directory, rewrites entry's
+// Revision and InstalledAt in place, and returns changed=true with the staged
+// dir (the source refreshVendoredCopies rewrites every install from) plus a
+// cleanup func the caller must call once it has copied the content. cleanup is
+// always non-nil. Nothing on disk is touched beyond the temp clone, so a fetch
+// failure leaves every existing install intact.
+func updateOne(ctx context.Context, entry *state.SkillEntry) (changed bool, stagedDir string, cleanup func(), err error) {
+	cleanup = func() {}
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return false, "", cleanup, err
 	}
 
 	tmp, err := os.MkdirTemp("", "skillm-update-clone-")
 	if err != nil {
-		return false, fmt.Errorf("create temp dir: %w", err)
+		return false, "", cleanup, fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	fail := func(e error) (bool, string, func(), error) {
+		os.RemoveAll(tmp)
+		return false, "", func() {}, e
+	}
 
 	repoDir := filepath.Join(tmp, "repo")
 	if err := gitx.TreelessClone(ctx, entry.Source, entry.Ref, repoDir); err != nil {
-		return false, err
+		return fail(err)
 	}
 
 	// Resolve the ref to compare against. An empty stored ref means the source's
@@ -334,37 +376,29 @@ func updateOne(ctx context.Context, home string, entry *state.SkillEntry) (bool,
 	if ref == "" {
 		ref, err = gitx.DefaultRef(ctx, repoDir)
 		if err != nil {
-			return false, err
+			return fail(err)
 		}
 	}
 
 	current, err := gitx.SubtreeSHA(ctx, repoDir, ref, entry.Path)
 	if err != nil {
-		return false, fmt.Errorf("the skill's subdirectory %q is no longer present upstream (untracked): %w", entry.Path, err)
+		return fail(fmt.Errorf("the skill's subdirectory %q is no longer present upstream (untracked): %w", entry.Path, err))
 	}
 
 	if current == entry.Revision {
-		return false, nil
+		os.RemoveAll(tmp)
+		return false, "", func() {}, nil
 	}
 
-	// Materialize the upstream subdir into a staging directory before touching
-	// the existing Home copy, so a failure here leaves Home untouched.
+	// Materialize the upstream subdir into a staging directory. The installs are
+	// rewritten from it later (after the whole git pass), so the temp must outlive
+	// this call — the caller owns cleanup.
 	staged := filepath.Join(tmp, "staged")
 	if err := gitx.MaterializeSubdir(ctx, repoDir, entry.Path, staged); err != nil {
-		return false, err
-	}
-
-	// Replace the Home copy: remove the old directory, then copy the staged
-	// content in under the same id. store.AddSkillDir refuses to overwrite an
-	// existing id, so the prior copy must be removed first.
-	if err := store.RemoveSkillDir(home, entry.ID); err != nil {
-		return false, err
-	}
-	if err := store.AddSkillDir(home, entry.ID, staged); err != nil {
-		return false, fmt.Errorf("install updated skill %q into Home: %w", entry.ID, err)
+		return fail(err)
 	}
 
 	entry.Revision = current
 	entry.InstalledAt = time.Now().UTC()
-	return true, nil
+	return true, staged, func() { os.RemoveAll(tmp) }, nil
 }

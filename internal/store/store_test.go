@@ -49,7 +49,7 @@ func TestHome_DefaultUnderUserHome(t *testing.T) {
 	}
 }
 
-func TestEnsureHomeAndLayout(t *testing.T) {
+func TestEnsureHome(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".skillm")
 	if err := EnsureHome(home); err != nil {
 		t.Fatalf("EnsureHome: %v", err)
@@ -59,12 +59,14 @@ func TestEnsureHomeAndLayout(t *testing.T) {
 		t.Fatalf("EnsureHome (second call): %v", err)
 	}
 
-	info, err := os.Stat(SkillsDir(home))
+	// Home holds only config + registry now: the dir exists, but no skills/
+	// subtree is created.
+	info, err := os.Stat(home)
 	if err != nil || !info.IsDir() {
-		t.Fatalf("skills dir not created: %v", err)
+		t.Fatalf("home dir not created: %v", err)
 	}
-	if SkillDir(home, "x") != filepath.Join(home, "skills", "x") {
-		t.Errorf("SkillDir wrong: %q", SkillDir(home, "x"))
+	if _, err := os.Stat(filepath.Join(home, "skills")); !os.IsNotExist(err) {
+		t.Fatalf("EnsureHome must not create a skills/ subtree; err = %v", err)
 	}
 }
 
@@ -74,26 +76,18 @@ func TestEnsureHome_EmptyError(t *testing.T) {
 	}
 }
 
-func TestAddSkillDir_RoundTrip(t *testing.T) {
-	home := filepath.Join(t.TempDir(), ".skillm")
-	if err := EnsureHome(home); err != nil {
-		t.Fatal(err)
-	}
-
-	// Build a source skill dir with nested files and an executable script.
+func TestCopyDir_RoundTrip(t *testing.T) {
+	// Build a source skill dir with nested files and an executable script, then
+	// copy it and verify every entry (and the exec bit) is reproduced.
 	src := t.TempDir()
 	mustWrite(t, filepath.Join(src, "SKILL.md"), "---\nname: demo\n---\nbody\n", 0o644)
 	mustWrite(t, filepath.Join(src, "ref", "guide.md"), "guide\n", 0o644)
 	mustWrite(t, filepath.Join(src, "scripts", "run.sh"), "#!/bin/sh\necho hi\n", 0o755)
 
-	if err := AddSkillDir(home, "demo", src); err != nil {
-		t.Fatalf("AddSkillDir: %v", err)
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := CopyDir(src, dst); err != nil {
+		t.Fatalf("CopyDir: %v", err)
 	}
-	if !Exists(home, "demo") {
-		t.Fatal("Exists should report the added skill")
-	}
-
-	dst := SkillDir(home, "demo")
 	assertFile(t, filepath.Join(dst, "SKILL.md"), "---\nname: demo\n---\nbody\n")
 	assertFile(t, filepath.Join(dst, "ref", "guide.md"), "guide\n")
 	assertFile(t, filepath.Join(dst, "scripts", "run.sh"), "#!/bin/sh\necho hi\n")
@@ -110,54 +104,11 @@ func TestAddSkillDir_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestAddSkillDir_Collision(t *testing.T) {
-	home := filepath.Join(t.TempDir(), ".skillm")
-	if err := EnsureHome(home); err != nil {
-		t.Fatal(err)
-	}
-	src := t.TempDir()
-	mustWrite(t, filepath.Join(src, "SKILL.md"), "x\n", 0o644)
-
-	if err := AddSkillDir(home, "dup", src); err != nil {
-		t.Fatalf("first AddSkillDir: %v", err)
-	}
-	if err := AddSkillDir(home, "dup", src); err == nil {
-		t.Fatal("expected collision error on duplicate id")
-	}
-}
-
-func TestAddSkillDir_SourceNotDir(t *testing.T) {
-	home := filepath.Join(t.TempDir(), ".skillm")
-	if err := EnsureHome(home); err != nil {
-		t.Fatal(err)
-	}
+func TestCopyDir_SourceNotDir(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "file.txt")
 	mustWrite(t, f, "x", 0o644)
-	if err := AddSkillDir(home, "id", f); err == nil {
+	if err := CopyDir(f, filepath.Join(t.TempDir(), "dst")); err == nil {
 		t.Fatal("expected error: source is not a directory")
-	}
-}
-
-func TestRemoveSkillDir(t *testing.T) {
-	home := filepath.Join(t.TempDir(), ".skillm")
-	if err := EnsureHome(home); err != nil {
-		t.Fatal(err)
-	}
-	src := t.TempDir()
-	mustWrite(t, filepath.Join(src, "SKILL.md"), "x\n", 0o644)
-	if err := AddSkillDir(home, "gone", src); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := RemoveSkillDir(home, "gone"); err != nil {
-		t.Fatalf("RemoveSkillDir: %v", err)
-	}
-	if Exists(home, "gone") {
-		t.Fatal("skill should be gone after RemoveSkillDir")
-	}
-	// Idempotent: removing again is not an error.
-	if err := RemoveSkillDir(home, "gone"); err != nil {
-		t.Errorf("RemoveSkillDir on absent skill should be nil, got %v", err)
 	}
 }
 

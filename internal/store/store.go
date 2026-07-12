@@ -1,16 +1,17 @@
-// Package store manages skillm's Home directory: resolving its location,
-// bootstrapping its layout, and adding/removing skill directories within it.
+// Package store manages skillm's Home directory — resolving its location and
+// bootstrapping its layout — and holds the directory-copy primitives skillm
+// uses to write a skill's canonical install copy.
 //
-// Home layout (see docs/PLAN.md §2):
+// Home layout:
 //
 //	<home>/
 //	├── config.toml
-//	├── state.toml
-//	└── skills/
-//	    └── <skill-id>/
-//	        └── SKILL.md
+//	└── state.toml
 //
-// This package owns the skills/ subtree; reading/writing config.toml and
+// Home holds only skillm's config and registry; a skill's files live solely in
+// its canonical install stores (~/.agents/skills at Global scope,
+// <project>/.agents/skills at Local scope). There is no longer a Home skills/
+// library — the installs are the only copies. Reading/writing config.toml and
 // state.toml belongs to the config and state packages respectively.
 package store
 
@@ -25,9 +26,6 @@ import (
 
 // dirName is the conventional Home directory name under the user's home.
 const dirName = ".skillm"
-
-// skillsSubdir is the directory under Home that holds per-skill directories.
-const skillsSubdir = "skills"
 
 // Home resolves the Home directory, in precedence order:
 //
@@ -51,77 +49,15 @@ func Home(override string) (string, error) {
 	return filepath.Join(hd, dirName), nil
 }
 
-// EnsureHome creates the Home directory and its skills/ subdirectory if they do
-// not already exist. It is idempotent.
+// EnsureHome creates the Home directory if it does not already exist. Home holds
+// only config.toml and state.toml, so this is just a MkdirAll of the home dir
+// itself. It is idempotent.
 func EnsureHome(home string) error {
 	if home == "" {
 		return errors.New("home directory path is empty")
 	}
-	if err := os.MkdirAll(SkillsDir(home), 0o755); err != nil {
-		return fmt.Errorf("create home layout at %s: %w", home, err)
-	}
-	return nil
-}
-
-// SkillsDir returns the directory holding per-skill directories: <home>/skills.
-func SkillsDir(home string) string {
-	return filepath.Join(home, skillsSubdir)
-}
-
-// SkillDir returns the directory for a single skill: <home>/skills/<id>.
-func SkillDir(home, id string) string {
-	return filepath.Join(SkillsDir(home), id)
-}
-
-// Exists reports whether a skill with the given id is present in Home (i.e. its
-// directory exists). Any stat error other than not-exist is treated as absent.
-func Exists(home, id string) bool {
-	info, err := os.Stat(SkillDir(home, id))
-	if err != nil {
-		return false
-	}
-	return info.IsDir()
-}
-
-// AddSkillDir copies the skill directory at srcDir recursively into Home at
-// SkillDir(home, id). It errors if a skill with that id already exists in Home
-// (the caller resolves collisions with --as, per PLAN §3). The skills/ parent
-// is created if missing.
-//
-// On any failure mid-copy, the partially written destination is removed so Home
-// is not left with a half-copied skill.
-func AddSkillDir(home, id, srcDir string) error {
-	src, err := os.Stat(srcDir)
-	if err != nil {
-		return fmt.Errorf("read source skill directory %s: %w", srcDir, err)
-	}
-	if !src.IsDir() {
-		return fmt.Errorf("source skill path %s is not a directory", srcDir)
-	}
-
-	if Exists(home, id) {
-		return fmt.Errorf("skill %q already exists in Home; use `skillm update` to refresh it or `--as <name>` to add it under a different id", id)
-	}
-
-	if err := os.MkdirAll(SkillsDir(home), 0o755); err != nil {
-		return fmt.Errorf("create skills directory: %w", err)
-	}
-
-	dst := SkillDir(home, id)
-	if err := copyTree(srcDir, dst); err != nil {
-		// Best-effort cleanup of a partially copied skill.
-		_ = os.RemoveAll(dst)
-		return fmt.Errorf("copy skill %q into Home: %w", id, err)
-	}
-	return nil
-}
-
-// RemoveSkillDir deletes a skill's directory from Home. It is not an error if
-// the skill is already absent (idempotent), matching Remove's "no dangling
-// state" guarantee.
-func RemoveSkillDir(home, id string) error {
-	if err := os.RemoveAll(SkillDir(home, id)); err != nil {
-		return fmt.Errorf("remove skill %q from Home: %w", id, err)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return fmt.Errorf("create home directory at %s: %w", home, err)
 	}
 	return nil
 }
@@ -130,7 +66,8 @@ func RemoveSkillDir(home, id string) error {
 // reproducing regular files, subdirectories, and symlinks. dstDir and its parent
 // are created if missing; existing files are overwritten. It does NOT first
 // clear dstDir — callers that need a clean replacement use ReplaceDir. This is
-// the primitive used to materialize a Vendored copy from a Home skill dir.
+// the primitive used to materialize a canonical install copy from a staged or
+// fetched source directory.
 func CopyDir(srcDir, dstDir string) error {
 	info, err := os.Stat(srcDir)
 	if err != nil {
@@ -181,7 +118,8 @@ func ReplaceDir(srcDir, dstDir string) error {
 // files byte-for-byte equal and symlinks pointing at the same target. It is
 // best-effort — any read error (or a missing tree) yields false, so a caller
 // treats "can't prove equal" as "refresh needed". It lets `update` skip
-// rewriting a Vendored copy whose content already matches Home (no git churn).
+// rewriting an install copy whose content already matches its source (no git
+// churn).
 func DirContentEqual(a, b string) bool {
 	am, err := contentMap(a)
 	if err != nil {

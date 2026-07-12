@@ -27,14 +27,14 @@ func newUninstallCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "uninstall [skill_id...]",
 		Short: "Remove skills from Home, unlinking them from every agent first",
-		Long: "uninstall removes skills entirely. For each skill it first removes its Global " +
+		Long: "uninstall removes skills entirely. For each skill it removes its Global " +
 			"install (the ~/.agents/skills copy and every agent's symlink) and its Local " +
 			"installs in every recorded project (copy, links, and skills-lock.json entry, " +
-			"tracked in state.toml), then deletes the Home copy and its registry entry so no " +
-			"dangling symlinks are left behind. There is no per-scope uninstall — it always " +
-			"clears every reference. Pass one or more skill ids, --all to remove every skill " +
-			"in Home, or no arguments to pick interactively from the skills in Home. On a " +
-			"terminal it confirms first unless --yes or --force is given.",
+			"tracked in state.toml) — the only copies there are — then drops its registry " +
+			"entry so no dangling symlinks are left behind. There is no per-scope uninstall " +
+			"— it always clears every reference. Pass one or more skill ids, --all to remove " +
+			"every installed skill, or no arguments to pick interactively. On a terminal it " +
+			"confirms first unless --yes or --force is given.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUninstall(args, uninstallFlagAll)
@@ -127,12 +127,12 @@ func selectUninstallIDs(home string, st *state.State, args []string, all bool) (
 		}
 		var missing []string
 		for _, id := range args {
-			if _, inRegistry := st.Get(id); !inRegistry && !store.Exists(home, id) {
+			if _, inRegistry := st.Get(id); !inRegistry {
 				missing = append(missing, id)
 			}
 		}
 		if len(missing) > 0 {
-			return nil, fmt.Errorf("not in Home: %s; nothing to uninstall", strings.Join(missing, ", "))
+			return nil, fmt.Errorf("not installed: %s; nothing to uninstall", strings.Join(missing, ", "))
 		}
 		return args, nil
 	}
@@ -164,11 +164,12 @@ func selectUninstallIDs(home string, st *state.State, args []string, all bool) (
 // uninstallOne removes a single skill: it removes its Global install (agent
 // links and the ~/.agents/skills copy) and its Local installs (agent links,
 // canonical copy, and skills-lock.json entry) from every recorded project,
-// unlinks it from every tracked local folder, deletes the Home copy, and drops
-// the registry entry from st (in memory — the caller persists). linker.Unlink
-// is idempotent for absent links and refuses to touch foreign symlinks or real
-// files; under --force such refusals are downgraded to warnings so the Home
-// copy can still be deleted (the foreign entry stays put).
+// unlinks it from every tracked local folder, and drops the registry entry from
+// st (in memory — the caller persists). Those canonical copies are the skill's
+// only copies; there is no separate Home library to delete. linker.Unlink is
+// idempotent for absent links and refuses to touch foreign symlinks or real
+// files; under --force such refusals are downgraded to warnings so the entry can
+// still be dropped (the foreign entry stays put).
 func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd string) error {
 	// Delete the canonical copies FIRST — the Global one, then the committed
 	// Local ones in every recorded project — so a later symlink sweep over the
@@ -232,9 +233,9 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 		}
 	}
 
-	if err := store.RemoveSkillDir(home, id); err != nil {
-		return err
-	}
+	// There is no Home copy to delete — the canonical install copies removed
+	// above were the only ones. Drop the registry entry so, per the model, an
+	// entry exists only while the skill is installed somewhere.
 	st.Remove(id) // drops the entry, including its VendoredAt/Global records
 	return nil
 }

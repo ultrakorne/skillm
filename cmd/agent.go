@@ -30,7 +30,7 @@ func newAgentCmd() *cobra.Command {
 			"\"affects future installs\". Enabling an agent creates a link for it at every place " +
 			"the already-enabled agents are linked (the global folder and every tracked project), " +
 			"bringing it to parity with its peers. Disabling an agent removes its links across " +
-			"every scope and tracked project; the skills stay in Home and stay linked for the " +
+			"every scope and tracked project; the skills stay installed and stay linked for the " +
 			"other agents, so this is not the same as uninstall. At least one agent must remain " +
 			"enabled — deselecting every agent is refused (use `skillm uninstall` to remove " +
 			"skills themselves). A change that removes links confirms first on a terminal unless " +
@@ -68,8 +68,8 @@ func runAgent() error {
 	}
 
 	// At least one agent must stay enabled. Deselecting everything would strip
-	// every link, which is `uninstall`'s job (it also deletes the Home copy), so
-	// we refuse here and point there. Nothing is written or unlinked.
+	// every link, which is `uninstall`'s job (it also deletes the canonical
+	// copies), so we refuse here and point there. Nothing is written or unlinked.
 	if len(selection) == 0 {
 		return fmt.Errorf("at least one agent must stay enabled; to remove skills entirely use `skillm uninstall`")
 	}
@@ -270,8 +270,8 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 // across the global folder and every tracked local root (plus the current
 // directory). It scans for the agent's own links and unlinks each; foreign files
 // and symlinks are never touched. A refusal is reported as a warning so one
-// obstruction never aborts the sweep. The Home copy is left intact — disabling an
-// agent is not uninstalling a skill.
+// obstruction never aborts the sweep. The canonical copies are left intact —
+// disabling an agent is not uninstalling a skill.
 func disableAgent(home string, a agentdir.Agent, st *state.State, cwd string) {
 	one := []agentdir.Agent{a}
 	skills := map[string]bool{}
@@ -354,15 +354,15 @@ func footprintIDs(home string, agents []agentdir.Agent, scope agentdir.Scope, ba
 }
 
 // confirmAgentPrompt builds the single confirmation shown before a reconcile
-// that removes links, naming the agents and reassuring that Home and the
-// projects' committed copies are untouched.
+// that removes links, naming the agents and reassuring that the skills'
+// canonical copies (global and the projects' committed ones) are untouched.
 func confirmAgentPrompt(newlyEnabled, newlyDisabled []agentdir.Agent) string {
 	dis := strings.Join(agentNames(newlyDisabled), ", ")
 	if len(newlyEnabled) == 0 {
-		return fmt.Sprintf("Disable %s? This removes its links from every scope and project; the skills stay in Home (and projects keep their committed copies).", dis)
+		return fmt.Sprintf("Disable %s? This removes its links from every scope and project; the skills stay installed (their canonical copies are untouched).", dis)
 	}
 	en := strings.Join(agentNames(newlyEnabled), ", ")
-	return fmt.Sprintf("Enable %s and disable %s? Disabling removes links from every scope and project; the skills stay in Home (and projects keep their committed copies).", en, dis)
+	return fmt.Sprintf("Enable %s and disable %s? Disabling removes links from every scope and project; the skills stay installed (their canonical copies are untouched).", en, dis)
 }
 
 // anyVendoredRoot reports whether any skill has a recorded Local install root.

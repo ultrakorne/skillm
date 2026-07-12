@@ -13,10 +13,11 @@ import (
 	"github.com/ultrakorne/skillm/internal/store"
 )
 
-// localTestSetup builds a temp Home holding skill "demo" and returns the home,
-// a fresh project base distinct from HOME (so each agent's local folder is
-// real, not aliased to its global one), and the default agents (claude+agents).
-func localTestSetup(t *testing.T) (home, base string, agents []agentdir.Agent) {
+// localTestSetup builds a temp Home plus a source directory holding skill
+// "demo"'s content, and returns the home, a fresh project base distinct from
+// HOME (so each agent's local folder is real, not aliased to its global one),
+// the source dir vendorOne copies from, and the default agents (claude+agents).
+func localTestSetup(t *testing.T) (home, base, src string, agents []agentdir.Agent) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", t.TempDir())
@@ -25,14 +26,11 @@ func localTestSetup(t *testing.T) (home, base string, agents []agentdir.Agent) {
 	if err := store.EnsureHome(home); err != nil {
 		t.Fatalf("EnsureHome: %v", err)
 	}
-	src := t.TempDir()
+	src = t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("demo body\n"), 0o644); err != nil {
 		t.Fatalf("write src SKILL.md: %v", err)
 	}
-	if err := store.AddSkillDir(home, "demo", src); err != nil {
-		t.Fatalf("AddSkillDir: %v", err)
-	}
-	return home, t.TempDir(), config.Default().AllAgents()
+	return home, t.TempDir(), src, config.Default().AllAgents()
 }
 
 func demoSlot(base string) string   { return agentdir.CanonicalSkillDir(base, "demo") }
@@ -42,9 +40,9 @@ func claudeLink(base string) string { return filepath.Join(base, ".claude", "ski
 // the canonical "agents" entry gets no link (the copy serves it), and claude
 // gets a relative link resolving to the copy.
 func TestLocalInstallWritesCopyAndLinks(t *testing.T) {
-	home, base, agents := localTestSetup(t)
+	home, base, src, agents := localTestSetup(t)
 
-	action, err := vendorOne(home, "demo", agents, agentdir.Local, base, false, false, "local")
+	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne: %v", err)
 	}
@@ -85,16 +83,16 @@ func TestLocalInstallWritesCopyAndLinks(t *testing.T) {
 // TestLocalInstallConvertsLegacyHomeSymlink: a pre-refactor absolute symlink
 // into Home at the canonical slot is converted to a real copy without force.
 func TestLocalInstallConvertsLegacyHomeSymlink(t *testing.T) {
-	home, base, agents := localTestSetup(t)
+	home, base, src, agents := localTestSetup(t)
 
 	if err := os.MkdirAll(filepath.Dir(demoSlot(base)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(store.SkillDir(home, "demo"), demoSlot(base)); err != nil {
+	if err := os.Symlink(filepath.Join(home, "skills", "demo"), demoSlot(base)); err != nil {
 		t.Fatal(err)
 	}
 
-	action, err := vendorOne(home, "demo", agents, agentdir.Local, base, false, false, "local")
+	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne: %v", err)
 	}
@@ -111,7 +109,7 @@ func TestLocalInstallConvertsLegacyHomeSymlink(t *testing.T) {
 // is a conflict — left untouched without force, adopted with it, refreshed
 // when recorded.
 func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
-	home, base, agents := localTestSetup(t)
+	home, base, src, agents := localTestSetup(t)
 
 	foreign := demoSlot(base)
 	if err := os.MkdirAll(foreign, 0o755); err != nil {
@@ -129,7 +127,7 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 	}
 
 	// Not forced → blocked, nothing written, no links created.
-	action, err := vendorOne(home, "demo", agents, agentdir.Local, base, false, false, "local")
+	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne (no force): %v", err)
 	}
@@ -144,7 +142,7 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 	}
 
 	// Recorded → skillm's own copy → refreshed (overwritten).
-	action, err = vendorOne(home, "demo", agents, agentdir.Local, base, true, false, "local")
+	action, err = vendorOne(home, "demo", src, agents, agentdir.Local, base, true, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne (recorded): %v", err)
 	}
@@ -159,8 +157,8 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 // TestLocalRemove removes the agent links and the canonical copy, and is
 // idempotent.
 func TestLocalRemove(t *testing.T) {
-	home, base, agents := localTestSetup(t)
-	if _, err := vendorOne(home, "demo", agents, agentdir.Local, base, false, false, "local"); err != nil {
+	home, base, src, agents := localTestSetup(t)
+	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local"); err != nil {
 		t.Fatalf("seed install: %v", err)
 	}
 
@@ -187,8 +185,8 @@ func TestLocalRemove(t *testing.T) {
 // re-upsert preserves foreign keys; removal drops the entry and deletes an
 // emptied lockfile.
 func TestLockEntrySync(t *testing.T) {
-	home, base, agents := localTestSetup(t)
-	if _, err := vendorOne(home, "demo", agents, agentdir.Local, base, false, false, "local"); err != nil {
+	home, base, src, agents := localTestSetup(t)
+	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local"); err != nil {
 		t.Fatalf("seed install: %v", err)
 	}
 

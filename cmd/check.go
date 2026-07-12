@@ -69,7 +69,7 @@ func runCheck(ctx context.Context) error {
 	check := func(ctx context.Context, i int) ui.Result {
 		e := st.Skills[i]
 		if e.Kind != state.KindGit {
-			return ui.Result{Level: ui.LevelWarn, Text: fmt.Sprintf("%s: local skill — edit it in Home directly (not update-tracked)", e.ID)}
+			return ui.Result{Level: ui.LevelWarn, Text: fmt.Sprintf("%s: local skill — no upstream (edit its source dir and run `skillm update` to re-sync)", e.ID)}
 		}
 		switch upstreamStatus(ctx, e) {
 		case statusUpdateAvailable:

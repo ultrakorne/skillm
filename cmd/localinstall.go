@@ -93,16 +93,17 @@ func vendorConflict(home, id string, scope agentdir.Scope, base string, recorded
 }
 
 // vendorOne materializes skill id's install at (scope, base): the canonical
-// copy from Home, then a link for every supplied agent that needs one.
-// recorded says whether the install is already recorded for this skill (so a
-// directory at the canonical slot is skillm's own copy); force permits
+// copy from srcDir (the skill's staged/fetched content, or an existing
+// canonical copy elsewhere), then a link for every supplied agent that needs
+// one. recorded says whether the install is already recorded for this skill (so
+// a directory at the canonical slot is skillm's own copy); force permits
 // overwriting a foreign entry there; label names the scope in per-link report
 // lines. It returns what happened to the canonical slot; vendorBlocked means
 // nothing was written at all. Link refusals (a foreign entry at an agent's
 // link path) are warned about, never fatal: the copy is the unit that is
 // recorded, links are re-derivable from disk.
-func vendorOne(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force bool, label string) (vendorAction, error) {
-	src := store.SkillDir(home, id)
+func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force bool, label string) (vendorAction, error) {
+	src := srcDir
 	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 
 	kind, _, err := linker.Classify(home, slot)

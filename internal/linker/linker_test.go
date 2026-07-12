@@ -17,6 +17,14 @@ type fixture struct {
 	cwd  string
 }
 
+// homeSkillDir is the legacy pre-vendoring Home skills path, <home>/skills/<id>.
+// skillm no longer writes it, but the linker still recognizes symlinks pointing
+// into it as its own, so these tests build it directly to exercise that
+// legacy-link recognition.
+func homeSkillDir(home, id string) string {
+	return filepath.Join(home, "skills", id)
+}
+
 func newFixture(t *testing.T, id string) fixture {
 	t.Helper()
 	home := filepath.Join(t.TempDir(), ".skillm")
@@ -24,10 +32,10 @@ func newFixture(t *testing.T, id string) fixture {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	// Materialize the skill dir in Home so global links have a real target.
-	if err := os.MkdirAll(store.SkillDir(home, id), 0o755); err != nil {
+	if err := os.MkdirAll(homeSkillDir(home, id), 0o755); err != nil {
 		t.Fatalf("create skill dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(store.SkillDir(home, id), "SKILL.md"), []byte("x\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(homeSkillDir(home, id), "SKILL.md"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("write SKILL.md: %v", err)
 	}
 	fx := fixture{home: home, cwd: t.TempDir()}
@@ -209,7 +217,7 @@ func TestLink_GlobalRepointsLegacyHomeLinkToCanonical(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(folder, id)
-	if err := os.Symlink(store.SkillDir(fx.home, id), linkPath); err != nil {
+	if err := os.Symlink(homeSkillDir(fx.home, id), linkPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -360,7 +368,7 @@ func TestLink_RepointsLegacyHomeLinkToCanonical(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(folder, id)
-	if err := os.Symlink(store.SkillDir(fx.home, id), linkPath); err != nil {
+	if err := os.Symlink(homeSkillDir(fx.home, id), linkPath); err != nil {
 		t.Fatal(err)
 	}
 
@@ -416,7 +424,7 @@ func TestUnlink_RemovesLegacyHomeLink(t *testing.T) {
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(store.SkillDir(fx.home, id), filepath.Join(folder, id)); err != nil {
+	if err := os.Symlink(homeSkillDir(fx.home, id), filepath.Join(folder, id)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -563,7 +571,7 @@ func TestScanLinks_IgnoresForeignSymlink(t *testing.T) {
 func TestScanAll_DiscoversEveryLinkedID(t *testing.T) {
 	fx := newFixture(t, "alpha")
 	// A second skill in Home and in the canonical store.
-	if err := os.MkdirAll(store.SkillDir(fx.home, "beta"), 0o755); err != nil {
+	if err := os.MkdirAll(homeSkillDir(fx.home, "beta"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	fx.materializeCanonical(t, "beta")

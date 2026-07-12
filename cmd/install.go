@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -41,17 +43,20 @@ func newInstallCmd() *cobra.Command {
 			"canonical copy in ~/.agents/skills plus symlinks in each enabled agent's own " +
 			"skill folder (see config.agents), or locally via a committable copy in the " +
 			"project. Pass " +
-			"one or more in-Home skill ids, --all to install every skill in Home, or no " +
-			"arguments to pick interactively from the skills in Home.\n\n" +
+			"one or more already-installed skill ids, --all to install every registered " +
+			"skill, or no arguments to pick interactively from the registered skills — " +
+			"handy for adding another scope or project to a skill you already have.\n\n" +
 			"The first argument may instead be a Source — a git repository URL or an " +
 			"explicitly path-shaped local path (./, ../, /, ~, or a *.git suffix). skillm " +
 			"then fetches it (treelessly for git), lets you pick which skills when it is a " +
-			"catalog of several (or pass skill ids / --all / --as / --ref as with `add`), " +
-			"adds them to Home, and installs the result — fetch, pick, and install in one " +
-			"step. A bare name is always an in-Home id, never a Source. A skill already in " +
-			"Home from the same Source is installed from the existing copy without " +
-			"re-fetching (run `skillm update` to refresh); the same id from a different " +
-			"Source is a collision you resolve with --as.\n\n" +
+			"catalog of several (or pass skill ids / --all / --as / --ref), and installs " +
+			"the result straight into the chosen scope — fetch, pick, and install in one " +
+			"step. A bare name is always a registered id, never a Source. Installing an " +
+			"already-registered id from the same Source refreshes it to the fetched " +
+			"content; the same id from a different Source is a collision you resolve with " +
+			"--as. Installing a bare id copies the skill from its existing global copy when " +
+			"there is one, otherwise re-fetches it from its recorded source@ref (which may " +
+			"advance the recorded revision).\n\n" +
 			"With no scope flag, skillm asks where to install: Global (the agents' " +
 			"user-level ~/.<agent>/skills folders), Local (this project), or a custom " +
 			"directory you type with Tab path-completion; the chosen scope applies to " +
@@ -112,28 +117,22 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		return fmt.Errorf("determine current directory: %w", err)
 	}
 
-	// Resolve which skills to install. The first argument decides the mode and a
-	// Source cannot be mixed with in-Home ids: a Source-shaped first arg (a git
-	// URL or an explicitly path-shaped path) triggers source mode — fetch into
-	// Home, then install — while a bare name (or no arg) is an in-Home id.
-	var ids []string
+	// Resolve which skills to install and where each one's content comes from.
+	// The first argument decides the mode and a Source cannot be mixed with
+	// registered ids: a Source-shaped first arg (a git URL or an explicitly
+	// path-shaped path) triggers source mode — fetch straight into a staging dir
+	// — while a bare name (or no arg) is a registered id whose content is copied
+	// from an existing canonical copy or re-fetched. Neither mode writes the
+	// registry: installVendored records each entry once its install lands.
+	var items []stagedSkill
+	var cleanup func()
 	if len(args) > 0 && source.LooksLikeSource(args[0]) {
-		ids, err = fetchToHome(cmd, home, args[0], fetchOpts{
-			As:              installFlagAs,
-			Ref:             installFlagRef,
-			All:             all,
-			SelectArgs:      args[1:],
-			ReuseSameSource: true,
+		items, cleanup, err = fetchToStage(cmd, home, args[0], fetchOpts{
+			As:         installFlagAs,
+			Ref:        installFlagRef,
+			All:        all,
+			SelectArgs: args[1:],
 		})
-		if err != nil {
-			return err
-		}
-		// fetchToHome wrote new registry entries via its own State; reload so the
-		// install pipeline below (vendored-root recording in particular) sees them.
-		st, err = state.Load(home)
-		if err != nil {
-			return err
-		}
 	} else {
 		// --as/--ref only make sense when fetching a source.
 		if installFlagAs != "" {
@@ -142,16 +141,16 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		if installFlagRef != "" {
 			return errors.New("the --ref flag only applies when installing from a git source")
 		}
-		// Explicit ids (validated against Home), --all (every skill in Home), or an
-		// interactive multiselect (which annotates each skill with where it is
-		// already installed — see installedMark).
-		ids, err = selectInstallIDs(home, st, agents, cwd, args, all)
-		if err != nil {
-			return err
-		}
+		items, cleanup, err = resolveIDItems(cmd, home, st, agents, cwd, args, all)
 	}
-	if len(ids) == 0 {
-		return nil // the selection step already reported why (empty Home / nothing picked)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		return nil // the selection step already reported why (nothing registered / nothing picked)
 	}
 
 	// One scope applies to every selected skill. Resolved after selection so an
@@ -185,26 +184,29 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		return fmt.Errorf("no enabled agent has a %s location; define one in %s", scope, config.Path(home))
 	}
 
-	return installVendored(home, st, ids, supported, scope, base, scopeLabel(scope, base, cwd))
+	return installVendored(home, st, items, supported, scope, base, scopeLabel(scope, base, cwd))
 }
 
 // installVendored materializes each selected skill's install at (scope, base):
-// the canonical copy in the scope's .agents/skills store, a link for every
-// other supported agent, and — at Local scope — a skills-lock.json entry.
-// Each install is recorded in state.toml (the vendored root at Local, the
-// Global flag at Global) so update/uninstall/list can find it later. Foreign
-// files at the canonical slot are not clobbered silently: skillm asks once for
-// the whole batch on a TTY (or refuses on a non-TTY) unless --force/--yes was
-// given. A legacy skillm symlink at the slot is converted to a copy without
-// asking.
-func installVendored(home string, st *state.State, ids []string, agents []agentdir.Agent, scope agentdir.Scope, base, label string) error {
+// the canonical copy in the scope's .agents/skills store (written from the
+// skill's staged/fetched content), a link for every other supported agent, and
+// — at Local scope — a skills-lock.json entry. Each skill's registry entry is
+// upserted once its copy lands (recording Source/Path/Ref/Revision and the
+// vendored root at Local or the Global flag at Global) so update/uninstall/list
+// can find it later — an entry exists only for a skill that is installed
+// somewhere. Foreign files at the canonical slot are not clobbered silently:
+// skillm asks once for the whole batch on a TTY (or refuses on a non-TTY)
+// unless --force/--yes was given. A legacy skillm symlink at the slot is
+// converted to a copy without asking.
+func installVendored(home string, st *state.State, items []stagedSkill, agents []agentdir.Agent, scope agentdir.Scope, base, label string) error {
 	force := flagForce || flagYes
 
 	// Pre-scan every canonical slot for foreign entries that would be
 	// overwritten, so the question (or the refusal) covers the whole batch once.
-	recorded := make(map[string]bool, len(ids))
+	recorded := make(map[string]bool, len(items))
 	var conflicts []string
-	for _, id := range ids {
+	for _, it := range items {
+		id := it.entry.ID
 		if scope == agentdir.Local {
 			recorded[id] = slices.Contains(st.VendoredRoots(id), base)
 		} else {
@@ -228,8 +230,9 @@ func installVendored(home string, st *state.State, ids []string, agents []agentd
 	stateDirty := false
 	installedAny := false
 	var runErr error
-	for _, id := range ids {
-		action, err := vendorOne(home, id, agents, scope, base, recorded[id], force, label)
+	for _, it := range items {
+		id := it.entry.ID
+		action, err := vendorOne(home, id, it.dir, agents, scope, base, recorded[id], force, label)
 		if err != nil {
 			runErr = err
 			break
@@ -240,15 +243,19 @@ func installVendored(home string, st *state.State, ids []string, agents []agentd
 		}
 		ui.Successf("%s %s in %s (%s)", vendorActionLabel(action), id, canonicalDisplay(scope), label)
 		installedAny = true
+
+		// Record the entry now that its copy landed. Upsert first (Source/Path/
+		// Ref/Revision, preserving any install markers merged in earlier), then
+		// add this scope's marker.
+		st.Upsert(it.entry)
+		stateDirty = true
 		if scope == agentdir.Local {
-			if st.AddVendoredRoot(id, base) {
-				stateDirty = true
-			}
+			st.AddVendoredRoot(id, base)
 			if entry, ok := st.Get(id); ok {
 				upsertLockEntry(entry, base)
 			}
-		} else if st.SetGlobal(id, true) {
-			stateDirty = true
+		} else {
+			st.SetGlobal(id, true)
 		}
 	}
 
@@ -276,28 +283,100 @@ func confirmVendorOverwritePrompt(paths []string) string {
 		strings.Join(paths, "\n  "))
 }
 
-// selectInstallIDs resolves which skills `install` should act on:
+// resolveIDItems resolves the id-mode selection into installable items: it picks
+// which registered skills to act on (selectInstallIDs), then for each resolves
+// where its content comes from (idModeSource) — an existing global canonical
+// copy, a local-path skill's source directory, or a fresh re-fetch. It returns
+// the items (entry + content dir) and a cleanup func the caller must defer to
+// remove any re-fetch temp dirs (always non-nil). An empty result with a nil
+// error means the selection step already reported why.
+func resolveIDItems(cmd *cobra.Command, home string, st *state.State, agents []agentdir.Agent, cwd string, args []string, all bool) ([]stagedSkill, func(), error) {
+	cleanup := func() {}
+	ids, err := selectInstallIDs(home, st, agents, cwd, args, all)
+	if err != nil || len(ids) == 0 {
+		return nil, cleanup, err
+	}
+
+	var cleanups []func()
+	cleanup = func() {
+		for _, c := range cleanups {
+			c()
+		}
+	}
+	items := make([]stagedSkill, 0, len(ids))
+	for _, id := range ids {
+		entry, ok := st.Get(id)
+		if !ok {
+			// selectInstallIDs validated membership, so this should not happen.
+			cleanup()
+			return nil, func() {}, fmt.Errorf("skill %q is not registered", id)
+		}
+		dir, clean, err := idModeSource(cmd.Context(), home, &entry)
+		if clean != nil {
+			cleanups = append(cleanups, clean)
+		}
+		if err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+		items = append(items, stagedSkill{entry: entry, dir: dir})
+	}
+	return items, cleanup, nil
+}
+
+// idModeSource resolves the directory whose content is skill e's, for an
+// install-by-id (adding a scope/project to an already-registered skill). In
+// order: (1) the canonical global copy when the skill is installed globally and
+// that copy exists (no network); (2) a local-path skill's recorded source
+// directory when it still exists; (3) otherwise a fresh re-fetch from
+// e.Source@e.Ref (git), which materializes the content and may advance e's
+// recorded Revision. It returns the content dir and a cleanup func (nil when no
+// temp was created). e is mutated in place when a re-fetch advances the revision.
+func idModeSource(ctx context.Context, home string, e *state.SkillEntry) (string, func(), error) {
+	if e.Global && vendorCopyExists(home, e.ID, agentdir.Global, "") {
+		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), nil, nil
+	}
+	if e.Kind == state.KindLocal {
+		if dirExists(e.Source) {
+			return e.Source, nil, nil
+		}
+		return "", nil, fmt.Errorf("local skill %q has no global copy and its source %s is gone; reinstall it from a source", e.ID, e.Source)
+	}
+	// Git skill with no reusable global copy: re-fetch from the pinned source.
+	dir, rev, clean, err := refetchSkill(ctx, *e)
+	if err != nil {
+		return "", nil, fmt.Errorf("re-fetch %q from %s: %w", e.ID, e.Source, err)
+	}
+	if rev != e.Revision {
+		e.Revision = rev
+		e.InstalledAt = time.Now().UTC()
+	}
+	return dir, clean, nil
+}
+
+// selectInstallIDs resolves which registered skills `install` should act on:
 //
-//   - explicit ids: each must already be in Home; if any is not, it errors and
-//     names all the unknown ones (atomic — nothing is installed);
-//   - --all: every skill registered in Home, in registry order;
-//   - neither: an interactive multiselect over every skill in Home, each
+//   - explicit ids: each must already be registered; if any is not, it errors
+//     and names all the unknown ones (atomic — nothing is installed);
+//   - --all: every registered skill, in registry order;
+//   - neither: an interactive multiselect over every registered skill, each
 //     annotated with where it is already installed (which refuses on a non-TTY,
 //     naming the skill_id / --all escape hatch).
 //
 // It returns an empty slice and no error when there is nothing to do, having
-// already told the user why (empty Home, or an empty interactive selection).
+// already told the user why (nothing registered, or an empty interactive
+// selection).
 func selectInstallIDs(home string, st *state.State, agents []agentdir.Agent, cwd string, args []string, all bool) ([]string, error) {
 	if len(args) > 0 {
 		if all {
 			return nil, errors.New("pass either skill ids or --all, not both")
 		}
-		return validateInHome(home, args)
+		return validateRegistered(st, args)
 	}
 
 	registered := registeredIDs(st)
 	if len(registered) == 0 {
-		ui.Warnf("no skills in Home; run `skillm add` first")
+		ui.Warnf("no skills installed yet; run `skillm install <url|path>` to fetch and install one")
 		return nil, nil
 	}
 	if all {
@@ -319,20 +398,26 @@ func selectInstallIDs(home string, st *state.State, agents []agentdir.Agent, cwd
 	return ids, nil
 }
 
-// validateInHome returns ids unchanged when every id names a skill present in
-// Home, or an error naming the unknown ids — so passing one wrong id makes the
+// validateRegistered returns ids unchanged when every id names a registered
+// skill, or an error naming the unknown ids — so passing one wrong id makes the
 // whole command a no-op rather than a partial install.
-func validateInHome(home string, ids []string) ([]string, error) {
+func validateRegistered(st *state.State, ids []string) ([]string, error) {
 	var missing []string
 	for _, id := range ids {
-		if !store.Exists(home, id) {
+		if _, ok := st.Get(id); !ok {
 			missing = append(missing, id)
 		}
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("not in Home: %s; add them first with `skillm add`", strings.Join(missing, ", "))
+		return nil, fmt.Errorf("not installed: %s; install them from a source first (`skillm install <url|path> %s`)", strings.Join(missing, ", "), strings.Join(missing, " "))
 	}
 	return ids, nil
+}
+
+// dirExists reports whether p is an existing directory.
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // installedMark returns a short annotation for the interactive install picker

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,19 +19,19 @@ import (
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
-// This file holds the shared fetch → discover → select → add-to-Home pipeline.
-// It is the single implementation both `add` (fetch-only) and `install`'s source
-// mode (fetch then install) call, so the two never drift. The caller-specific
-// difference — what to do when a chosen Skill ID already lives in Home — is
-// parameterized via fetchOpts.reuseSameSource (see fetchToHome).
+// This file holds the shared fetch → discover → select → stage pipeline used by
+// install's source mode. It clones (git) or reads (local) the source, discovers
+// the skills it holds, lets the caller pick which, and materializes each chosen
+// skill's content into a caller-owned staging directory — without writing any
+// copy or registry entry. Recording an install (the canonical copy, the agent
+// links, the registry entry) is the install layer's job, so an entry exists
+// only once an install actually lands.
 
-// fetchOpts parameterizes the shared pipeline. The selection knobs (As/Ref/All/
-// SelectArgs) mirror `add`'s flags so install's source mode behaves identically;
-// ReuseSameSource toggles the install-only same-Source reuse / different-Source
-// collision policy.
+// fetchOpts parameterizes the pipeline's selection knobs, mirroring install's
+// source-mode flags.
 type fetchOpts struct {
 	// As overrides the Skill ID (resolves a collision). Requires a single
-	// selected skill, like `add --as`.
+	// selected skill.
 	As string
 	// Ref pins a branch/tag/sha for a git source (default: repo default branch).
 	Ref string
@@ -38,21 +39,20 @@ type fetchOpts struct {
 	All bool
 	// SelectArgs names the skills to select (the positional skill_id args). When
 	// empty and more than one skill is discovered, the interactive picker runs
-	// (or refuses on a non-TTY). `add` passes at most one; install's source mode
-	// passes the whole variadic tail.
+	// (or refuses on a non-TTY).
 	SelectArgs []string
-	// ReuseSameSource switches collision handling. When false (`add`), any chosen
-	// id already in Home is a hard error (collisionErr). When true (`install`
-	// source mode), a chosen id already in Home from the SAME Source is reused
-	// without re-fetching (a notice points at `skillm update`), while the same id
-	// from a DIFFERENT Source is a collision error — and different-Source clashes
-	// are detected across the whole selection before anything is added, so one
-	// clash adds nothing (atomic).
-	ReuseSameSource bool
+}
+
+// stagedSkill is one chosen skill ready to install: the registry entry to upsert
+// once its install lands, and the directory holding its content (a materialized
+// git subdir under the clone temp, or a local source directory read in place).
+type stagedSkill struct {
+	entry state.SkillEntry
+	dir   string
 }
 
 // srcIdentity is the Source identity of the current fetch, compared against a
-// registry entry to decide whether a same-named skill in Home came from here.
+// registry entry to decide whether a same-named skill came from here.
 type srcIdentity struct {
 	kind   string // state.KindGit / state.KindLocal
 	source string // git URL, or local source directory
@@ -76,56 +76,65 @@ func (s srcIdentity) matches(e state.SkillEntry) bool {
 	}
 }
 
-// fetchToHome runs the shared fetch → discover → select → add-to-Home pipeline.
-// It ensures Home (and config) exist, classifies srcArg, discovers the skills it
-// holds, selects which to add, and makes each chosen skill present in Home. It
-// returns the ids of the chosen skills — whether freshly added or reused from an
-// existing same-Source Home copy — for the caller (install's source mode) to
-// then install.
-func fetchToHome(cmd *cobra.Command, home, srcArg string, opts fetchOpts) ([]string, error) {
+// fetchToStage runs the shared fetch → discover → select → stage pipeline. It
+// ensures Home (and config) exist, classifies srcArg, discovers the skills it
+// holds, selects which to stage, and materializes each chosen skill's content
+// into a staging directory. It writes nothing to Home or the registry: it
+// returns the staged skills (entry + content dir) for the install layer to copy
+// and record, plus a cleanup func the caller must defer to remove any temp
+// clone. cleanup is always non-nil (a no-op when there is nothing to clean).
+func fetchToStage(cmd *cobra.Command, home, srcArg string, opts fetchOpts) (skills []stagedSkill, cleanup func(), err error) {
+	cleanup = func() {}
 	if err := store.EnsureHome(home); err != nil {
-		return nil, err
+		return nil, cleanup, err
 	}
 	// Materialize config.toml with the built-in defaults on first run so it is
 	// the visible, hand-editable source of truth for agent locations. Never
 	// clobbers an existing file.
 	if err := config.EnsureExists(home); err != nil {
-		return nil, err
+		return nil, cleanup, err
 	}
 
 	kind, err := source.Classify(srcArg)
 	if err != nil {
-		return nil, err
+		return nil, cleanup, err
 	}
 
 	switch kind {
 	case source.Git:
-		return fetchFromGit(cmd, home, srcArg, opts)
+		return fetchGitToStage(cmd, home, srcArg, opts)
 	case source.Local:
-		return fetchFromLocal(home, srcArg, opts)
+		return fetchLocalToStage(home, srcArg, opts)
 	default:
-		return nil, fmt.Errorf("unsupported source kind %s", kind)
+		return nil, cleanup, fmt.Errorf("unsupported source kind %s", kind)
 	}
 }
 
-// fetchFromGit treeless-clones url, discovers the skills it holds, selects which
-// to add, and ensures each chosen skill is present in Home with a git registry
-// entry. It returns the ids of the chosen skills (added or reused).
-func fetchFromGit(cmd *cobra.Command, home, url string, opts fetchOpts) ([]string, error) {
+// fetchGitToStage treeless-clones url, discovers the skills it holds, selects
+// which to stage, and materializes each chosen skill's subdir into a staging
+// directory under the clone temp. The returned cleanup removes that temp once
+// the caller has copied the staged content.
+func fetchGitToStage(cmd *cobra.Command, home, url string, opts fetchOpts) (skills []stagedSkill, cleanup func(), err error) {
+	cleanup = func() {}
 	ctx := cmd.Context()
 
 	tmp, err := os.MkdirTemp("", "skillm-clone-")
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, cleanup, fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmp)
+	// The staged content lives under tmp and must outlive this call, so the
+	// caller owns cleanup. On any error below we remove tmp ourselves.
+	fail := func(e error) (nil_ []stagedSkill, _ func(), _ error) {
+		os.RemoveAll(tmp)
+		return nil, func() {}, e
+	}
 
 	// git clone wants to create the destination itself; give it a non-existent
 	// subpath of our temp dir.
 	repoDir := filepath.Join(tmp, "repo")
 
 	if err := gitx.TreelessClone(ctx, url, opts.Ref, repoDir); err != nil {
-		return nil, err
+		return fail(err)
 	}
 
 	// Resolve the concrete ref we pinned. When the user gave one we keep it; the
@@ -134,87 +143,70 @@ func fetchFromGit(cmd *cobra.Command, home, url string, opts fetchOpts) ([]strin
 	if pinnedRef == "" {
 		def, err := gitx.DefaultRef(ctx, repoDir)
 		if err != nil {
-			return nil, fmt.Errorf("resolve default branch of %s: %w", url, err)
+			return fail(fmt.Errorf("resolve default branch of %s: %w", url, err))
 		}
 		pinnedRef = def
 	}
 
 	found, err := source.DiscoverSkills(repoDir)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	if len(found) == 0 {
-		return nil, fmt.Errorf("no skills found in %s: expected at least one directory containing %s", url, "SKILL.md")
+		return fail(fmt.Errorf("no skills found in %s: expected at least one directory containing %s", url, "SKILL.md"))
 	}
 
 	chosen, err := selectFound(found, opts.SelectArgs, opts.All)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 	if len(chosen) == 0 {
-		ui.Warnf("nothing selected; no skills added")
-		return nil, nil
+		ui.Warnf("nothing selected; no skills installed")
+		return fail(nil)
 	}
 	if err := checkAsSingle(opts.As, chosen); err != nil {
-		return nil, err
+		return fail(err)
 	}
 
 	st, err := state.Load(home)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
 
-	// Plan every chosen skill, deciding add vs reuse. Different-Source collisions
-	// are detected here, before anything is materialized, so one clash adds
-	// nothing (atomic).
-	type gitItem struct {
+	// Detect every different-source collision before materializing anything, so
+	// one clash stages nothing (atomic).
+	type plannedGit struct {
 		fnd     source.Found
 		id      string
 		subpath string
-		reuse   bool
 	}
-	plan := make([]gitItem, 0, len(chosen))
+	plan := make([]plannedGit, 0, len(chosen))
 	for _, fnd := range chosen {
 		id := chosenID(fnd, opts.As)
 		subpath := repoRelSubpath(repoDir, fnd.Dir)
 		ident := srcIdentity{kind: state.KindGit, source: url, path: subpath}
-		reuse, cerr := collisionCheck(st, home, id, ident, opts.ReuseSameSource)
-		if cerr != nil {
-			return nil, cerr
+		if cerr := registryCollision(st, id, ident); cerr != nil {
+			return fail(cerr)
 		}
-		plan = append(plan, gitItem{fnd: fnd, id: id, subpath: subpath, reuse: reuse})
+		plan = append(plan, plannedGit{fnd: fnd, id: id, subpath: subpath})
 	}
 
-	ids := make([]string, 0, len(plan))
+	staged := make([]stagedSkill, 0, len(plan))
 	for _, it := range plan {
-		if it.reuse {
-			reuseNotice(it.id)
-			ids = append(ids, it.id)
-			continue
-		}
-
 		// Compute the per-skill revision (its subdir tree SHA at the pinned ref)
 		// before materializing, so we record exactly what we copied.
 		rev, err := gitx.SubtreeSHA(ctx, repoDir, pinnedRef, it.subpath)
 		if err != nil {
-			return ids, fmt.Errorf("read revision of %q: %w", it.id, err)
+			return fail(fmt.Errorf("read revision of %q: %w", it.id, err))
 		}
-
-		// Materialize the skill's subdir into a staging dir, then copy it into
-		// Home under its id. Staging keeps store.AddSkillDir's collision and
-		// cleanup guarantees intact.
-		stage, err := os.MkdirTemp(tmp, "stage-")
+		stageDir, err := os.MkdirTemp(tmp, "stage-")
 		if err != nil {
-			return ids, fmt.Errorf("create staging dir: %w", err)
+			return fail(fmt.Errorf("create staging dir: %w", err))
 		}
-		if err := gitx.MaterializeSubdir(ctx, repoDir, it.subpath, stage); err != nil {
-			return ids, fmt.Errorf("materialize skill %q: %w", it.id, err)
+		if err := gitx.MaterializeSubdir(ctx, repoDir, it.subpath, stageDir); err != nil {
+			return fail(fmt.Errorf("materialize skill %q: %w", it.id, err))
 		}
-		if err := store.AddSkillDir(home, it.id, stage); err != nil {
-			return ids, err
-		}
-
-		st.Upsert(state.SkillEntry{
+		fresh := state.SkillEntry{
 			ID:          it.id,
 			Kind:        state.KindGit,
 			Source:      url,
@@ -222,119 +214,94 @@ func fetchFromGit(cmd *cobra.Command, home, url string, opts fetchOpts) ([]strin
 			Ref:         pinnedRef,
 			Revision:    rev,
 			InstalledAt: time.Now().UTC(),
-		})
-		if err := state.Save(home, st); err != nil {
-			// Roll back the Home copy so registry and disk stay consistent.
-			_ = store.RemoveSkillDir(home, it.id)
-			return ids, err
 		}
-
-		ui.Successf("added %s (from %s)", it.id, url)
-		ids = append(ids, it.id)
+		staged = append(staged, stagedSkill{entry: mergeEntry(st, it.id, fresh), dir: stageDir})
 	}
-	return ids, nil
+	return staged, func() { os.RemoveAll(tmp) }, nil
 }
 
-// fetchFromLocal copies a skill (or a selected skill from a local catalog
-// directory) into Home as kind=local. Local skills carry no ref/revision and are
-// not update-tracked (PLAN §3, CONTEXT "Local skill"). It returns the ids of the
-// chosen skills (added or reused).
-func fetchFromLocal(home, path string, opts fetchOpts) ([]string, error) {
+// fetchLocalToStage stages a skill (or a selected skill from a local catalog
+// directory) as kind=local. Local skills carry no ref/revision and are not
+// update-tracked; their content is read from the source directory in place, so
+// there is nothing to clean up.
+func fetchLocalToStage(home, path string, opts fetchOpts) (skills []stagedSkill, cleanup func(), err error) {
+	cleanup = func() {}
+
 	found, err := source.DiscoverSkills(path)
 	if err != nil {
-		return nil, err
+		return nil, cleanup, err
 	}
 	if len(found) == 0 {
-		return nil, fmt.Errorf("no skills found in %s: expected a directory containing %s", path, "SKILL.md")
+		return nil, cleanup, fmt.Errorf("no skills found in %s: expected a directory containing %s", path, "SKILL.md")
 	}
 
 	chosen, err := selectFound(found, opts.SelectArgs, opts.All)
 	if err != nil {
-		return nil, err
+		return nil, cleanup, err
 	}
 	if len(chosen) == 0 {
-		ui.Warnf("nothing selected; no skills added")
-		return nil, nil
+		ui.Warnf("nothing selected; no skills installed")
+		return nil, cleanup, nil
 	}
 	if err := checkAsSingle(opts.As, chosen); err != nil {
-		return nil, err
+		return nil, cleanup, err
 	}
 
 	st, err := state.Load(home)
 	if err != nil {
-		return nil, err
+		return nil, cleanup, err
 	}
 
-	type localItem struct {
-		fnd   source.Found
-		id    string
-		reuse bool
-	}
-	plan := make([]localItem, 0, len(chosen))
+	staged := make([]stagedSkill, 0, len(chosen))
 	for _, fnd := range chosen {
 		id := chosenID(fnd, opts.As)
 		ident := srcIdentity{kind: state.KindLocal, source: fnd.Dir}
-		reuse, cerr := collisionCheck(st, home, id, ident, opts.ReuseSameSource)
-		if cerr != nil {
-			return nil, cerr
+		if cerr := registryCollision(st, id, ident); cerr != nil {
+			return nil, cleanup, cerr
 		}
-		plan = append(plan, localItem{fnd: fnd, id: id, reuse: reuse})
-	}
-
-	ids := make([]string, 0, len(plan))
-	for _, it := range plan {
-		if it.reuse {
-			reuseNotice(it.id)
-			ids = append(ids, it.id)
-			continue
-		}
-
-		if err := store.AddSkillDir(home, it.id, it.fnd.Dir); err != nil {
-			return ids, err
-		}
-
-		st.Upsert(state.SkillEntry{
-			ID:          it.id,
+		fresh := state.SkillEntry{
+			ID:          id,
 			Kind:        state.KindLocal,
-			Source:      it.fnd.Dir,
+			Source:      fnd.Dir,
 			InstalledAt: time.Now().UTC(),
-		})
-		if err := state.Save(home, st); err != nil {
-			_ = store.RemoveSkillDir(home, it.id)
-			return ids, err
 		}
-
-		ui.Successf("added %s (local copy of %s)", it.id, it.fnd.Dir)
-		ids = append(ids, it.id)
+		staged = append(staged, stagedSkill{entry: mergeEntry(st, id, fresh), dir: fnd.Dir})
 	}
-	return ids, nil
+	return staged, cleanup, nil
 }
 
-// collisionCheck decides what the pipeline should do with a chosen skill id
-// whose Source identity is ident:
-//
-//   - not in Home → fresh add (reuse=false, no error);
-//   - in Home, add mode (reuseMode=false) → a hard collision error;
-//   - in Home from the SAME Source, install source mode → reuse=true (install the
-//     existing Home copy without re-fetching);
-//   - in Home from a DIFFERENT Source, install source mode → a collision error.
-func collisionCheck(st *state.State, home, id string, ident srcIdentity, reuseMode bool) (reuse bool, err error) {
-	if !store.Exists(home, id) {
-		return false, nil
+// registryCollision reports an error only when id is already registered from a
+// source OTHER than ident — a same-id-different-source clash the user resolves
+// with --as. A same-source id is fine (its freshly fetched content is installed
+// and its revision refreshed) and an unregistered id is fresh.
+func registryCollision(st *state.State, id string, ident srcIdentity) error {
+	e, ok := st.Get(id)
+	if !ok {
+		return nil
 	}
-	if !reuseMode {
-		return false, collisionErr(id)
+	if ident.matches(e) {
+		return nil
 	}
-	if e, ok := st.Get(id); ok && ident.matches(e) {
-		return true, nil
-	}
-	return false, differentSourceErr(id)
+	return differentSourceErr(id)
 }
 
-// reuseNotice tells the user a chosen skill was already in Home from the same
-// Source, so it was installed from the existing copy rather than re-fetched.
-func reuseNotice(id string) {
-	ui.Hintf("%s already in Home from this source; installing the existing copy — run `skillm update %s` to refresh", id, id)
+// mergeEntry produces the entry to record for a chosen skill. For a genuinely
+// new id it is fresh as-is. For an id already registered from the same source
+// (guaranteed by registryCollision) it preserves the existing install markers
+// (VendoredAt/Global) and original InstalledAt, overwriting only the source and
+// revision fields — so re-installing a source refreshes the pin without
+// forgetting where the skill is already installed.
+func mergeEntry(st *state.State, id string, fresh state.SkillEntry) state.SkillEntry {
+	existing, ok := st.Get(id)
+	if !ok {
+		return fresh
+	}
+	existing.Kind = fresh.Kind
+	existing.Source = fresh.Source
+	existing.Path = fresh.Path
+	existing.Ref = fresh.Ref
+	existing.Revision = fresh.Revision
+	return existing
 }
 
 // chosenID returns the Skill ID to use for a discovered skill: its own id, or
@@ -355,12 +322,12 @@ func checkAsSingle(as string, chosen []source.Found) error {
 	return nil
 }
 
-// selectFound resolves which of the discovered skills to add.
+// selectFound resolves which of the discovered skills to stage.
 //
-//   - selectArgs given: add exactly those skills, in discovery order; an id that
-//     is not in the source is an error naming all the unknown ones (atomic).
-//   - exactly one skill found (and no selectArgs): add it without prompting.
-//   - --all given: add every discovered skill.
+//   - selectArgs given: stage exactly those skills, in discovery order; an id
+//     that is not in the source is an error naming all the unknown ones (atomic).
+//   - exactly one skill found (and no selectArgs): stage it without prompting.
+//   - --all given: stage every discovered skill.
 //   - otherwise: show the interactive picker (which refuses on a non-TTY with a
 //     message naming skill_id / --all).
 func selectFound(found []source.Found, selectArgs []string, all bool) ([]source.Found, error) {
@@ -404,7 +371,7 @@ func selectFound(found []source.Found, selectArgs []string, all bool) ([]source.
 		opts = append(opts, ui.Option{Label: f.Id, Value: f.Id})
 	}
 
-	ids, err := ui.SelectSkills("Select skills to add", opts)
+	ids, err := ui.SelectSkills("Select skills to install", opts)
 	if err != nil {
 		return nil, err
 	}
@@ -422,17 +389,11 @@ func selectFound(found []source.Found, selectArgs []string, all bool) ([]source.
 	return chosen, nil
 }
 
-// collisionErr builds the standard "already exists" error, suggesting the two
-// escape hatches from PLAN §3 (update or --as).
-func collisionErr(id string) error {
-	return fmt.Errorf("skill %q already exists in Home; run `skillm update %s` to refresh it, or pass `--as <name>` to add it under a different id", id, id)
-}
-
-// differentSourceErr is the install-source-mode collision: the id is already in
-// Home but came from a different Source, so reusing it would be wrong. The user
-// renames this one with --as (PLAN §3 install, "Source collision").
+// differentSourceErr is the install-source-mode collision: the id is already
+// registered from a different Source, so installing this one under the same id
+// would be wrong. The user renames this one with --as.
 func differentSourceErr(id string) error {
-	return fmt.Errorf("skill %q already exists in Home from a different source; pass `--as <name>` to add this one under a different id", id)
+	return fmt.Errorf("skill %q is already installed from a different source; pass `--as <name>` to install this one under a different id", id)
 }
 
 // sameLocalPath reports whether two local source paths refer to the same
@@ -468,4 +429,47 @@ func foundIDs(found []source.Found) string {
 		ids = append(ids, f.Id)
 	}
 	return strings.Join(ids, ", ")
+}
+
+// refetchSkill treeless-clones a git skill's recorded source at its pinned ref,
+// materializes the skill's subdir into a fresh temp dir, and returns the staged
+// content dir, the current upstream revision of that subdir, and a cleanup func
+// the caller must call once it has copied the content. It is the shared "get a
+// git skill's current content without a Home library" primitive used by install
+// (adding a scope by id) and import (restoring a missing copy). Git-kind only.
+func refetchSkill(ctx context.Context, e state.SkillEntry) (dir, rev string, cleanup func(), err error) {
+	cleanup = func() {}
+	tmp, err := os.MkdirTemp("", "skillm-refetch-")
+	if err != nil {
+		return "", "", cleanup, fmt.Errorf("create temp dir: %w", err)
+	}
+	fail := func(e error) (string, string, func(), error) {
+		os.RemoveAll(tmp)
+		return "", "", func() {}, e
+	}
+
+	repoDir := filepath.Join(tmp, "repo")
+	if err := gitx.TreelessClone(ctx, e.Source, e.Ref, repoDir); err != nil {
+		return fail(err)
+	}
+
+	ref := e.Ref
+	if ref == "" {
+		def, derr := gitx.DefaultRef(ctx, repoDir)
+		if derr != nil {
+			return fail(derr)
+		}
+		ref = def
+	}
+
+	rev, err = gitx.SubtreeSHA(ctx, repoDir, ref, e.Path)
+	if err != nil {
+		return fail(fmt.Errorf("the skill's subdirectory %q is no longer present upstream: %w", e.Path, err))
+	}
+
+	staged := filepath.Join(tmp, "staged")
+	if err := gitx.MaterializeSubdir(ctx, repoDir, e.Path, staged); err != nil {
+		return fail(err)
+	}
+	return staged, rev, func() { os.RemoveAll(tmp) }, nil
 }

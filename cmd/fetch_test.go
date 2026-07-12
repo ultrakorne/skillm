@@ -1,51 +1,65 @@
 package cmd
 
 import (
-	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
+	"github.com/ultrakorne/skillm/internal/skill"
+	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 )
 
-// TestCollisionCheck verifies the per-skill add/reuse/collision decision the
-// shared pipeline makes for a chosen id, in both add mode (any in-Home id is a
-// hard error) and install source mode (same Source reuses, different Source
-// errors).
-func TestCollisionCheck(t *testing.T) {
-	home := t.TempDir()
-	const id = "alpha"
-	if err := os.MkdirAll(store.SkillDir(home, id), 0o755); err != nil {
-		t.Fatalf("mkdir skill: %v", err)
-	}
+// TestRegistryCollision verifies the per-skill collision decision the fetch
+// pipeline makes for a chosen id: an unregistered id is fresh; an id already
+// registered from the SAME source is fine (its content is re-fetched and
+// re-installed); an id registered from a DIFFERENT source is a collision error.
+func TestRegistryCollision(t *testing.T) {
 	st := &state.State{}
-	st.Upsert(state.SkillEntry{ID: id, Kind: state.KindGit, Source: "https://example.com/x", Path: "alpha"})
+	st.Upsert(state.SkillEntry{ID: "alpha", Kind: state.KindGit, Source: "https://example.com/x", Path: "alpha"})
 
 	same := srcIdentity{kind: state.KindGit, source: "https://example.com/x", path: "alpha"}
 	diffURL := srcIdentity{kind: state.KindGit, source: "https://example.com/OTHER", path: "alpha"}
 
-	// Not in Home → fresh add, regardless of mode.
-	if reuse, err := collisionCheck(st, home, "absent", same, true); err != nil || reuse {
-		t.Fatalf("absent id: reuse=%v err=%v, want false,nil", reuse, err)
+	// Not registered → fresh, no error.
+	if err := registryCollision(st, "absent", same); err != nil {
+		t.Fatalf("absent id: err=%v, want nil", err)
 	}
-	if reuse, err := collisionCheck(st, home, "absent", same, false); err != nil || reuse {
-		t.Fatalf("absent id (add mode): reuse=%v err=%v, want false,nil", reuse, err)
+	// Registered from the same source → no error.
+	if err := registryCollision(st, "alpha", same); err != nil {
+		t.Fatalf("same source: err=%v, want nil", err)
+	}
+	// Registered from a different source → a collision error naming --as.
+	err := registryCollision(st, "alpha", diffURL)
+	if err == nil {
+		t.Fatal("different source must error")
+	}
+}
+
+// TestMergeEntry verifies that installing a fresh id records it as-is, while
+// re-installing an already-registered id preserves its install markers
+// (VendoredAt/Global) and original InstalledAt while refreshing the source and
+// revision fields.
+func TestMergeEntry(t *testing.T) {
+	st := &state.State{}
+
+	fresh := state.SkillEntry{ID: "new", Kind: state.KindGit, Source: "u", Path: "p", Ref: "main", Revision: "r1"}
+	if got := mergeEntry(st, "new", fresh); !reflect.DeepEqual(got, fresh) {
+		t.Fatalf("fresh id: mergeEntry = %+v, want %+v", got, fresh)
 	}
 
-	// In Home, add mode → a hard collision error.
-	if _, err := collisionCheck(st, home, id, same, false); err == nil {
-		t.Fatal("add-mode collision must error")
+	existing := state.SkillEntry{
+		ID: "alpha", Kind: state.KindGit, Source: "u", Path: "p", Ref: "main", Revision: "old",
+		VendoredAt: []string{"/proj"}, Global: true,
 	}
-
-	// In Home from the same Source, install source mode → reuse.
-	if reuse, err := collisionCheck(st, home, id, same, true); err != nil || !reuse {
-		t.Fatalf("same source: reuse=%v err=%v, want true,nil", reuse, err)
+	st.Upsert(existing)
+	updated := state.SkillEntry{ID: "alpha", Kind: state.KindGit, Source: "u", Path: "p", Ref: "main", Revision: "new"}
+	got := mergeEntry(st, "alpha", updated)
+	if got.Revision != "new" {
+		t.Errorf("revision not refreshed: %q", got.Revision)
 	}
-
-	// In Home from a different Source, install source mode → collision error.
-	if reuse, err := collisionCheck(st, home, id, diffURL, true); err == nil || reuse {
-		t.Fatalf("different source: reuse=%v err=%v, want false,error", reuse, err)
+	if !got.Global || len(got.VendoredAt) != 1 || got.VendoredAt[0] != "/proj" {
+		t.Errorf("install markers not preserved: %+v", got)
 	}
 }
 
@@ -79,4 +93,78 @@ func TestSrcIdentityMatches(t *testing.T) {
 	if (srcIdentity{kind: state.KindLocal, source: filepath.Join(dir, "elsewhere")}).matches(localE) {
 		t.Error("local different dir must not match")
 	}
+}
+
+func TestSelectFound(t *testing.T) {
+	mk := func(id string) source.Found {
+		return source.Found{Id: id, Dir: "/tmp/" + id, Skill: &skill.Skill{ID: id, Name: id}}
+	}
+	multi := []source.Found{mk("alpha"), mk("beta"), mk("gamma")}
+	single := []source.Found{mk("solo")}
+
+	cases := []struct {
+		name       string
+		found      []source.Found
+		selectArgs []string
+		all        bool
+		wantIDs    []string
+		wantErr    bool
+	}{
+		{"single auto-selects without prompt", single, nil, false, []string{"solo"}, false},
+		{"explicit id selects that one", multi, []string{"beta"}, false, []string{"beta"}, false},
+		{"multiple ids select those, in discovery order", multi, []string{"gamma", "alpha"}, false, []string{"alpha", "gamma"}, false},
+		{"--all selects everything", multi, nil, true, []string{"alpha", "beta", "gamma"}, false},
+		{"unknown id errors", multi, []string{"nope"}, false, nil, true},
+		{"one unknown among known errors (atomic)", multi, []string{"alpha", "nope"}, false, nil, true},
+		{"single with matching id", single, []string{"solo"}, false, []string{"solo"}, false},
+		{"single with mismatched id errors", single, []string{"other"}, false, nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := selectFound(tc.found, tc.selectArgs, tc.all)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %v", ids(got))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			gotIDs := ids(got)
+			if len(gotIDs) != len(tc.wantIDs) {
+				t.Fatalf("ids = %v, want %v", gotIDs, tc.wantIDs)
+			}
+			for i := range gotIDs {
+				if gotIDs[i] != tc.wantIDs[i] {
+					t.Fatalf("ids = %v, want %v", gotIDs, tc.wantIDs)
+				}
+			}
+		})
+	}
+}
+
+func TestRepoRelSubpath(t *testing.T) {
+	cases := []struct {
+		repo string
+		dir  string
+		want string
+	}{
+		{"/tmp/repo", "/tmp/repo", ""},
+		{"/tmp/repo", "/tmp/repo/skills/foo", "skills/foo"},
+		{"/tmp/repo", "/tmp/repo/foo", "foo"},
+	}
+	for _, tc := range cases {
+		if got := repoRelSubpath(tc.repo, tc.dir); got != tc.want {
+			t.Errorf("repoRelSubpath(%q,%q) = %q, want %q", tc.repo, tc.dir, got, tc.want)
+		}
+	}
+}
+
+func ids(found []source.Found) []string {
+	out := make([]string, 0, len(found))
+	for _, f := range found {
+		out = append(out, f.Id)
+	}
+	return out
 }

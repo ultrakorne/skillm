@@ -31,10 +31,11 @@ func newImportCmd() *cobra.Command {
 		Long: "import reads the skills-lock.json at the given directory (default: the " +
 			"current one) — typically written by a teammate with skillm or with vercel's " +
 			"`npx skills` CLI — and brings every entry under skillm management: each git " +
-			"skill's source is fetched into Home at the locked ref (recording its revision " +
-			"for `check`/`update`), the directory is recorded as a Local install root, a " +
-			"missing canonical copy in .agents/skills is restored from Home, and missing " +
-			"agent links are created for the enabled agents. Entries already managed here " +
+			"skill's source is fetched at the locked ref (recording its revision for " +
+			"`check`/`update`), the directory is recorded as a Local install root, a missing " +
+			"canonical copy in .agents/skills is written from the fetched content (or " +
+			"restored from an existing install), and missing agent links are created for the " +
+			"enabled agents. Entries already managed here " +
 			"are simply adopted; entries that do not describe a git remote (local paths, " +
 			"node_modules, registry skills) are reported and skipped. `skillm update` also " +
 			"runs this adoption automatically across every tracked project, so a teammate's " +
@@ -140,7 +141,7 @@ func importLockEntries(ctx context.Context, home string, st *state.State, agents
 				ui.Warnf("skipping %s: already in Home from a different source (%s)", name, existing.Source)
 				continue
 			}
-			if adoptLocalInstall(home, st, agents, existing, root) {
+			if landLocalInstall(ctx, home, st, agents, existing, root, "") {
 				changed = true
 				imported++
 				ui.Successf("adopted %s (%s)", name, root)
@@ -206,10 +207,6 @@ func importLockEntries(ctx context.Context, home string, st *state.State, agents
 				ui.Warnf("skipping %s: %v", it.name, err)
 				continue
 			}
-			if err := store.AddSkillDir(home, it.name, stage); err != nil {
-				ui.Warnf("skipping %s: %v", it.name, err)
-				continue
-			}
 
 			entry := state.SkillEntry{
 				ID:          it.name,
@@ -221,7 +218,9 @@ func importLockEntries(ctx context.Context, home string, st *state.State, agents
 				InstalledAt: time.Now().UTC(),
 			}
 			st.Upsert(entry)
-			adoptLocalInstall(home, st, agents, entry, root)
+			// Write the project's canonical copy straight from the materialized
+			// subdir (stage) — there is no Home library to restore it from.
+			landLocalInstall(ctx, home, st, agents, entry, root, stage)
 			changed = true
 			imported++
 			ui.Successf("imported %s from %s (%s)", it.name, g.url, root)
@@ -274,12 +273,15 @@ func autoImportTrackedRoots(ctx context.Context, home string, st *state.State, a
 	return changed
 }
 
-// adoptLocalInstall records root as a Local install root for skill e and
+// landLocalInstall records root as a Local install root for skill e and
 // completes whatever the install on disk is missing: an absent canonical copy
-// is restored from Home (with a fresh lockfile hash), and missing agent links
-// are created. An existing copy is left untouched — reconciling its content
-// with upstream is `skillm update`'s job. It reports whether st changed.
-func adoptLocalInstall(home string, st *state.State, agents []agentdir.Agent, e state.SkillEntry, root string) bool {
+// is written (with a fresh lockfile hash) and missing agent links are created.
+// prefer, when a readable directory, is the content source for a missing copy
+// (a freshly materialized clone); otherwise the copy is restored from an
+// existing install of the skill or re-fetched (see resolveCopySource). An
+// existing copy is left untouched — reconciling its content with upstream is
+// `skillm update`'s job. It reports whether st changed.
+func landLocalInstall(ctx context.Context, home string, st *state.State, agents []agentdir.Agent, e state.SkillEntry, root, prefer string) bool {
 	changed := st.AddVendoredRoot(e.ID, root)
 	if st.AddLocalRoot(root) {
 		changed = true
@@ -287,7 +289,15 @@ func adoptLocalInstall(home string, st *state.State, agents []agentdir.Agent, e 
 
 	localAgents, _ := splitLocalAliased(agents, root)
 	if !localCopyExists(home, e.ID, root) {
-		if err := store.ReplaceDir(store.SkillDir(home, e.ID), agentdir.CanonicalSkillDir(root, e.ID)); err != nil {
+		src, cleanup, err := resolveCopySource(ctx, home, st, e, prefer)
+		if err != nil {
+			ui.Warnf("restore copy of %s in %s: %v", e.ID, root, err)
+			return changed
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if err := store.ReplaceDir(src, agentdir.CanonicalSkillDir(root, e.ID)); err != nil {
 			ui.Warnf("restore copy of %s in %s: %v", e.ID, root, err)
 			return changed
 		}
@@ -295,6 +305,37 @@ func adoptLocalInstall(home string, st *state.State, agents []agentdir.Agent, e 
 	}
 	linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""))
 	return changed
+}
+
+// resolveCopySource returns a readable directory holding skill e's content, to
+// write a missing install copy from. In order: the caller's preferred dir when
+// it exists (a freshly materialized clone); the canonical global copy; any
+// other project's canonical copy; a local-path skill's recorded source; and
+// finally a fresh git re-fetch. It returns the dir and, when a temp was created
+// (the re-fetch), a cleanup func the caller must call after copying.
+func resolveCopySource(ctx context.Context, home string, st *state.State, e state.SkillEntry, prefer string) (dir string, cleanup func(), err error) {
+	if prefer != "" && dirExists(prefer) {
+		return prefer, nil, nil
+	}
+	if e.Global && vendorCopyExists(home, e.ID, agentdir.Global, "") {
+		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), nil, nil
+	}
+	for _, r := range st.VendoredRoots(e.ID) {
+		if localCopyExists(home, e.ID, r) {
+			return agentdir.CanonicalSkillDir(r, e.ID), nil, nil
+		}
+	}
+	if e.Kind == state.KindLocal {
+		if dirExists(e.Source) {
+			return e.Source, nil, nil
+		}
+		return "", nil, fmt.Errorf("no copy of local skill %q remains and its source %s is gone", e.ID, e.Source)
+	}
+	d, _, clean, err := refetchSkill(ctx, e)
+	if err != nil {
+		return "", nil, err
+	}
+	return d, clean, nil
 }
 
 // lockEntryMatches reports whether a lockfile entry describes the same source

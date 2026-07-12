@@ -15,12 +15,13 @@
 //
 // The package is safe by default. It only ever creates, inspects, or removes
 // symlinks it recognizes as its own — those resolving into the scope's
-// canonical .agents/skills store, or into Home's skills/ subtree (the legacy
-// link shape, still recognized so re-running install converts old layouts in
-// place); it refuses to clobber or delete anything else (a real file, a real
-// directory, or a symlink pointing somewhere foreign). Which links currently
-// exist is never persisted — ScanLinks reads them live from disk so they
-// cannot drift.
+// canonical .agents/skills store, or into Home's legacy skills/ subtree (the
+// pre-vendoring link shape: skillm no longer maintains that subtree, but a link
+// still pointing into it is recognized so re-running install can convert an old
+// layout and uninstall can clear it); it refuses to clobber or delete anything
+// else (a real file, a real directory, or a symlink pointing somewhere
+// foreign). Which links currently exist is never persisted — ScanLinks reads
+// them live from disk so they cannot drift.
 package linker
 
 import (
@@ -34,8 +35,12 @@ import (
 	"syscall"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
-	"github.com/ultrakorne/skillm/internal/store"
 )
+
+// legacyHomeSkillsSubdir is the name of the pre-vendoring skills library under
+// Home (<home>/skills). skillm no longer writes it, but links pointing into it
+// are still recognized as skillm's own so old layouts convert and uninstall.
+const legacyHomeSkillsSubdir = "skills"
 
 // symlinkHint wraps a symlink error with actionable guidance on Windows when
 // the root cause is a missing privilege (Developer Mode not enabled).
@@ -487,7 +492,7 @@ func Classify(home, path string) (kind TargetKind, dest string, err error) {
 }
 
 // linkIntoHome reports whether linkPath is a symlink whose target resolves to a
-// location inside Home's skills/ subtree. It returns:
+// location inside Home's legacy skills/ subtree. It returns:
 //
 //   - ours:  true iff the resolved target lies within <home>/skills;
 //   - dest:  the resolved (cleaned, absolute where possible) target path;
@@ -496,12 +501,14 @@ func Classify(home, path string) (kind TargetKind, dest string, err error) {
 //
 // The target is read with os.Readlink and resolved relative to the link's
 // directory when it is not absolute, matching how the OS dereferences it.
+// skillm no longer creates such links; this recognition only lets it clean up
+// or convert links left by a pre-vendoring version.
 func linkIntoHome(home, linkPath string) (ours bool, dest string, err error) {
 	dest, err = resolveLinkTarget(linkPath)
 	if err != nil {
 		return false, "", err
 	}
-	skillsRoot := filepath.Clean(store.SkillsDir(home))
+	skillsRoot := filepath.Clean(filepath.Join(home, legacyHomeSkillsSubdir))
 	return underDir(skillsRoot, dest), dest, nil
 }
 

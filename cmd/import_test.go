@@ -9,7 +9,6 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 )
 
 // writeLockfile writes a skills-lock.json at root with the given entries — the
@@ -62,10 +61,7 @@ func TestImportAdoptsLockfile(t *testing.T) {
 		t.Fatalf("import should report the skipped local-path entry:\n%s", out)
 	}
 
-	// Home holds alpha with full git tracking.
-	if !store.Exists(e.home, "alpha") {
-		t.Fatal("alpha not fetched into Home")
-	}
+	// alpha is registered with full git tracking.
 	entry, ok := loadState(t, e).Get("alpha")
 	if !ok || entry.Kind != state.KindGit || entry.Ref != "main" || entry.Path != "alpha" || len(entry.Revision) < 7 {
 		t.Fatalf("alpha registry entry incomplete: %+v ok=%v", entry, ok)
@@ -114,10 +110,10 @@ func TestImportRespectsExistingCopy(t *testing.T) {
 
 	e.runIn(t, project, "import")
 
-	// Home has upstream content; the repo copy is untouched.
-	hb, err := os.ReadFile(filepath.Join(store.SkillDir(e.home, "alpha"), "SKILL.md"))
-	if err != nil || !strings.Contains(string(hb), "alpha body") {
-		t.Fatalf("Home copy wrong: err=%v content=%s", err, hb)
+	// alpha is adopted with git tracking, and the teammate's committed copy is
+	// left untouched (reconciling content is update's job, not import's).
+	if entry, ok := loadState(t, e).Get("alpha"); !ok || entry.Kind != state.KindGit {
+		t.Fatalf("alpha not adopted as a git skill: %+v ok=%v", entry, ok)
 	}
 	cb, err := os.ReadFile(filepath.Join(copyDir, "SKILL.md"))
 	if err != nil || !strings.Contains(string(cb), "TEAMMATE EDIT") {
@@ -138,8 +134,7 @@ func TestUpdateAutoImportsTeammateEntries(t *testing.T) {
 
 	// skillm manages alpha in this project...
 	project := evalProject(t, t.TempDir())
-	e.run(t, "add", url, "alpha")
-	e.runIn(t, project, "install", "alpha", "--local")
+	e.runIn(t, project, "install", url, "alpha", "--local")
 
 	// ...then a teammate adds beta to the same lockfile out-of-band.
 	lf, err := lockfile.Load(project)
@@ -158,9 +153,6 @@ func TestUpdateAutoImportsTeammateEntries(t *testing.T) {
 	if !strings.Contains(out, "imported beta") {
 		t.Fatalf("update should auto-import beta, got:\n%s", out)
 	}
-	if !store.Exists(e.home, "beta") {
-		t.Fatal("beta not fetched into Home by the auto-import")
-	}
 	entry, ok := loadState(t, e).Get("beta")
 	if !ok || len(entry.VendoredAt) != 1 || entry.VendoredAt[0] != project {
 		t.Fatalf("beta not recorded at the project: %+v ok=%v", entry, ok)
@@ -177,7 +169,7 @@ func TestUpdateAutoImportsTeammateEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.run(t, "update", "alpha")
-	if store.Exists(e.home, "gamma") {
+	if _, ok := loadState(t, e).Get("gamma"); ok {
 		t.Fatal("explicit-id update must not auto-import")
 	}
 }
@@ -192,10 +184,10 @@ func TestImportNameCollisionSkipped(t *testing.T) {
 	_, url := initSkillRepo(t)
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
 
-	// alpha in Home from a LOCAL path source.
+	// alpha installed globally from a LOCAL path source.
 	src := t.TempDir()
 	writeSkillMD(t, filepath.Join(src, "alpha"), "alpha", "local original")
-	e.run(t, "add", filepath.Join(src, "alpha"))
+	e.run(t, "install", filepath.Join(src, "alpha"), "--global")
 
 	project := evalProject(t, t.TempDir())
 	writeLockfile(t, project, map[string]*lockfile.Entry{
@@ -207,10 +199,10 @@ func TestImportNameCollisionSkipped(t *testing.T) {
 	if !strings.Contains(out, "different source") {
 		t.Fatalf("import should warn about the collision, got:\n%s", out)
 	}
-	// Home copy untouched.
-	b, err := os.ReadFile(filepath.Join(store.SkillDir(e.home, "alpha"), "SKILL.md"))
+	// The existing global copy is untouched.
+	b, err := os.ReadFile(filepath.Join(agentsGlobalCopy(e, "alpha"), "SKILL.md"))
 	if err != nil || !strings.Contains(string(b), "local original") {
-		t.Fatalf("collision must not overwrite the Home copy: err=%v content=%s", err, b)
+		t.Fatalf("collision must not overwrite the existing copy: err=%v content=%s", err, b)
 	}
 	entry, _ := loadState(t, e).Get("alpha")
 	if len(entry.VendoredAt) != 0 {

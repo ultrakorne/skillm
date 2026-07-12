@@ -60,7 +60,7 @@ func TestLinkedLabel(t *testing.T) {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	const id = "demo"
-	skillDir := store.SkillDir(home, id)
+	skillDir := filepath.Join(home, "skills", id)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir skill: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestLinkedLabelLocalRoots(t *testing.T) {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	const id = "demo"
-	skillDir := store.SkillDir(home, id)
+	skillDir := filepath.Join(home, "skills", id)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir skill: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestLinkedLabelHomeAliasesGlobal(t *testing.T) {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	const id = "demo"
-	skillDir := store.SkillDir(home, id)
+	skillDir := filepath.Join(home, "skills", id)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir skill: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestReconcileLocalRootsPrunesHomeAlias(t *testing.T) {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	const id = "demo"
-	skillDir := store.SkillDir(home, id)
+	skillDir := filepath.Join(home, "skills", id)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir skill: %v", err)
 	}

@@ -23,13 +23,9 @@ func TestInstalledMark(t *testing.T) {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	const id = "demo"
-	skillDir := store.SkillDir(home, id)
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatalf("mkdir skill: %v", err)
-	}
 
 	agents := config.Default().AllAgents() // agents, claude (sorted)
-	a := agents[0]
+	a := agents[1]                         // claude: a non-canonical agent, so its folder is distinct from the .agents store
 	cwd := t.TempDir()
 
 	// Nothing linked yet.
@@ -38,19 +34,19 @@ func TestInstalledMark(t *testing.T) {
 	}
 
 	// A local link in a DIFFERENT directory must NOT count as installed.
-	linkInto(t, a, agentdir.Local, t.TempDir(), skillDir, id)
+	linkInto(t, home, a, agentdir.Local, t.TempDir(), id)
 	if got := installedMark(home, id, agents, cwd, false); got != "" {
 		t.Fatalf("local link elsewhere counted as installed: mark = %q, want empty", got)
 	}
 
 	// A local link in cwd counts as installed (local).
-	linkInto(t, a, agentdir.Local, cwd, skillDir, id)
+	linkInto(t, home, a, agentdir.Local, cwd, id)
 	if got := installedMark(home, id, agents, cwd, false); got != " (installed: local)" {
 		t.Fatalf("local-in-cwd mark = %q, want %q", got, " (installed: local)")
 	}
 
 	// Adding a global link makes it both, in scope order.
-	linkInto(t, a, agentdir.Global, "", skillDir, id)
+	linkInto(t, home, a, agentdir.Global, "", id)
 	if got := installedMark(home, id, agents, cwd, false); got != " (installed: global, local)" {
 		t.Fatalf("both mark = %q, want %q", got, " (installed: global, local)")
 	}
@@ -71,16 +67,12 @@ func TestInstalledMarkHomeAliasesGlobal(t *testing.T) {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	const id = "demo"
-	skillDir := store.SkillDir(home, id)
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatalf("mkdir skill: %v", err)
-	}
 
 	agents := config.Default().AllAgents() // agents, claude (sorted)
-	a := agents[0]
+	a := agents[1]                         // claude: a non-canonical agent, so its folder is distinct from the .agents store
 
 	// A single global link, scanned with cwd == HOME.
-	linkInto(t, a, agentdir.Global, "", skillDir, id)
+	linkInto(t, home, a, agentdir.Global, "", id)
 	if got := installedMark(home, id, agents, fakeHome, false); got != " (installed: global)" {
 		t.Fatalf("mark from home = %q, want %q", got, " (installed: global)")
 	}
@@ -100,9 +92,6 @@ func TestInstalledMarkGlobalRecordedCopy(t *testing.T) {
 		t.Fatalf("EnsureHome: %v", err)
 	}
 	const id = "demo"
-	if err := os.MkdirAll(store.SkillDir(home, id), 0o755); err != nil {
-		t.Fatalf("mkdir skill: %v", err)
-	}
 	agents := config.Default().AllAgents()
 	cwd := t.TempDir()
 
@@ -119,10 +108,16 @@ func TestInstalledMarkGlobalRecordedCopy(t *testing.T) {
 	}
 }
 
-// linkInto creates a skillm-style symlink (folder/<id> -> target) for agent a at
-// the given scope and base directory, creating the folder as needed.
-func linkInto(t *testing.T, a agentdir.Agent, scope agentdir.Scope, base, target, id string) {
+// linkInto creates a skillm-style symlink for agent a at the given scope and
+// base directory, pointing at the legacy Home skills path (<home>/skills/<id>)
+// — a shape the linker still recognizes as its own. Using the legacy target
+// keeps the link scan under test without materializing a real canonical copy,
+// which at cwd==home would sit at the same path as the local canonical store
+// and blur the global/local distinction these tests pin down. The folder is
+// created as needed.
+func linkInto(t *testing.T, home string, a agentdir.Agent, scope agentdir.Scope, base, id string) {
 	t.Helper()
+	target := filepath.Join(home, "skills", id)
 	folder, ok := agentdir.SkillsFolder(a, scope, base)
 	if !ok {
 		t.Fatalf("agent %s has no %s folder", a.Name, scope)

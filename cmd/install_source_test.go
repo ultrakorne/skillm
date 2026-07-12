@@ -8,13 +8,12 @@ import (
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 )
 
-// These tests drive the real binary through install's SOURCE mode (PLAN §3
-// install): `install <url|path>` fetches into Home and installs in one step,
-// reusing the same fetch pipeline as `add`. They reuse the harness from
-// integration_test.go (env, initSkillRepo, skillmBinary, assert*).
+// These tests drive the real binary through install's SOURCE mode (`install
+// <url|path>` fetches and installs in one step) and install-by-id mode (`install
+// <id>` adds another scope to an already-installed skill). They reuse the
+// harness from integration_test.go (env, initSkillRepo, skillmBinary, assert*).
 
 // initSkillRepoWith builds a git repo (branch main) holding one skill directory
 // per (id → body) entry, and returns the repo path and its file:// URL. It is
@@ -35,8 +34,8 @@ func initSkillRepoWith(t *testing.T, skills map[string]string) (repo, url string
 }
 
 // TestInstallSourceGit covers install's git source mode: a single skill_id
-// selector, then --all to fetch+install the rest of the catalog (the already-in
-// alpha is reused from the same Source, not re-fetched).
+// selector installs just that skill; then --all fetches and installs the rest of
+// the catalog (the already-installed alpha is simply re-installed).
 func TestInstallSourceGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -47,25 +46,22 @@ func TestInstallSourceGit(t *testing.T) {
 
 	// --- selector: fetch + install only alpha at global -----------------------
 	out := e.run(t, "install", url, "alpha", "--global")
-	if !strings.Contains(out, "added alpha") {
-		t.Fatalf("install alpha from source: expected an 'added' line, got:\n%s", out)
+	if !strings.Contains(out, "installed alpha") {
+		t.Fatalf("install alpha from source: expected an 'installed' line, got:\n%s", out)
 	}
 	assertGlobalInstalled(t, e, "alpha")
 	a, ok := loadState(t, e).Get("alpha")
 	if !ok || a.Kind != state.KindGit {
 		t.Fatalf("alpha not registered as a git skill: %+v ok=%v", a, ok)
 	}
-	// beta/gamma were not selected, so they are neither added nor installed.
-	if store.Exists(e.home, "beta") {
-		t.Fatal("beta must not be added when only alpha was selected")
+	// beta/gamma were not selected, so they are neither registered nor installed.
+	if _, ok := loadState(t, e).Get("beta"); ok {
+		t.Fatal("beta must not be registered when only alpha was selected")
 	}
 	assertNoLink(t, claudeGlobalLink(e, "beta"), "beta not selected")
 
-	// --- --all: fetch + install the rest; alpha is reused, not re-fetched ------
+	// --- --all: fetch + install the rest; alpha is re-installed ---------------
 	out = e.run(t, "install", url, "--all", "--global")
-	if !strings.Contains(out, "already in Home") {
-		t.Fatalf("install --all: expected a reuse notice for alpha, got:\n%s", out)
-	}
 	for _, id := range []string{"alpha", "beta", "gamma"} {
 		assertGlobalInstalled(t, e, id)
 	}
@@ -75,8 +71,8 @@ func TestInstallSourceGit(t *testing.T) {
 }
 
 // TestInstallSourceLocal covers install's local-path source mode: a path-shaped
-// argument to a directory holding a SKILL.md is fetched (copied) into Home as a
-// local skill and installed.
+// argument to a directory holding a SKILL.md is copied straight into the chosen
+// scope as a local skill and registered.
 func TestInstallSourceLocal(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -88,8 +84,8 @@ func TestInstallSourceLocal(t *testing.T) {
 	writeSkillMD(t, filepath.Join(src, "mylocal"), "mylocal", "local body")
 
 	out := e.run(t, "install", filepath.Join(src, "mylocal"), "--global")
-	if !strings.Contains(out, "added mylocal") {
-		t.Fatalf("install local source: expected an 'added' line, got:\n%s", out)
+	if !strings.Contains(out, "installed mylocal") {
+		t.Fatalf("install local source: expected an 'installed' line, got:\n%s", out)
 	}
 	assertGlobalInstalled(t, e, "mylocal")
 	entry, ok := loadState(t, e).Get("mylocal")
@@ -99,8 +95,8 @@ func TestInstallSourceLocal(t *testing.T) {
 }
 
 // TestInstallShapeBareNameIsId proves the shape-based disambiguation: a bare
-// name is ALWAYS an in-Home id, never a Source, even when a same-named directory
-// holding a different skill sits in the current directory.
+// name is ALWAYS a registered id, never a Source, even when a same-named
+// directory holding a different skill sits in the current directory.
 func TestInstallShapeBareNameIsId(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -109,35 +105,35 @@ func TestInstallShapeBareNameIsId(t *testing.T) {
 	_, url := initSkillRepo(t)
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
 
-	// Put the git "alpha" into Home (fetch-only).
-	e.run(t, "add", url, "alpha")
+	// Install the git "alpha" globally so it is registered.
+	e.run(t, "install", url, "alpha", "--global")
 
 	// Work in a project that contains a DECOY local skill, also named "alpha".
 	project := evalProject(t, t.TempDir())
 	writeSkillMD(t, filepath.Join(project, "alpha"), "alpha", "LOCAL DECOY body")
 
-	// A bare "alpha" must resolve to the in-Home (git) skill, never the ./alpha
-	// decoy — so this installs the existing Home copy, leaving it a git skill.
-	e.runIn(t, project, "install", "alpha", "--global")
-	assertGlobalInstalled(t, e, "alpha")
+	// A bare "alpha" must resolve to the registered (git) skill, never the
+	// ./alpha decoy — so this installs it locally from the global canonical copy,
+	// leaving it a git skill.
+	e.runIn(t, project, "install", "alpha", "--local")
 
 	a, _ := loadState(t, e).Get("alpha")
 	if a.Kind != state.KindGit {
-		t.Fatalf("bare name resolved to the local decoy (kind=%q), want the in-Home git skill", a.Kind)
+		t.Fatalf("bare name resolved to the local decoy (kind=%q), want the registered git skill", a.Kind)
 	}
-	b, err := os.ReadFile(filepath.Join(claudeGlobalLink(e, "alpha"), "SKILL.md"))
+	b, err := os.ReadFile(filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"))
 	if err != nil {
 		t.Fatalf("read installed alpha: %v", err)
 	}
 	if strings.Contains(string(b), "DECOY") {
-		t.Fatalf("installed the ./alpha decoy instead of the in-Home skill:\n%s", b)
+		t.Fatalf("installed the ./alpha decoy instead of the registered skill:\n%s", b)
 	}
 }
 
-// TestInstallSourceSameSourceReuse proves same-Source reuse does NOT re-fetch:
-// after the skill is in Home, an upstream change is ignored by install source
-// mode (the existing Home copy is installed; `update` is the way to refresh).
-func TestInstallSourceSameSourceReuse(t *testing.T) {
+// TestInstallByIdCopiesFromGlobalCopy proves install-by-id sources from the
+// existing global canonical copy, without a re-fetch: with the skill installed
+// globally, changing the upstream is ignored when a bare id adds a local scope.
+func TestInstallByIdCopiesFromGlobalCopy(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -145,43 +141,109 @@ func TestInstallSourceSameSourceReuse(t *testing.T) {
 	repo, url := initSkillRepo(t)
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
 
-	// Fetch alpha into Home (no install).
-	e.run(t, "add", url, "alpha")
+	e.run(t, "install", url, "alpha", "--global")
 	before, _ := loadState(t, e).Get("alpha")
 
-	// Change alpha upstream so a re-fetch WOULD alter the Home copy.
-	if err := os.WriteFile(filepath.Join(repo, "alpha", "SKILL.md"),
-		[]byte("---\nname: alpha\ndescription: alpha skill\n---\nalpha body CHANGED\n"), 0o644); err != nil {
-		t.Fatalf("rewrite alpha upstream: %v", err)
-	}
+	// Change alpha upstream so a re-fetch WOULD alter the content.
+	writeSkillMD(t, filepath.Join(repo, "alpha"), "alpha", "alpha body CHANGED")
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "edit alpha")
 
-	// install from the SAME source must reuse the existing Home copy, not re-fetch.
-	out := e.run(t, "install", url, "alpha", "--global")
-	if !strings.Contains(out, "already in Home") {
-		t.Fatalf("expected a reuse notice, got:\n%s", out)
-	}
-	// Revision unchanged (no re-fetch) and Home content still the original.
+	// Adding a local install by bare id copies from the global canonical copy —
+	// no network, so the revision is unchanged and the content is the original.
+	project := evalProject(t, t.TempDir())
+	e.runIn(t, project, "install", "alpha", "--local")
+
 	after, _ := loadState(t, e).Get("alpha")
 	if after.Revision != before.Revision {
-		t.Fatalf("revision changed (%q -> %q): install must not re-fetch a same-source skill",
+		t.Fatalf("revision changed (%q -> %q): install-by-id with a global copy must not re-fetch",
 			before.Revision, after.Revision)
 	}
-	body, err := os.ReadFile(filepath.Join(store.SkillDir(e.home, "alpha"), "SKILL.md"))
+	body, err := os.ReadFile(filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"))
 	if err != nil {
-		t.Fatalf("read Home alpha: %v", err)
+		t.Fatalf("read local alpha: %v", err)
 	}
 	if strings.Contains(string(body), "CHANGED") {
-		t.Fatalf("Home copy was overwritten; install must not re-fetch:\n%s", body)
+		t.Fatalf("local copy took the changed upstream; must copy from the global copy:\n%s", body)
 	}
-	// But it IS installed now.
-	assertGlobalInstalled(t, e, "alpha")
+}
+
+// TestInstallByIdRefetchesWhenOnlyLocal proves install-by-id re-fetches from the
+// recorded source when the skill has no global copy to reuse: with only a local
+// install, adding another scope by id fetches fresh content and may advance the
+// recorded revision.
+func TestInstallByIdRefetchesWhenOnlyLocal(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	bin := skillmBinary(t)
+	repo, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+
+	// Install alpha ONLY locally (no global copy to reuse).
+	projectA := evalProject(t, t.TempDir())
+	e.runIn(t, projectA, "install", url, "alpha", "--local")
+	before, _ := loadState(t, e).Get("alpha")
+
+	// Advance alpha upstream.
+	writeSkillMD(t, filepath.Join(repo, "alpha"), "alpha", "alpha body CHANGED")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "edit alpha")
+
+	// A bare-id install with no global copy re-fetches: revision advances and the
+	// new install carries the changed content.
+	e.run(t, "install", "alpha", "--global")
+
+	after, _ := loadState(t, e).Get("alpha")
+	if after.Revision == before.Revision {
+		t.Fatalf("revision unchanged (%q): install-by-id with only-local installs must re-fetch", after.Revision)
+	}
+	body, err := os.ReadFile(filepath.Join(agentsGlobalCopy(e, "alpha"), "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read global alpha: %v", err)
+	}
+	if !strings.Contains(string(body), "CHANGED") {
+		t.Fatalf("re-fetch did not pick up the changed upstream:\n%s", body)
+	}
+}
+
+// TestInstallSourceSameSourceRefetches proves that installing from the SAME
+// source re-fetches (there is no library to reuse): an upstream change is picked
+// up and the recorded revision advances.
+func TestInstallSourceSameSourceRefetches(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	bin := skillmBinary(t)
+	repo, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+
+	e.run(t, "install", url, "alpha", "--global")
+	before, _ := loadState(t, e).Get("alpha")
+
+	// Change alpha upstream.
+	writeSkillMD(t, filepath.Join(repo, "alpha"), "alpha", "alpha body CHANGED")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "edit alpha")
+
+	// install from the SAME source re-fetches and re-installs the fresh content.
+	e.run(t, "install", url, "alpha", "--global")
+	after, _ := loadState(t, e).Get("alpha")
+	if after.Revision == before.Revision {
+		t.Fatalf("revision unchanged (%q): a same-source install must re-fetch the current upstream", after.Revision)
+	}
+	body, err := os.ReadFile(filepath.Join(agentsGlobalCopy(e, "alpha"), "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read global alpha: %v", err)
+	}
+	if !strings.Contains(string(body), "CHANGED") {
+		t.Fatalf("same-source install did not refresh the content:\n%s", body)
+	}
 }
 
 // TestInstallSourceDifferentSourceCollision proves a same-id-different-Source
 // clash is a collision error, and that the check is atomic across the whole
-// selection: one clash adds and installs NOTHING.
+// selection: one clash installs NOTHING.
 func TestInstallSourceDifferentSourceCollision(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -194,8 +256,8 @@ func TestInstallSourceDifferentSourceCollision(t *testing.T) {
 	})
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
 
-	// alpha is in Home from url1.
-	e.run(t, "add", url1, "alpha")
+	// alpha is registered from url1.
+	e.run(t, "install", url1, "alpha", "--global")
 
 	// Installing alpha from url2 (a DIFFERENT source) is a collision error.
 	out, err := e.tryRun(t, "install", url2, "alpha", "--global")
@@ -205,16 +267,15 @@ func TestInstallSourceDifferentSourceCollision(t *testing.T) {
 	if !strings.Contains(out, "different source") || !strings.Contains(out, "--as") {
 		t.Fatalf("expected a different-source collision error naming --as, got:\n%s", out)
 	}
-	assertNoLink(t, claudeGlobalLink(e, "alpha"), "collision must install nothing")
 
 	// Atomic across the selection: --all over url2 (= {alpha, delta}) clashes on
-	// alpha, so delta must be neither added to Home nor installed.
+	// alpha, so delta must be neither registered nor installed.
 	out, err = e.tryRun(t, "install", url2, "--all", "--global")
 	if err == nil {
 		t.Fatalf("atomic different-source install should fail; got success:\n%s", out)
 	}
-	if store.Exists(e.home, "delta") {
-		t.Fatal("atomic: delta must not be added when the selection has a different-source clash")
+	if _, ok := loadState(t, e).Get("delta"); ok {
+		t.Fatal("atomic: delta must not be registered when the selection has a different-source clash")
 	}
 	assertNoLink(t, claudeGlobalLink(e, "delta"), "atomic: delta must not be installed")
 }
@@ -246,8 +307,7 @@ func TestInstallSourceNonTTYRefusals(t *testing.T) {
 
 // TestInstallSourceLocalScope covers local installs via source mode: fetch +
 // write the committable project install (canonical copy, relative claude link,
-// lockfile) in one step, recording the install root (which requires the
-// registry to be reloaded after the fetch).
+// lockfile) in one step, recording the install root.
 func TestInstallSourceLocalScope(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -282,7 +342,7 @@ func TestInstallAsRefRejectedInIDMode(t *testing.T) {
 	bin := skillmBinary(t)
 	_, url := initSkillRepo(t)
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
-	e.run(t, "add", url, "alpha")
+	e.run(t, "install", url, "alpha", "--global")
 
 	if out, err := e.tryRun(t, "install", "alpha", "--global", "--as", "x"); err == nil || !strings.Contains(out, "--as") {
 		t.Fatalf("--as in id mode should be rejected; err=%v out=%s", err, out)

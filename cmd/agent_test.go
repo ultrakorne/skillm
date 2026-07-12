@@ -9,7 +9,6 @@ import (
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 )
 
 // These tests exercise the `agent` reconcile helpers in-process. The command's
@@ -45,20 +44,6 @@ func testAgents(globalRoot string) (claude, codex agentdir.Agent) {
 		Local:  ".codex/skills",
 	}
 	return claude, codex
-}
-
-// makeSkill creates a minimal skill directory (with a SKILL.md) in Home so links
-// to it resolve to a real, readable target.
-func makeSkill(t *testing.T, home, id string) {
-	t.Helper()
-	dir := store.SkillDir(home, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir skill %s: %v", id, err)
-	}
-	body := "---\nname: " + id + "\ndescription: " + id + " skill\n---\nbody\n"
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
-		t.Fatalf("write SKILL.md for %s: %v", id, err)
-	}
 }
 
 // mustLink links one skill for one agent at scope/base, failing on error. It
@@ -148,8 +133,6 @@ func TestEnableAgentMirrorsFootprint(t *testing.T) {
 	cwd := t.TempDir() // an empty project: claude has nothing here, so nothing mirrors
 
 	claude, codex := testAgents(globalRoot)
-	makeSkill(t, home, "alpha")
-	makeSkill(t, home, "beta")
 
 	// claude footprint: alpha@global, beta@global, beta@local:projA.
 	mustLink(t, home, "alpha", claude, agentdir.Global, cwd)
@@ -187,7 +170,6 @@ func TestEnableAgentRecordsUntrackedCwdWithLocalFootprint(t *testing.T) {
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)
-	makeSkill(t, home, "alpha")
 	mustLink(t, home, "alpha", claude, agentdir.Local, cwd)
 
 	st := &state.State{}
@@ -211,7 +193,6 @@ func TestEnableAgentFromHomeMirrorsGlobalOnly(t *testing.T) {
 	globalRoot := sandboxGlobalRoot(t)
 
 	claude, codex := testAgents(globalRoot)
-	makeSkill(t, home, "alpha")
 	mustLink(t, home, "alpha", claude, agentdir.Global, globalRoot)
 
 	st := &state.State{}
@@ -252,7 +233,6 @@ func TestEnableAgentSkipsAliasedPeerFootprintAtHome(t *testing.T) {
 		Local:  ".weird-local/skills",
 	}
 
-	makeSkill(t, home, "alpha")
 	// claude has alpha only GLOBALLY; its global folder == its local folder at
 	// globalRoot, so a naive local scan there would surface alpha as "local".
 	mustLink(t, home, "alpha", claude, agentdir.Global, globalRoot)
@@ -282,8 +262,6 @@ func TestDisableAgentUnlinksButKeepsHome(t *testing.T) {
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)
-	makeSkill(t, home, "alpha")
-	makeSkill(t, home, "beta")
 
 	// Both agents linked at global; claude also linked in projA.
 	for _, id := range []string{"alpha", "beta"} {
@@ -300,9 +278,9 @@ func TestDisableAgentUnlinksButKeepsHome(t *testing.T) {
 	assertAbsent(t, linkPath(t, claude, agentdir.Global, cwd, "beta"))
 	assertAbsent(t, linkPath(t, claude, agentdir.Local, projA, "alpha"))
 
-	// Home copies survive — this is not uninstall.
-	if !store.Exists(home, "alpha") || !store.Exists(home, "beta") {
-		t.Fatal("disabling an agent must not delete skills from Home")
+	// The canonical copies survive — this is not uninstall.
+	if !vendorCopyExists(home, "alpha", agentdir.Global, "") || !vendorCopyExists(home, "beta", agentdir.Global, "") {
+		t.Fatal("disabling an agent must not delete the canonical skill copies")
 	}
 
 	// codex is untouched.
@@ -321,7 +299,6 @@ func TestAgentSwapTransfersFootprint(t *testing.T) {
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)
-	makeSkill(t, home, "alpha")
 	mustLink(t, home, "alpha", claude, agentdir.Global, cwd)
 	mustLink(t, home, "alpha", claude, agentdir.Local, projA)
 
@@ -336,11 +313,11 @@ func TestAgentSwapTransfersFootprint(t *testing.T) {
 	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "alpha"), "alpha")
 	assertResolvesLocal(t, projA, linkPath(t, codex, agentdir.Local, projA, "alpha"), "alpha")
 
-	// claude has nothing left, but alpha stays in Home.
+	// claude has nothing left, but alpha's canonical copies stay put.
 	assertAbsent(t, linkPath(t, claude, agentdir.Global, cwd, "alpha"))
 	assertAbsent(t, linkPath(t, claude, agentdir.Local, projA, "alpha"))
-	if !store.Exists(home, "alpha") {
-		t.Fatal("swap must not delete alpha from Home")
+	if !vendorCopyExists(home, "alpha", agentdir.Global, "") {
+		t.Fatal("swap must not delete alpha's canonical global copy")
 	}
 }
 
@@ -353,8 +330,6 @@ func TestEnableSkipsForeignObstruction(t *testing.T) {
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)
-	makeSkill(t, home, "alpha")
-	makeSkill(t, home, "beta")
 	mustLink(t, home, "alpha", claude, agentdir.Global, cwd)
 	mustLink(t, home, "beta", claude, agentdir.Global, cwd)
 
@@ -391,9 +366,6 @@ func TestFootprintIDs(t *testing.T) {
 	cwd := t.TempDir()
 
 	claude, codex := testAgents(globalRoot)
-	for _, id := range []string{"alpha", "beta", "gamma"} {
-		makeSkill(t, home, id)
-	}
 	mustLink(t, home, "beta", claude, agentdir.Global, cwd)
 	mustLink(t, home, "alpha", claude, agentdir.Global, cwd)
 	mustLink(t, home, "beta", codex, agentdir.Global, cwd) // overlaps with claude
@@ -405,15 +377,15 @@ func TestFootprintIDs(t *testing.T) {
 	}
 }
 
-// TestConfirmAgentPrompt names the affected agents and reassures that Home is
-// untouched, in both the disable-only and swap shapes.
+// TestConfirmAgentPrompt names the affected agents and reassures that the
+// skills stay installed, in both the disable-only and swap shapes.
 func TestConfirmAgentPrompt(t *testing.T) {
 	claude := agentdir.Agent{Name: "claude"}
 	codex := agentdir.Agent{Name: "codex"}
 
 	disableOnly := confirmAgentPrompt(nil, []agentdir.Agent{claude})
-	if !strings.Contains(disableOnly, "claude") || !strings.Contains(disableOnly, "stay in Home") {
-		t.Fatalf("disable-only prompt missing agent or Home reassurance: %q", disableOnly)
+	if !strings.Contains(disableOnly, "claude") || !strings.Contains(disableOnly, "stay installed") {
+		t.Fatalf("disable-only prompt missing agent or reassurance: %q", disableOnly)
 	}
 	if strings.Contains(disableOnly, "Enable") {
 		t.Fatalf("disable-only prompt should not mention enabling: %q", disableOnly)

@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 )
 
 // fileURL converts a local directory path to a file:// URL that git accepts on
@@ -24,10 +23,10 @@ func fileURL(path string) string {
 	return "file://" + p
 }
 
-// This file holds the end-to-end integration test required by PLAN §8: it spins
+// This file holds the end-to-end integration test: it spins
 // up a temp Home (via SKILLM_HOME) and a real local git repo holding several
 // skill directories, then drives the *built* skillm binary through the full
-// add → install → check → update → uninstall lifecycle. Driving the real binary with
+// install → check → update → uninstall lifecycle. Driving the real binary with
 // SKILLM_HOME set (rather than calling cobra commands in-process) exercises the
 // genuine treeless-clone / ls-tree / sparse-checkout code paths against real git
 // — the SubtreeSHA revision tracking runs for real, not mocked.
@@ -233,8 +232,8 @@ func agentsGlobalCopy(e env, id string) string {
 	return filepath.Join(e.userDir, ".agents", "skills", id)
 }
 
-// TestLifecycleEndToEnd is the full PLAN §8 integration test: a temp Home + a
-// real local git repo, driven through add → install → check → update → uninstall
+// TestLifecycleEndToEnd is the full integration test: a temp Home + a
+// real local git repo, driven through install → check → update → uninstall
 // via the built binary, asserting symlink targets and registry contents at each
 // step.
 func TestLifecycleEndToEnd(t *testing.T) {
@@ -252,10 +251,10 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	}
 
 	// --- install from a source (git, single id, --global) -------------------
-	// install's source mode fetches alpha into Home AND links it in one step,
-	// the way `add --global` used to before add became fetch-only.
+	// install's source mode fetches alpha AND links it in one step, writing the
+	// canonical copy straight into ~/.agents/skills.
 	out := e.run(t, "install", url, "alpha", "--global")
-	if !strings.Contains(out, "added alpha") {
+	if !strings.Contains(out, "installed alpha") {
 		t.Fatalf("install alpha from source: unexpected output:\n%s", out)
 	}
 
@@ -263,7 +262,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	// non-empty revision (the subdir tree SHA, read for real via ls-tree).
 	st := loadState(t, e)
 	if len(st.Skills) != 1 {
-		t.Fatalf("after add alpha: %d entries, want 1: %+v", len(st.Skills), st.Skills)
+		t.Fatalf("after install alpha: %d entries, want 1: %+v", len(st.Skills), st.Skills)
 	}
 	alpha, ok := st.Get("alpha")
 	if !ok {
@@ -287,44 +286,31 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	if alpha.InstalledAt.IsZero() {
 		t.Error("alpha installed_at is zero")
 	}
-
-	// The Home copy exists and global links were created for both agents,
-	// resolving back into Home.
-	if !store.Exists(e.home, "alpha") {
-		t.Fatalf("alpha not present in Home %s", store.SkillsDir(e.home))
+	if !alpha.Global {
+		t.Error("alpha not recorded as a global install")
 	}
+
+	// The canonical copy exists and global links were created for both agents.
 	assertGlobalInstalled(t, e, "alpha")
 
-	// --- add (fetch-only, no link) ------------------------------------------
-	e.run(t, "add", url, "beta")
-	if _, err := os.Lstat(claudeGlobalLink(e, "beta")); !os.IsNotExist(err) {
-		t.Fatalf("bare add must not link beta; lstat err = %v", err)
-	}
-	// beta's supporting file must have travelled into Home with it.
-	if _, err := os.Stat(filepath.Join(store.SkillDir(e.home, "beta"), "helper.txt")); err != nil {
-		t.Fatalf("beta helper.txt not copied into Home: %v", err)
+	// --- install another id from the same source (--global) -----------------
+	e.run(t, "install", url, "beta", "--global")
+	assertGlobalInstalled(t, e, "beta")
+	// beta's supporting file must have travelled into the canonical copy with it.
+	if _, err := os.Stat(filepath.Join(agentsGlobalCopy(e, "beta"), "helper.txt")); err != nil {
+		t.Fatalf("beta helper.txt not copied into the canonical copy: %v", err)
 	}
 
-	// --- add with --as (collision-free rename) ------------------------------
-	e.run(t, "add", url, "gamma", "--as", "renamed-gamma")
+	// --- install with --as (collision-free rename) --------------------------
+	e.run(t, "install", url, "gamma", "--as", "renamed-gamma", "--global")
 	if _, ok := loadState(t, e).Get("renamed-gamma"); !ok {
 		t.Fatal("renamed-gamma missing from registry after --as")
 	}
-	if !store.Exists(e.home, "renamed-gamma") {
-		t.Fatal("renamed-gamma not present in Home")
-	}
+	assertGlobalInstalled(t, e, "renamed-gamma")
 
-	// --- collision: re-adding alpha must error and not duplicate ------------
-	if out, err := e.tryRun(t, "add", url, "alpha"); err == nil {
-		t.Fatalf("re-adding alpha should fail (collision), got success:\n%s", out)
-	}
 	if n := len(loadState(t, e).Skills); n != 3 {
-		t.Fatalf("after collision attempt: %d entries, want 3 (alpha, beta, renamed-gamma)", n)
+		t.Fatalf("after three installs: %d entries, want 3 (alpha, beta, renamed-gamma)", n)
 	}
-
-	// --- install (default scope is global per config default) ---------------
-	e.run(t, "install", "beta", "--global")
-	assertGlobalInstalled(t, e, "beta")
 
 	// --- install --local writes the committable project install -------------
 	// Run with the working directory set to a temp project so .claude/.agents
@@ -401,14 +387,14 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Errorf("beta revision not advanced by update: still %q", gotBeta.Revision)
 	}
 
-	// The Home copy now holds the changed content, the project's committed copy
-	// was re-synced from it, and the claude link exposes it transparently.
-	homeBeta, err := os.ReadFile(filepath.Join(store.SkillDir(e.home, "beta"), "SKILL.md"))
+	// The global canonical copy now holds the changed content, the project's
+	// committed copy was re-synced too, and the claude link exposes it.
+	globalBeta, err := os.ReadFile(filepath.Join(agentsGlobalCopy(e, "beta"), "SKILL.md"))
 	if err != nil {
-		t.Fatalf("read updated beta in Home: %v", err)
+		t.Fatalf("read updated beta in the global copy: %v", err)
 	}
-	if !strings.Contains(string(homeBeta), "CHANGED") {
-		t.Fatalf("Home beta not updated; content:\n%s", homeBeta)
+	if !strings.Contains(string(globalBeta), "CHANGED") {
+		t.Fatalf("global beta not updated; content:\n%s", globalBeta)
 	}
 	assertVendoredCopy(t, filepath.Join(project, ".agents", "skills", "beta"), "CHANGED")
 	linkedBeta, err := os.ReadFile(filepath.Join(project, ".claude", "skills", "beta", "SKILL.md"))
@@ -425,21 +411,29 @@ func TestLifecycleEndToEnd(t *testing.T) {
 		t.Fatalf("check after update: still reports update available:\n%s", out)
 	}
 
-	// --- update of a local skill is a no-op note ----------------------------
-	// Add a local skill from a directory, then confirm update skips it.
+	// --- update of a local skill re-syncs from its source dir ---------------
+	// Install a local skill from a directory globally, then edit its source and
+	// confirm update re-syncs the canonical copy from it (local skills have no
+	// upstream, but their installs track the recorded source directory).
 	localSrc := t.TempDir()
 	writeSkillMD(t, filepath.Join(localSrc, "mylocal"), "mylocal", "local body")
-	e.run(t, "add", filepath.Join(localSrc, "mylocal"))
+	e.run(t, "install", filepath.Join(localSrc, "mylocal"), "--global")
 	localEntry, ok := loadState(t, e).Get("mylocal")
 	if !ok || localEntry.Kind != state.KindLocal {
-		t.Fatalf("mylocal not added as a local skill: %+v ok=%v", localEntry, ok)
+		t.Fatalf("mylocal not installed as a local skill: %+v ok=%v", localEntry, ok)
 	}
 	if localEntry.Ref != "" || localEntry.Revision != "" {
 		t.Errorf("local skill must carry no ref/revision: %+v", localEntry)
 	}
-	out = e.run(t, "update", "mylocal")
-	if !strings.Contains(strings.ToLower(out), "local skill") {
-		t.Fatalf("update mylocal: expected a local-skill note, got:\n%s", out)
+	// Edit the source, then update must propagate the change into the copy.
+	writeSkillMD(t, filepath.Join(localSrc, "mylocal"), "mylocal", "local body EDITED")
+	e.run(t, "update", "mylocal")
+	mylocalCopy, err := os.ReadFile(filepath.Join(agentsGlobalCopy(e, "mylocal"), "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read re-synced mylocal copy: %v", err)
+	}
+	if !strings.Contains(string(mylocalCopy), "EDITED") {
+		t.Fatalf("update did not re-sync the local skill's copy from its source; content:\n%s", mylocalCopy)
 	}
 
 	// --- uninstall (auto-unlink everywhere + delete + drop registry entry) --
@@ -462,9 +456,6 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	out = string(uninstallOut)
 	if !strings.Contains(out, "uninstalled beta") {
 		t.Fatalf("uninstall beta: unexpected output:\n%s", out)
-	}
-	if store.Exists(e.home, "beta") {
-		t.Fatal("beta still present in Home after uninstall")
 	}
 	if _, ok := loadState(t, e).Get("beta"); ok {
 		t.Fatal("beta still in registry after uninstall")
@@ -489,7 +480,7 @@ func TestLifecycleEndToEnd(t *testing.T) {
 	}
 
 	// alpha must be untouched by beta's removal.
-	if !store.Exists(e.home, "alpha") {
+	if _, ok := loadState(t, e).Get("alpha"); !ok {
 		t.Fatal("alpha removed as a side effect of removing beta")
 	}
 	assertGlobalInstalled(t, e, "alpha")
@@ -533,8 +524,10 @@ func TestInstallLocalFromHomeRefuses(t *testing.T) {
 	}
 	e := env{home: t.TempDir(), userDir: userDir, bin: bin}
 
-	// Fetch a skill into Home without linking it.
-	e.run(t, "add", url, "alpha")
+	// Register alpha via a throwaway local install (no global link, so the
+	// from-HOME attempt below starts with an empty ~/.claude/skills).
+	reg := evalProject(t, t.TempDir())
+	e.runIn(t, reg, "install", url, "alpha", "--local")
 
 	// Run `install --local` with the working directory set to HOME.
 	cmd := exec.Command(bin, "install", "alpha", "--local")
@@ -553,9 +546,12 @@ func TestInstallLocalFromHomeRefuses(t *testing.T) {
 		t.Fatalf("expected the alias error, got:\n%s", out)
 	}
 
-	// No local root recorded, and no link created under HOME.
-	if st := loadState(t, e); len(st.LocalRoots) != 0 {
-		t.Fatalf("home must not be recorded as a local root: %v", st.LocalRoots)
+	// HOME must not be recorded as a local root, and no link created under HOME.
+	// (The throwaway registration project is a legitimate root and may appear.)
+	for _, r := range loadState(t, e).LocalRoots {
+		if r == e.userDir {
+			t.Fatalf("home must not be recorded as a local root: %v", loadState(t, e).LocalRoots)
+		}
 	}
 	if _, err := os.Lstat(filepath.Join(e.userDir, ".claude", "skills", "alpha")); !os.IsNotExist(err) {
 		t.Fatalf("install --local from home must not create a link; lstat err = %v", err)
@@ -600,7 +596,7 @@ func (e env) tryRunIn(t *testing.T, dir string, args ...string) (string, error) 
 
 // assertVendoredCopy verifies path is a REAL directory (not a symlink) holding a
 // SKILL.md whose content contains wantSubstr — i.e. a self-contained Vendored
-// copy, not a link back into Home.
+// copy, not a link back to some shared library.
 func assertVendoredCopy(t *testing.T, path, wantSubstr string) {
 	t.Helper()
 	fi, err := os.Lstat(path)
@@ -660,7 +656,7 @@ func assertLinkResolvesToCanonical(t *testing.T, project, linkPath, id string) {
 // install lifecycle: install --local writes the canonical copy + relative
 // claude link + skills-lock.json entry and records the root; a Global symlink
 // coexists; update refreshes the committed copy and its lock entry in place;
-// uninstall deletes the copy, link, lock entry, Home copy, and registry entry.
+// uninstall deletes the copy, link, lock entry, and registry entry.
 // It also covers the guard rail: a foreign directory at the canonical slot is
 // not clobbered without --force.
 func TestLocalInstallLifecycle(t *testing.T) {
@@ -672,12 +668,9 @@ func TestLocalInstallLifecycle(t *testing.T) {
 	repo, url := initSkillRepo(t)
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
 
-	// Fetch alpha into Home, no install yet.
-	e.run(t, "add", url, "alpha")
-
-	// --- install --local: canonical copy + relative link + lock entry ---------
+	// --- install --local from source: canonical copy + relative link + lock ---
 	project := evalProject(t, t.TempDir())
-	out := e.runIn(t, project, "install", "alpha", "--local")
+	out := e.runIn(t, project, "install", url, "alpha", "--local")
 	if !strings.Contains(out, "installed alpha") {
 		t.Fatalf("install --local: expected an 'installed' line, got:\n%s", out)
 	}
@@ -736,14 +729,12 @@ func TestLocalInstallLifecycle(t *testing.T) {
 		t.Fatal("skills-lock.json not refreshed by update (computedHash should have changed)")
 	}
 
-	// --- uninstall deletes copy + link + lock entry + Home + registry ----------
+	// --- uninstall deletes copy + link + lock entry + registry entry ----------
 	e.runIn(t, project, "uninstall", "alpha", "--yes")
 	assertNoLink(t, claudeLnk, "uninstall must remove the claude link")
 	assertNoLink(t, agentsCopy, "uninstall must delete the canonical copy")
 	assertNoLink(t, claudeGlobalLink(e, "alpha"), "uninstall must remove the global symlink")
-	if store.Exists(e.home, "alpha") {
-		t.Fatal("alpha still in Home after uninstall")
-	}
+	assertNoLink(t, agentsGlobalCopy(e, "alpha"), "uninstall must delete the global canonical copy")
 	if _, ok := loadState(t, e).Get("alpha"); ok {
 		t.Fatal("alpha still in registry after uninstall")
 	}
@@ -753,7 +744,6 @@ func TestLocalInstallLifecycle(t *testing.T) {
 	}
 
 	// --- guard: a foreign directory at the canonical slot refuses -------------
-	e.run(t, "add", url, "beta")
 	proj2 := evalProject(t, t.TempDir())
 	foreign := filepath.Join(proj2, ".agents", "skills", "beta")
 	if err := os.MkdirAll(foreign, 0o755); err != nil {
@@ -762,7 +752,7 @@ func TestLocalInstallLifecycle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(foreign, "MINE.txt"), []byte("hand-written\n"), 0o644); err != nil {
 		t.Fatalf("write foreign file: %v", err)
 	}
-	if out, err := e.tryRunIn(t, proj2, "install", "beta", "--local"); err == nil ||
+	if out, err := e.tryRunIn(t, proj2, "install", url, "beta", "--local"); err == nil ||
 		!strings.Contains(out, "--force") {
 		t.Fatalf("installing over a foreign dir should refuse on a non-TTY naming --force; err=%v out=%s", err, out)
 	}
@@ -771,7 +761,7 @@ func TestLocalInstallLifecycle(t *testing.T) {
 		t.Fatalf("refusal must not touch the foreign files: %v", err)
 	}
 	// With --force it overwrites and adopts the directory as skillm's copy.
-	e.runIn(t, proj2, "install", "beta", "--local", "--force")
+	e.runIn(t, proj2, "install", url, "beta", "--local", "--force")
 	assertVendoredCopy(t, foreign, "beta body")
 	if _, err := os.Stat(filepath.Join(foreign, "MINE.txt")); !os.IsNotExist(err) {
 		t.Fatalf("--force should have replaced the foreign dir; MINE.txt err = %v", err)
@@ -789,20 +779,22 @@ func TestLegacySymlinkConversion(t *testing.T) {
 	bin := skillmBinary(t)
 	_, url := initSkillRepo(t)
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
-	e.run(t, "add", url, "alpha")
 
 	project := evalProject(t, t.TempDir())
 	slot := filepath.Join(project, ".agents", "skills", "alpha")
 
-	// Hand-build the legacy shape: an absolute symlink into Home.
+	// Hand-build the legacy shape: an absolute symlink into the old Home skills
+	// subtree (which no longer exists, but the linker still recognizes it).
 	if err := os.MkdirAll(filepath.Dir(slot), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(store.SkillDir(e.home, "alpha"), slot); err != nil {
+	if err := os.Symlink(filepath.Join(e.home, "skills", "alpha"), slot); err != nil {
 		t.Fatal(err)
 	}
 
-	out := e.runIn(t, project, "install", "alpha", "--local")
+	// A source install at the same slot recognizes the legacy link and converts
+	// it to a real committed copy in place.
+	out := e.runIn(t, project, "install", url, "alpha", "--local")
 	if !strings.Contains(out, "converted to copy") {
 		t.Fatalf("expected the legacy link to be converted, got:\n%s", out)
 	}
@@ -825,10 +817,10 @@ func TestLegacyGlobalSymlinkConversion(t *testing.T) {
 	bin := skillmBinary(t)
 	_, url := initSkillRepo(t)
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
-	e.run(t, "add", url, "alpha")
 
 	// Hand-build the legacy shape: both agent folders hold absolute symlinks
-	// into Home.
+	// into the old Home skills subtree (which no longer exists, but the linker
+	// still recognizes it).
 	for _, folder := range []string{
 		filepath.Join(e.userDir, ".agents", "skills"),
 		filepath.Join(e.userDir, ".claude", "skills"),
@@ -836,12 +828,14 @@ func TestLegacyGlobalSymlinkConversion(t *testing.T) {
 		if err := os.MkdirAll(folder, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(store.SkillDir(e.home, "alpha"), filepath.Join(folder, "alpha")); err != nil {
+		if err := os.Symlink(filepath.Join(e.home, "skills", "alpha"), filepath.Join(folder, "alpha")); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	out := e.run(t, "install", "alpha", "--global")
+	// A source install at global scope recognizes the legacy links and converts
+	// them to a real canonical copy plus a fresh link into it.
+	out := e.run(t, "install", url, "alpha", "--global")
 	if !strings.Contains(out, "converted to copy") {
 		t.Fatalf("expected the legacy links to be converted, got:\n%s", out)
 	}
@@ -866,16 +860,16 @@ func TestInstallUninstallMulti(t *testing.T) {
 
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
 
-	// Fetch three skills into Home without linking any of them.
-	for _, id := range []string{"alpha", "beta", "gamma"} {
-		e.run(t, "add", url, id)
-	}
+	// Register all three skills by installing the whole catalog locally in a
+	// throwaway project — registered, but not yet installed globally.
+	reg := evalProject(t, t.TempDir())
+	e.runIn(t, reg, "install", url, "--all", "--local")
 
 	// --- atomic install: one bad id installs nothing ------------------------
 	if out, err := e.tryRun(t, "install", "alpha", "nope", "--global"); err == nil {
 		t.Fatalf("install with an unknown id should fail; got success:\n%s", out)
 	}
-	assertNoLink(t, claudeGlobalLink(e, "alpha"), "atomic install must not link the valid id")
+	assertNoLink(t, claudeGlobalLink(e, "alpha"), "atomic install must not link the valid id globally")
 
 	// --- non-TTY guards -----------------------------------------------------
 	// No ids and no --all: the picker refuses and names the escape hatch.
@@ -903,7 +897,7 @@ func TestInstallUninstallMulti(t *testing.T) {
 	if out, err := e.tryRun(t, "uninstall", "beta", "nope", "--yes"); err == nil {
 		t.Fatalf("uninstall with an unknown id should fail; got success:\n%s", out)
 	}
-	if !store.Exists(e.home, "beta") {
+	if _, ok := loadState(t, e).Get("beta"); !ok {
 		t.Fatal("atomic uninstall must not remove the valid id (beta)")
 	}
 
@@ -913,16 +907,14 @@ func TestInstallUninstallMulti(t *testing.T) {
 		t.Fatalf("uninstall alpha gamma: unexpected output:\n%s", out)
 	}
 	for _, id := range []string{"alpha", "gamma"} {
-		if store.Exists(e.home, id) {
-			t.Fatalf("%s still in Home after uninstall", id)
-		}
 		if _, ok := loadState(t, e).Get(id); ok {
 			t.Fatalf("%s still in registry after uninstall", id)
 		}
 		assertNoLink(t, claudeGlobalLink(e, id), "uninstall must drop the link")
+		assertNoLink(t, agentsGlobalCopy(e, id), "uninstall must delete the global canonical copy")
 	}
 	// beta is untouched.
-	if !store.Exists(e.home, "beta") {
+	if _, ok := loadState(t, e).Get("beta"); !ok {
 		t.Fatal("beta removed as a side effect of uninstalling alpha/gamma")
 	}
 	assertGlobalInstalled(t, e, "beta")
