@@ -7,6 +7,9 @@ or per-project), symlinked into every other agent's folder (Claude, Cursor, …)
 
 ## Project-level docs
 - [CONTEXT.md](./CONTEXT.md) — ubiquitous language / glossary (read first)
+- [PLAN-remove-home-library.md](./PLAN-remove-home-library.md) — **active plan**:
+  drop the `~/.skillm/skills` library and the `add` command; canonical
+  `.agents/skills` copies become the only copies (delete this doc once executed)
 - [vercel-skills-comparison.md](./vercel-skills-comparison.md) — honest comparison with
   vercel-labs/skills; records the interop decisions (canonical `.agents/skills` stores,
   lockfile compatibility) and their rationale
