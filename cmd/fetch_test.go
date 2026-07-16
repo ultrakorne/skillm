@@ -63,6 +63,43 @@ func TestMergeEntry(t *testing.T) {
 	}
 }
 
+// TestMergeEntryKeepsRecordedRemote pins that a same-source re-install typed
+// another way does not repoint the recorded remote. The entry's spelling is a
+// deliberate choice — an HTTPS remote so a keyless CI can update — and
+// update/list clone from it, so a local `install git@...` must not flip it to
+// SSH. Lenient matching (one repo, many spellings) is what makes this reachable.
+func TestMergeEntryKeepsRecordedRemote(t *testing.T) {
+	st := &state.State{}
+	st.Upsert(state.SkillEntry{
+		ID: "alpha", Kind: state.KindGit, Source: "https://github.com/o/r",
+		Path: "p", Ref: "main", Revision: "old",
+	})
+	fresh := state.SkillEntry{
+		ID: "alpha", Kind: state.KindGit, Source: "git@github.com:o/r.git",
+		Path: "p", Ref: "main", Revision: "new",
+	}
+	got := mergeEntry(st, "alpha", fresh)
+	if got.Source != "https://github.com/o/r" {
+		t.Errorf("recorded remote repointed to %q, want the HTTPS spelling on record", got.Source)
+	}
+	if got.Revision != "new" {
+		t.Errorf("revision not refreshed: %q", got.Revision)
+	}
+}
+
+// TestMergeEntryLocalSourceFollowsFetch pins that the preservation above is
+// scoped to git remotes: a local skill's Source is a directory, matched by
+// absolute path (see sameLocalPath), and re-installing records the path just
+// used.
+func TestMergeEntryLocalSourceFollowsFetch(t *testing.T) {
+	st := &state.State{}
+	st.Upsert(state.SkillEntry{ID: "alpha", Kind: state.KindLocal, Source: "/abs/foo", Revision: "old"})
+	fresh := state.SkillEntry{ID: "alpha", Kind: state.KindLocal, Source: "/abs/foo/", Revision: "new"}
+	if got := mergeEntry(st, "alpha", fresh); got.Source != "/abs/foo/" {
+		t.Errorf("local source = %q, want the path just fetched", got.Source)
+	}
+}
+
 // TestSrcIdentityMatches checks the Source-identity comparison used to decide
 // same-vs-different Source: git compares URL and subpath; local compares the
 // directory by absolute, cleaned path; a kind mismatch never matches.
@@ -141,6 +178,72 @@ func TestSelectFound(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSrcIdentityMatchesRemoteSpellings pins the rule that one repo typed
+// several ways is still one source. A spelling difference used to read as a
+// different Source and refuse the install as a collision, whose suggested
+// `--as` would then install a duplicate of the same repo under a second id.
+// The recorded entry deliberately carries a trailing slash: entries written
+// before canonicalRemote hold the URL exactly as typed, so both sides normalize.
+func TestSrcIdentityMatchesRemoteSpellings(t *testing.T) {
+	e := state.SkillEntry{Kind: state.KindGit, Source: "https://github.com/o/r/", Path: "p"}
+	spellings := []string{
+		"https://github.com/o/r/",    // exactly as recorded
+		"https://github.com/o/r",     // the address-bar URL
+		"https://github.com/o/r.git", // the clone-button URL
+		"git@github.com:o/r.git",     // the scp-like form
+	}
+	for _, s := range spellings {
+		if !(srcIdentity{kind: state.KindGit, source: s, path: "p"}).matches(e) {
+			t.Errorf("%q is the same repo and should match", s)
+		}
+	}
+	if (srcIdentity{kind: state.KindGit, source: "https://github.com/o/other", path: "p"}).matches(e) {
+		t.Error("a genuinely different repo must not match")
+	}
+}
+
+// TestSrcIdentityMatchesRepoPathCase pins where case-folding stops. The host is
+// always folded (DNS is case-insensitive). The repo path is folded only on hosts
+// that treat it that way: on a self-managed GitLab/Gitea/git-over-ssh host two
+// paths differing in case are two repos, and folding them would bypass the --as
+// guard and let one skill's content replace the other's.
+func TestSrcIdentityMatchesRepoPathCase(t *testing.T) {
+	selfManaged := state.SkillEntry{Kind: state.KindGit, Source: "https://git.example.com/team/widget", Path: "p"}
+	if (srcIdentity{kind: state.KindGit, source: "https://git.example.com/team/Widget", path: "p"}).matches(selfManaged) {
+		t.Error("path case is significant here: /team/Widget is a different repo from /team/widget")
+	}
+	if !(srcIdentity{kind: state.KindGit, source: "https://GIT.EXAMPLE.COM/team/widget", path: "p"}).matches(selfManaged) {
+		t.Error("the host is case-insensitive and should match")
+	}
+
+	// GitHub paths are case-insensitive, so a case variant is the same repo —
+	// erroring here would be the spurious collision this all set out to fix.
+	gh := state.SkillEntry{Kind: state.KindGit, Source: "https://github.com/owner/repo", Path: "p"}
+	if !(srcIdentity{kind: state.KindGit, source: "https://github.com/Owner/Repo.git", path: "p"}).matches(gh) {
+		t.Error("github.com/Owner/Repo is the same repo as github.com/owner/repo")
+	}
+}
+
+// TestCanonicalRemote checks the form a git remote is recorded in: trailing
+// slashes go, since they are not part of a repo's identity, while the scheme and
+// any ".git" suffix stay because the value is handed back to git.
+func TestCanonicalRemote(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"https://github.com/o/r", "https://github.com/o/r"},
+		{"https://github.com/o/r/", "https://github.com/o/r"},
+		{"https://github.com/o/r///", "https://github.com/o/r"},
+		{"https://github.com/o/r.git/", "https://github.com/o/r.git"},
+	}
+	for _, tc := range cases {
+		if got := canonicalRemote(tc.in); got != tc.want {
+			t.Errorf("canonicalRemote(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

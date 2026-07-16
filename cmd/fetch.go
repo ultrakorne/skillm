@@ -60,7 +60,8 @@ type srcIdentity struct {
 }
 
 // matches reports whether registry entry e was sourced from the same place as
-// this fetch: for git the same repo URL and subpath; for local the same source
+// this fetch: for git the same repo and subpath (the remote compared leniently,
+// so a spelling difference is not a different source); for local the same source
 // directory (compared by absolute, cleaned path so ./foo and /abs/foo agree).
 func (s srcIdentity) matches(e state.SkillEntry) bool {
 	if e.Kind != s.kind {
@@ -68,12 +69,24 @@ func (s srcIdentity) matches(e state.SkillEntry) bool {
 	}
 	switch s.kind {
 	case state.KindGit:
-		return e.Source == s.source && e.Path == s.path
+		// One repo has many spellings — a trailing slash, a ".git" suffix, the
+		// scp-like form — and none of them make it a different repo. Fetches
+		// record a canonical URL (see canonicalRemote), but entries written
+		// before that still hold whatever was typed, so normalize both sides.
+		return normalizeRemote(e.Source) == normalizeRemote(s.source) && e.Path == s.path
 	case state.KindLocal:
 		return sameLocalPath(e.Source, s.source)
 	default:
 		return false
 	}
+}
+
+// canonicalRemote returns a git remote URL in the form skillm records: trailing
+// slashes removed, since they are not part of the repo's identity. It is
+// deliberately gentler than normalizeRemote — the result is stored and handed
+// back to git, so the scheme and any ".git" suffix must survive.
+func canonicalRemote(u string) string {
+	return strings.TrimRight(u, "/")
 }
 
 // fetchToStage runs the shared fetch → discover → select → stage pipeline. It
@@ -117,6 +130,11 @@ func fetchToStage(cmd *cobra.Command, home, srcArg string, opts fetchOpts) (skil
 func fetchGitToStage(cmd *cobra.Command, home, url string, opts fetchOpts) (skills []stagedSkill, cleanup func(), err error) {
 	cleanup = func() {}
 	ctx := cmd.Context()
+
+	// Canonicalize before anything records or compares it: a trailing slash is
+	// not part of a repo's identity, and storing the URL exactly as typed made
+	// the same repo entered two ways read as two sources.
+	url = canonicalRemote(url)
 
 	tmp, err := os.MkdirTemp("", "skillm-clone-")
 	if err != nil {
@@ -296,8 +314,18 @@ func mergeEntry(st *state.State, id string, fresh state.SkillEntry) state.SkillE
 	if !ok {
 		return fresh
 	}
+	// The same repo typed another way is the same source (see matches), so a
+	// re-install can reach here with a different spelling of the recorded
+	// remote. Keep the one on record: its spelling is a deliberate choice — an
+	// HTTPS remote so a keyless CI can update — and update/list clone from it,
+	// so a local `install git@...` must not silently repoint it to SSH. Only a
+	// genuinely different source replaces it.
+	sameRemote := existing.Kind == state.KindGit && fresh.Kind == state.KindGit &&
+		normalizeRemote(existing.Source) == normalizeRemote(fresh.Source)
 	existing.Kind = fresh.Kind
-	existing.Source = fresh.Source
+	if !sameRemote {
+		existing.Source = fresh.Source
+	}
 	existing.Path = fresh.Path
 	existing.Ref = fresh.Ref
 	existing.Revision = fresh.Revision
