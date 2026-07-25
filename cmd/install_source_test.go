@@ -70,6 +70,91 @@ func TestInstallSourceGit(t *testing.T) {
 	}
 }
 
+// TestInstallSourceGitHubShorthand covers install's GitHub "owner/repo"
+// shorthand — the form `npx skills add` takes. The shorthand is expanded to the
+// HTTPS clone URL and recorded as that URL, so the same repo installed either
+// way is one Source. A git `insteadOf` rewrite of https://github.com/ redirects
+// the clone to a local repo, so the shorthand path is exercised offline.
+func TestInstallSourceGitHubShorthand(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	bin := skillmBinary(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+
+	// The repo lives where the expanded URL's path lands under the rewrite base:
+	// https://github.com/acme/skills.git -> file://<base>/acme/skills.git
+	base := t.TempDir()
+	repo := filepath.Join(base, "acme", "skills.git")
+	writeSkillMD(t, filepath.Join(repo, "alpha"), "alpha", "alpha body")
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "skills")
+	// The harness points GIT_CONFIG_GLOBAL at this file.
+	cfg := "[url \"" + fileURL(base) + "/\"]\n\tinsteadOf = https://github.com/\n"
+	if err := os.WriteFile(filepath.Join(e.userDir, ".gitconfig"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write .gitconfig: %v", err)
+	}
+
+	out := e.run(t, "install", "acme/skills", "--global")
+	if !strings.Contains(out, "installed alpha") {
+		t.Fatalf("install from a GitHub shorthand: expected an 'installed' line, got:\n%s", out)
+	}
+	assertGlobalInstalled(t, e, "alpha")
+	a, ok := loadState(t, e).Get("alpha")
+	if !ok {
+		t.Fatal("alpha not registered after installing from a shorthand")
+	}
+	if want := "https://github.com/acme/skills.git"; a.Source != want {
+		t.Fatalf("recorded Source = %q, want the expanded %q", a.Source, want)
+	}
+	if a.Kind != state.KindGit {
+		t.Fatalf("alpha registered as kind %q, want %q", a.Kind, state.KindGit)
+	}
+}
+
+// TestInstallShorthandLosesToLocalDir proves the precedence rule: "owner/repo"
+// is also a valid relative path, so an existing directory of that name is still
+// installed as a local skill rather than being read as a GitHub shorthand.
+func TestInstallShorthandLosesToLocalDir(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	bin := skillmBinary(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+
+	// Same rewrite as above, so a wrong shorthand reading would really clone
+	// (and install "alpha") instead of failing — the assertions can tell which
+	// source won.
+	base := t.TempDir()
+	repo := filepath.Join(base, "acme", "skills.git")
+	writeSkillMD(t, filepath.Join(repo, "alpha"), "alpha", "alpha body")
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "skills")
+	cfg := "[url \"" + fileURL(base) + "/\"]\n\tinsteadOf = https://github.com/\n"
+	if err := os.WriteFile(filepath.Join(e.userDir, ".gitconfig"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("write .gitconfig: %v", err)
+	}
+
+	// A local directory whose path happens to look like a shorthand.
+	project := evalProject(t, t.TempDir())
+	writeSkillMD(t, filepath.Join(project, "acme", "skills"), "skills", "LOCAL body")
+
+	e.runIn(t, project, "install", "acme/skills", "--global")
+
+	if _, ok := loadState(t, e).Get("alpha"); ok {
+		t.Fatal("read acme/skills as a GitHub shorthand; an existing local directory must win")
+	}
+	s, ok := loadState(t, e).Get("skills")
+	if !ok {
+		t.Fatal("the local acme/skills directory was not installed")
+	}
+	if s.Kind != state.KindLocal {
+		t.Fatalf("skills registered as kind %q, want %q", s.Kind, state.KindLocal)
+	}
+}
+
 // TestInstallSourceLocal covers install's local-path source mode: a path-shaped
 // argument to a directory holding a SKILL.md is copied straight into the chosen
 // scope as a local skill and registered.

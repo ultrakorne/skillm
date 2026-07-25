@@ -3,10 +3,11 @@
 // or local tree.
 //
 // A Source is the location a skill is fetched from. The primary kind is a git
-// repository — which may hold one or many skills, acting as a catalog — and the
-// secondary kind is a local directory holding a single skill. Classify decides
-// which kind an argument refers to; DiscoverSkills walks a materialized tree and
-// reports every skill directory it contains.
+// repository — which may hold one or many skills, acting as a catalog, and may be
+// named by URL or by GitHub "owner/repo" shorthand — and the secondary kind is a
+// local directory holding a single skill. Classify decides which kind an argument
+// refers to and GitRemote resolves a git one to the URL to clone; DiscoverSkills
+// walks a materialized tree and reports every skill directory it contains.
 package source
 
 import (
@@ -47,16 +48,20 @@ func (k Kind) String() string {
 // It is recognised as Git when arg looks like a git remote URL — an http(s),
 // git, ssh or file scheme, an scp-like "user@host:path" / "host:path" form, or a
 // path ending in ".git". Otherwise, if arg is an existing local directory it is
-// classified as Local. Anything else (a non-existent path, or a file) yields a
-// descriptive error so the caller can surface it to the user.
+// classified as Local. Failing both, a GitHub "owner/repo" shorthand is Git.
+// Anything else (a non-existent path, or a file) yields a descriptive error so
+// the caller can surface it to the user.
 //
-// Git detection is checked first and deliberately does not touch the filesystem:
-// a string that looks like a remote is treated as one even if a same-named
-// directory happens to exist locally.
+// The order matters twice over. An explicit remote is checked first and
+// deliberately does not touch the filesystem: a string that looks like a remote
+// is treated as one even if a same-named directory happens to exist locally. The
+// shorthand, by contrast, is checked last — "owner/repo" is also a valid
+// relative path, so an existing local directory of that name keeps winning, as
+// it did before shorthands were understood.
 func Classify(arg string) (Kind, error) {
 	trimmed := strings.TrimSpace(arg)
 	if trimmed == "" {
-		return 0, fmt.Errorf("empty source: provide a git URL or a local path")
+		return 0, fmt.Errorf("empty source: provide a git URL, a GitHub owner/repo, or a local path")
 	}
 
 	if looksLikeGitRemote(trimmed) {
@@ -64,16 +69,75 @@ func Classify(arg string) (Kind, error) {
 	}
 
 	info, err := os.Stat(trimmed)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, fmt.Errorf("source %q is neither a git URL nor an existing local directory", arg)
-		}
+	switch {
+	case err == nil && info.IsDir():
+		return Local, nil
+	case err == nil:
+		return 0, fmt.Errorf("source %q is a file, not a skill directory or git URL", arg)
+	case !os.IsNotExist(err):
 		return 0, fmt.Errorf("inspect source %q: %w", arg, err)
 	}
-	if !info.IsDir() {
-		return 0, fmt.Errorf("source %q is a file, not a skill directory or git URL", arg)
+
+	// Nothing of that name on disk: a GitHub shorthand is a git remote.
+	if _, ok := GitHubShorthand(trimmed); ok {
+		return Git, nil
 	}
-	return Local, nil
+	return 0, fmt.Errorf("source %q is neither a git URL (or GitHub owner/repo) nor an existing local directory", arg)
+}
+
+// GitRemote returns the remote URL to clone for an arg Classify reported as Git:
+// a GitHub "owner/repo" shorthand expanded to its HTTPS clone URL, any other
+// remote passed through as given (trimmed).
+//
+// Callers record the result as the skill's Source, so installing "owner/repo"
+// and installing "https://github.com/owner/repo" are the same Source — the same
+// skill, checked and updated against the same remote.
+func GitRemote(arg string) string {
+	trimmed := strings.TrimSpace(arg)
+	if url, ok := GitHubShorthand(trimmed); ok {
+		return url
+	}
+	return trimmed
+}
+
+// GitHubShorthand reports whether s is a GitHub "owner/repo" shorthand — the
+// form `npx skills add owner/repo` takes, and the form a lockfile records for a
+// GitHub HTTPS source — and returns the HTTPS clone URL it expands to.
+//
+// The recognised shape is exactly two segments split by a single "/", each made
+// only of letters, digits, "-", "_" or "." and neither being "." or ".."; the
+// repo segment may carry a trailing ".git". Requiring that alphabet is what
+// keeps the shorthand from swallowing other source shapes: a scheme's ":", a
+// deeper path ("owner/repo/sub" — not a repo), a backslash, or whitespace all
+// disqualify it.
+func GitHubShorthand(s string) (cloneURL string, ok bool) {
+	owner, repo, found := strings.Cut(strings.TrimSpace(s), "/")
+	if !found {
+		return "", false
+	}
+	repo = strings.TrimSuffix(repo, ".git")
+	if !isShorthandSegment(owner) || !isShorthandSegment(repo) {
+		return "", false
+	}
+	return "https://github.com/" + owner + "/" + repo + ".git", true
+}
+
+// isShorthandSegment reports whether seg is usable as the owner or the repo half
+// of a GitHub shorthand (see GitHubShorthand for the alphabet and why it is that
+// narrow).
+func isShorthandSegment(seg string) bool {
+	if seg == "" || seg == "." || seg == ".." {
+		return false
+	}
+	for _, r := range seg {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // LooksLikeSource reports whether arg has the SHAPE of a Source — a git remote,
@@ -90,7 +154,8 @@ func Classify(arg string) (Kind, error) {
 //   - a git remote (see looksLikeGitRemote): a scheme, scp-like syntax, or ".git";
 //   - a "~"-prefixed (home-relative) path;
 //   - anything containing a path separator ("/" or "\\"): "./x", "../x",
-//     "/abs/x", "a/b", "dir\\x".
+//     "/abs/x", "a/b", "dir\\x" — which also covers the GitHub "owner/repo"
+//     shorthand, left for Classify to tell apart from a relative path.
 func LooksLikeSource(arg string) bool {
 	s := strings.TrimSpace(arg)
 	if s == "" {

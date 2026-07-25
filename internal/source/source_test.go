@@ -15,6 +15,14 @@ func TestClassify(t *testing.T) {
 	if err := os.WriteFile(file, []byte("hi"), 0o644); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
+	// A shorthand-shaped relative path that really exists, to prove an existing
+	// directory still beats the GitHub shorthand reading. Run from a temp cwd so
+	// the relative form resolves to it.
+	const shorthandDir = "acme/skills"
+	if err := os.MkdirAll(filepath.Join(dir, shorthandDir), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", shorthandDir, err)
+	}
+	t.Chdir(dir)
 
 	tests := []struct {
 		name    string
@@ -38,11 +46,19 @@ func TestClassify(t *testing.T) {
 		{name: "existing dir", arg: dir, want: Local},
 		{name: "dot relative is not scp", arg: ".", want: Local}, // cwd exists as a dir
 
+		// GitHub owner/repo shorthand: a remote, but only when no directory of
+		// that name exists (see the shorthand cases in TestGitHubShorthand).
+		{name: "shorthand", arg: "railwayapp/railway-skills", want: Git},
+		{name: "shorthand dotted repo", arg: "owner/.github", want: Git},
+		{name: "shorthand loses to existing dir", arg: shorthandDir, want: Local},
+
 		{name: "empty", arg: "", wantErr: true},
 		{name: "blank", arg: "   ", wantErr: true},
 		{name: "missing path", arg: filepath.Join(dir, "does-not-exist"), wantErr: true},
 		{name: "regular file", arg: file, wantErr: true},
 		{name: "plain word no host", arg: "name:something", wantErr: true}, // ambiguous bare host w/o dot, not a path
+		{name: "deeper path is not shorthand", arg: "owner/repo/sub", wantErr: true},
+		{name: "missing relative path is not shorthand", arg: "./missing/dir", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -102,6 +118,79 @@ func TestLooksLikeSource(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := LooksLikeSource(tt.arg); got != tt.want {
 				t.Errorf("LooksLikeSource(%q) = %v, want %v", tt.arg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitHubShorthand(t *testing.T) {
+	tests := []struct {
+		name string
+		arg  string
+		want string // "" means: not a shorthand
+	}{
+		{"owner repo", "railwayapp/railway-skills", "https://github.com/railwayapp/railway-skills.git"},
+		{"underscores and digits", "acme_2/skills_v2", "https://github.com/acme_2/skills_v2.git"},
+		{"dotted repo", "owner/.github", "https://github.com/owner/.github.git"},
+		{"mixed case preserved", "Owner/Repo", "https://github.com/Owner/Repo.git"},
+		{"trailing .git stripped once", "owner/repo.git", "https://github.com/owner/repo.git"},
+		{"padded", "  owner/repo  ", "https://github.com/owner/repo.git"},
+
+		// Everything that must NOT be read as a shorthand.
+		{"bare name", "grill-with-docs", ""},
+		{"deeper path", "owner/repo/sub", ""},
+		{"leading slash", "/owner/repo", ""},
+		{"dot slash", "./repo", ""},
+		{"dot dot slash", "../repo", ""},
+		{"tilde", "~/repo", ""},
+		{"https url", "https://github.com/owner/repo", ""},
+		{"scp remote", "git@github.com:owner/repo.git", ""},
+		{"host path", "github.com/owner/repo", ""},
+		{"backslash", `dir\repo`, ""},
+		{"inner space", "owner/re po", ""},
+		{"empty owner", "/repo", ""},
+		{"empty repo", "owner/", ""},
+		{"repo is just .git", "owner/.git", ""},
+		{"dot dot segment", "owner/..", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := GitHubShorthand(tt.arg)
+			if tt.want == "" {
+				if ok {
+					t.Fatalf("GitHubShorthand(%q) = %q, true; want not a shorthand", tt.arg, got)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("GitHubShorthand(%q) = not a shorthand; want %q", tt.arg, tt.want)
+			}
+			if got != tt.want {
+				t.Fatalf("GitHubShorthand(%q) = %q, want %q", tt.arg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitRemote(t *testing.T) {
+	tests := []struct {
+		name, arg, want string
+	}{
+		// A shorthand becomes the same Source as its full HTTPS URL would be.
+		{"shorthand expanded", "owner/repo", "https://github.com/owner/repo.git"},
+		{"shorthand with .git", "owner/repo.git", "https://github.com/owner/repo.git"},
+		// Every other remote is passed through untouched, padding aside.
+		{"https url", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"https url .git", "https://github.com/owner/repo.git", "https://github.com/owner/repo.git"},
+		{"ssh scp", "git@github.com:owner/repo.git", "git@github.com:owner/repo.git"},
+		{"gitlab url", "https://gitlab.com/group/sub/repo.git", "https://gitlab.com/group/sub/repo.git"},
+		{"padded url is trimmed", "  https://github.com/x/y  ", "https://github.com/x/y"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := GitRemote(tt.arg); got != tt.want {
+				t.Errorf("GitRemote(%q) = %q, want %q", tt.arg, got, tt.want)
 			}
 		})
 	}

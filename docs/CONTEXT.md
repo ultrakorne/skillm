@@ -33,8 +33,13 @@ every agent that reads it.
 
 ### Source
 A location skills are fetched from. Primary kind is a **git repository**, which may hold
-one or many skills (it acts as a catalog). Also supported: a **local path** to a skill
-directory. A Source is remembered for every installed skill so it can be re-checked and updated.
+one or many skills (it acts as a catalog), named either by URL or by GitHub **`owner/repo`
+shorthand** (the form `npx skills add` takes — and the form the Lockfile records for a
+GitHub HTTPS source, so both tools read the same identity). A shorthand is expanded to its
+HTTPS clone URL, so `owner/repo` and `https://github.com/owner/repo` are one Source; being
+path-shaped too, it loses to an existing local directory of that name. Also supported: a
+**local path** to a skill directory. A Source is remembered for every installed skill so it
+can be re-checked and updated.
 
 ### Skill ID
 The stable name used to refer to and select a skill — by convention its directory name

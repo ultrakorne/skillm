@@ -27,6 +27,7 @@ go install github.com/ultrakorne/skillm@latest
 ```sh
 skillm agent                                                    # pick which agents get skills
 skillm install https://github.com/ultrakorne/skill-collection --global   # fetch + pick + install, one step
+skillm install railwayapp/railway-skills --global                # same, via GitHub owner/repo shorthand
 skillm install grill-with-docs --local                          # add a scope: committable project install (.agents/skills + lockfile)
 skillm import                                                   # adopt a repo's skills-lock.json (skillm's or `npx skills`')
 skillm check                                                    # see what has updates
@@ -51,7 +52,7 @@ lockfile entries as it goes) — the one-command whole-machine update per-repo t
 
 | Command                              | Description                                           |
 | ------------------------------------ | ----------------------------------------------------- |
-| `install [<url\|path>] [id...] [--all] [--as <name>] [--ref <ref>] [--global\|--local]` | Install into every enabled agent — straight from a repo URL/path (fetch + pick + install in one step), or by the id of an already-installed skill to add another scope/project. Local scope writes the committable project install; interactive pickers if no id. |
+| `install [<url\|owner/repo\|path>] [id...] [--all] [--as <name>] [--ref <ref>] [--global\|--local]` | Install into every enabled agent — straight from a repo URL, a GitHub `owner/repo` shorthand, or a path (fetch + pick + install in one step), or by the id of an already-installed skill to add another scope/project. Local scope writes the committable project install; interactive pickers if no id. |
 | `import [dir]`                       | Adopt a project's `skills-lock.json` into skillm's tracking: fetch the sources and write any missing copies/links. |
 | `uninstall [id...] [--all]`           | Unlink everywhere and delete the global and project copies + lock entries + registry entry (interactive picker if no id). |
 | `list`                               | Show every installed skill, where it is installed, and its status. |

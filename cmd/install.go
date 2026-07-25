@@ -37,7 +37,7 @@ func init() {
 
 func newInstallCmd() *cobra.Command {
 	c := &cobra.Command{
-		Use:   "install [<url|local-path>] [skill_id...]",
+		Use:   "install [<url|owner/repo|local-path>] [skill_id...]",
 		Short: "Install skills into every enabled agent at the chosen scope",
 		Long: "install makes skills visible to your agents at one scope: globally via a " +
 			"canonical copy in ~/.agents/skills plus symlinks in each enabled agent's own " +
@@ -46,8 +46,11 @@ func newInstallCmd() *cobra.Command {
 			"one or more already-installed skill ids, --all to install every registered " +
 			"skill, or no arguments to pick interactively from the registered skills — " +
 			"handy for adding another scope or project to a skill you already have.\n\n" +
-			"The first argument may instead be a Source — a git repository URL or an " +
-			"explicitly path-shaped local path (./, ../, /, ~, or a *.git suffix). skillm " +
+			"The first argument may instead be a Source — a git repository URL, a GitHub " +
+			"owner/repo shorthand (as `npx skills add` takes; it expands to " +
+			"https://github.com/owner/repo.git, and loses to a local directory of that " +
+			"name when one exists), or an explicitly path-shaped local path (./, ../, /, " +
+			"~, or a *.git suffix). skillm " +
 			"then fetches it (treelessly for git), lets you pick which skills when it is a " +
 			"catalog of several (or pass skill ids / --all / --as / --ref), and installs " +
 			"the result straight into the chosen scope — fetch, pick, and install in one " +

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/ultrakorne/skillm/internal/source"
 )
 
 // This file maps between skillm's source notion (a git URL or local path, as
@@ -47,11 +49,13 @@ func (e *Entry) CloneURL() (string, error) {
 		case strings.HasPrefix(s, "git@"), strings.HasPrefix(s, "ssh://"),
 			strings.HasPrefix(s, "http://"), strings.HasPrefix(s, "https://"):
 			return s, nil
-		case strings.Count(s, "/") == 1 && !strings.Contains(s, " "):
-			return "https://github.com/" + s + ".git", nil
-		default:
-			return "", fmt.Errorf("unrecognized github source %q", s)
 		}
+		// Otherwise the "owner/repo" shorthand GitSourceFields writes (and that
+		// `npx skills` records), expanded by the same rule `install` accepts.
+		if url, ok := source.GitHubShorthand(s); ok {
+			return url, nil
+		}
+		return "", fmt.Errorf("unrecognized github source %q", s)
 	case SourceGitLab, SourceGit:
 		for _, s := range []string{e.SourceURL, e.Source} {
 			if isGitRemote(s) {

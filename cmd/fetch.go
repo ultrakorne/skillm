@@ -102,7 +102,9 @@ func fetchToStage(cmd *cobra.Command, home, srcArg string, opts fetchOpts) (skil
 
 	switch kind {
 	case source.Git:
-		return fetchGitToStage(cmd, home, srcArg, opts)
+		// Clone (and record as the Source) the resolved remote, so a GitHub
+		// "owner/repo" shorthand is the same Source as its full HTTPS URL.
+		return fetchGitToStage(cmd, home, source.GitRemote(srcArg), opts)
 	case source.Local:
 		return fetchLocalToStage(home, srcArg, opts)
 	default:
