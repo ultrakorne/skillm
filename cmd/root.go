@@ -17,6 +17,13 @@ import (
 //	go build -ldflags "-X github.com/ultrakorne/skillm/cmd.version=v0.1.0"
 var version = "dev"
 
+// annotationSkipGitCheck marks a command that must run without the system git
+// binary. The root's PersistentPreRunE refuses to run anything without git,
+// which is right for every command that fetches or syncs skills — but `upgrade`
+// only replaces skillm's own binary, and a machine missing git is exactly where
+// a user might be trying to fix their install.
+const annotationSkipGitCheck = "skillm:skip-git-check"
+
 // Version returns the build version (used by main.go to configure fang).
 func Version() string { return version }
 
@@ -55,6 +62,9 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		// Verify the runtime prerequisites before any command runs.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Annotations[annotationSkipGitCheck] == "true" {
+				return nil
+			}
 			return checkGit()
 		},
 	}

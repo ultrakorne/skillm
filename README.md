@@ -59,10 +59,15 @@ lockfile entries as it goes) — the one-command whole-machine update per-repo t
 | `check`                              | Report which git skills have upstream updates.        |
 | `update [id]`                        | Pull updates for outdated git skills (all, or one), writing the new content into every install — the global copy and every tracked project's copies and lock entries — and adopt teammate-added lockfile entries. |
 | `agent`                              | Enable/disable agents, reconciling their links right away (skills stay installed). |
+| `upgrade [--check]`                  | Upgrade skillm itself to the latest release: downloads this platform's archive, verifies its SHA256 against the release's `checksums.txt`, and swaps the binary in place. `--check` only reports. |
 
 A skill installed **globally** is globally active — installing is what fetches and
 activates it; there is no separate "fetch without activating" step. Uninstalling a
 skill's last install removes it entirely.
+
+Note the split: `skillm update` pulls new revisions of your installed **skills**; `skillm
+upgrade` replaces the **skillm binary** itself. A binary built from source (`go build`, or an
+unstamped version) matches no published release, so `upgrade` reports that and leaves it alone.
 
 Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (override Home, default `~/.skillm`).
 

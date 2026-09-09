@@ -178,6 +178,18 @@ Enabled, so deselecting every agent is refused (use Uninstall to remove the skil
 Disabling keeps the agent's definition — and its locations — intact in Config, so it can be
 re-enabled without re-entering paths.
 
+### Upgrade
+Replace the running **skillm binary** with the latest published release. Distinct from
+**Update** in what it acts on: Update pulls new Revisions of installed Skills, Upgrade
+replaces the CLI itself and touches no skill, install, or Registry entry. It compares the
+running build's version against the latest release tag; when the release is newer it
+downloads this platform's archive, verifies it against the release's published SHA256
+manifest, and swaps the new binary into the path skillm is running from (a symlinked
+install is resolved to the real file first). Nothing is written until the checksum
+verifies, and the previous binary is restored if the swap fails. Only **release builds**
+are upgraded: a binary whose version is not a clean release tag corresponds to no
+published release, so it is reported and left alone rather than overwritten.
+
 ### Enabled agents
 The Agents that Links are applied to: the subset of agents **defined** in Config whose
 `enabled` flag is set. An agent must be defined in Config before it can be enabled. The
