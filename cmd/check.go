@@ -24,7 +24,9 @@ func newCheckCmd() *cobra.Command {
 		Long: "Check inspects every git-sourced skill: it treeless-fetches the skill's " +
 			"pinned ref, recomputes the skill subdir's tree SHA, and compares it to the " +
 			"revision recorded at add time. It reports which skills have updates available " +
-			"and changes nothing. Local skills have no upstream and are skipped.",
+			"and changes nothing. It compares upstream revisions only and never inspects the " +
+			"installed copies, so `skillm update` may still re-sync an install whose copy has " +
+			"drifted from its recorded revision. Local skills have no upstream and are skipped.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCheck(cmd.Context())
@@ -103,10 +105,12 @@ func runCheck(ctx context.Context) error {
 		}
 	}
 
-	// A concise trailing summary so scripts/users get the headline count.
+	// A concise trailing summary so scripts/users get the headline count. It is
+	// deliberately phrased in terms of upstream revisions: update also re-syncs
+	// installs whose copies drifted, which this command does not look for.
 	switch {
 	case updates == 0 && untracked == 0:
-		fmt.Fprintln(os.Stdout, "All git skills are up-to-date.")
+		fmt.Fprintln(os.Stdout, "All git skills are at their upstream revision.")
 	case updates == 1:
 		fmt.Fprintln(os.Stdout, "1 skill has an update available; run `skillm update` to apply it.")
 	case updates > 1:

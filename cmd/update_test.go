@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
@@ -24,7 +26,7 @@ func TestRefreshVendoredCopiesDropsEntryWhenLastInstallPruned(t *testing.T) {
 	}}}
 	agents := config.Default().AllAgents()
 
-	changed := refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, map[string]string{})
+	changed, _ := refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, map[string]string{})
 	if !changed {
 		t.Fatal("expected a change (vanished install pruned, entry dropped)")
 	}
@@ -60,5 +62,29 @@ func TestRefreshVendoredCopiesKeepsEntryWithRemainingInstall(t *testing.T) {
 	}
 	if !e.Global {
 		t.Fatal("the intact global install must stay recorded")
+	}
+}
+
+// TestClassifyStagingErr pins the rule that keeps an up-to-date skill from
+// failing the run: materializing the upstream tree is now unconditional (it is
+// what installs are compared against), so its failure must stay fatal only when
+// the revision actually advanced and the content is genuinely needed.
+func TestClassifyStagingErr(t *testing.T) {
+	boom := errors.New("no space left on device")
+
+	advanced := classifyStagingErr(boom, true)
+	if errors.Is(advanced, errDriftCheckSkipped) {
+		t.Fatal("a staging failure on an advanced revision must stay fatal")
+	}
+	if !errors.Is(advanced, boom) {
+		t.Fatalf("the underlying cause must survive; got %v", advanced)
+	}
+
+	unchanged := classifyStagingErr(boom, false)
+	if !errors.Is(unchanged, errDriftCheckSkipped) {
+		t.Fatalf("a staging failure on an unchanged revision must be non-fatal; got %v", unchanged)
+	}
+	if !strings.Contains(unchanged.Error(), boom.Error()) {
+		t.Fatalf("the reported message must name the cause; got %v", unchanged)
 	}
 }

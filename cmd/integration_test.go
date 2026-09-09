@@ -926,3 +926,97 @@ func TestInstallUninstallMulti(t *testing.T) {
 	}
 	assertNoLink(t, claudeGlobalLink(e, "beta"), "uninstall --all must drop beta's link")
 }
+
+// TestUpdateRepairsRevertedLocalCopy is the regression test for a committed
+// local copy that was reverted out from under the registry: `git checkout` in
+// the project restores the OLD skill content (and the old skills-lock.json
+// entry), while state.toml — which lives outside the project's git history —
+// still records the NEW revision. Comparing the tree SHA alone therefore says
+// "already up to date" and leaves the project stranded on stale content, so
+// update compares the staged upstream content against every install and
+// re-syncs the ones that drifted. It also pins the flip side: an install that
+// already matches upstream is left alone, so repeated updates cause no git
+// churn in the project.
+func TestUpdateRepairsRevertedLocalCopy(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	bin := skillmBinary(t)
+	repo, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
+
+	// A project that is itself a git repo, with the install committed — the
+	// shape that makes a revert possible in the first place.
+	project := evalProject(t, t.TempDir())
+	runGit(t, project, "init", "-q", "-b", "main")
+	runGit(t, project, "config", "user.email", "test@example.com")
+	runGit(t, project, "config", "user.name", "test")
+	e.runIn(t, project, "install", url, "alpha", "--local")
+
+	agentsCopy := filepath.Join(project, ".agents", "skills", "alpha")
+	lockPath := filepath.Join(project, "skills-lock.json")
+	assertVendoredCopy(t, agentsCopy, "alpha body")
+	runGit(t, project, "add", "-A")
+	runGit(t, project, "commit", "-q", "-m", "vendor alpha")
+
+	// Upstream advances and update writes the new content into the project.
+	if err := os.WriteFile(filepath.Join(repo, "alpha", "SKILL.md"),
+		[]byte("---\nname: alpha\ndescription: alpha skill\n---\nalpha body CHANGED\n"), 0o644); err != nil {
+		t.Fatalf("rewrite alpha upstream: %v", err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "edit alpha")
+
+	if out := e.runIn(t, project, "update"); !strings.Contains(out, "Updated alpha") {
+		t.Fatalf("first update: expected alpha updated, got:\n%s", out)
+	}
+	assertVendoredCopy(t, agentsCopy, "CHANGED")
+	lockAtNewRevision, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read refreshed lock: %v", err)
+	}
+
+	// The user drops the changes in git: the copy AND its lock entry go back to
+	// the old revision's content, while state.toml keeps the new tree SHA.
+	runGit(t, project, "checkout", "--", ".")
+	assertVendoredCopy(t, agentsCopy, "alpha body")
+	if got := runGit(t, project, "status", "--porcelain"); got != "" {
+		t.Fatalf("project should be clean after the revert, got:\n%s", got)
+	}
+
+	// The bug: this second update used to report "already up to date" and leave
+	// the reverted copy in place. It must re-sync the copy instead.
+	out := e.runIn(t, project, "update")
+	if !strings.Contains(out, "synced copy of alpha") {
+		t.Fatalf("update must re-sync a reverted copy, got:\n%s", out)
+	}
+	if strings.Contains(out, "Everything is up to date.") {
+		t.Fatalf("update re-synced a copy, so it must not claim everything was up to date:\n%s", out)
+	}
+	assertVendoredCopy(t, agentsCopy, "CHANGED")
+
+	// The lock entry's content hash is restored alongside the copy, so the
+	// project's committable surface matches what is on disk again.
+	lockAfterRepair, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read repaired lock: %v", err)
+	}
+	if string(lockAfterRepair) != string(lockAtNewRevision) {
+		t.Fatalf("skills-lock.json not restored by the repair:\ngot  %s\nwant %s", lockAfterRepair, lockAtNewRevision)
+	}
+
+	// Flip side: with every install already matching upstream, a further update
+	// rewrites nothing — no re-sync line, and not a byte of git churn.
+	before := runGit(t, project, "status", "--porcelain")
+	out = e.runIn(t, project, "update")
+	if strings.Contains(out, "synced copy of alpha") || strings.Contains(out, "refreshed copy of alpha") {
+		t.Fatalf("a converged install must not be rewritten again, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Everything is up to date.") {
+		t.Fatalf("a converged update should report everything up to date, got:\n%s", out)
+	}
+	if after := runGit(t, project, "status", "--porcelain"); after != before {
+		t.Fatalf("update churned the project: before %q, after %q", before, after)
+	}
+}
