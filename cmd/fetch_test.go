@@ -247,6 +247,36 @@ func TestCanonicalRemote(t *testing.T) {
 	}
 }
 
+// TestSourceSpellingsAreOneSource pins the seam between the two halves of the
+// source-identity fix: shorthand resolution (source.GitRemote, which expands a
+// GitHub "owner/repo") and remote normalization (canonicalRemote on the way in,
+// normalizeRemote on compare). They were written apart and each is tested apart,
+// but only together do they make every way of naming one repo reach one entry.
+// Walk them in the order fetchToStage does, so a change to either side that
+// breaks the pair fails here.
+func TestSourceSpellingsAreOneSource(t *testing.T) {
+	recorded := state.SkillEntry{Kind: state.KindGit, Source: "https://github.com/o/r", Path: "p"}
+	spellings := []string{
+		"o/r",                        // the shorthand `skills add` takes
+		"o/r.git",                    // shorthand, clone-button suffix
+		"https://github.com/o/r",     // the address-bar URL
+		"https://github.com/o/r/",    // pasted with a trailing slash
+		"https://github.com/o/r.git", // the clone-button URL
+		"git@github.com:o/r.git",     // the scp-like form
+		"https://github.com/O/R",     // GitHub folds path case
+	}
+	for _, s := range spellings {
+		resolved := canonicalRemote(source.GitRemote(s))
+		if !(srcIdentity{kind: state.KindGit, source: resolved, path: "p"}).matches(recorded) {
+			t.Errorf("%q resolved to %q, which did not match the recorded source", s, resolved)
+		}
+	}
+	other := canonicalRemote(source.GitRemote("o/other"))
+	if (srcIdentity{kind: state.KindGit, source: other, path: "p"}).matches(recorded) {
+		t.Error("a genuinely different repo must still be a different source")
+	}
+}
+
 func TestRepoRelSubpath(t *testing.T) {
 	cases := []struct {
 		repo string
