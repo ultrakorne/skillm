@@ -358,18 +358,63 @@ func lockEntryMatches(existing state.SkillEntry, entry *lockfile.Entry) bool {
 	return normalizeRemote(url) == normalizeRemote(existing.Source)
 }
 
-// normalizeRemote reduces a git remote URL to a comparable form: lowercase,
-// scheme and trailing ".git"/slashes stripped, the scp-like "git@host:path"
-// form folded to "host/path".
+// pathCaseInsensitiveHosts are the hosts whose repo paths are case-insensitive,
+// so a case difference there is still one repo. Everywhere else — GitLab
+// self-managed, Gitea, plain git-over-ssh, a case-sensitive filesystem — path
+// case is significant and two spellings are two repos. A host missing from this
+// list only ever errs toward "different source", which the user resolves with
+// --as; the reverse would silently install one repo over another.
+var pathCaseInsensitiveHosts = map[string]bool{
+	"github.com":    true,
+	"gitlab.com":    true,
+	"bitbucket.org": true,
+}
+
+// normalizeRemote reduces a git remote URL to a comparable form: scheme and
+// trailing ".git"/slashes stripped, the scp-like "git@host:path" form folded to
+// "host/path", and the host lowercased (DNS is case-insensitive). The path is
+// folded only for the hosts that treat it that way — see
+// pathCaseInsensitiveHosts.
+//
+// It under-normalizes in three confirmed cases (embedded credentials, an ssh://
+// port, an scp-like form with a non-"git@" user), each recorded in
+// docs/known-issues.md.
 func normalizeRemote(u string) string {
-	s := strings.ToLower(strings.TrimSpace(u))
+	s := strings.TrimSpace(u)
 	for _, p := range []string{"https://", "http://", "ssh://"} {
-		s = strings.TrimPrefix(s, p)
+		if rest, ok := cutPrefixFold(s, p); ok {
+			s = rest
+			break
+		}
 	}
-	if rest, ok := strings.CutPrefix(s, "git@"); ok {
-		rest = strings.Replace(rest, ":", "/", 1)
-		s = rest
+	if rest, ok := cutPrefixFold(s, "git@"); ok {
+		s = strings.Replace(rest, ":", "/", 1)
 	}
-	s = strings.TrimSuffix(strings.TrimRight(s, "/"), ".git")
+	s = trimSuffixFold(strings.TrimRight(s, "/"), ".git")
+	host, path, ok := strings.Cut(s, "/")
+	host = strings.ToLower(host)
+	if !ok {
+		return host
+	}
+	if pathCaseInsensitiveHosts[host] {
+		path = strings.ToLower(path)
+	}
+	return host + "/" + path
+}
+
+// cutPrefixFold is strings.CutPrefix with a case-insensitive match, for the
+// parts of a remote URL that carry no case significance (the scheme, "git@").
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
+		return s[len(prefix):], true
+	}
+	return s, false
+}
+
+// trimSuffixFold is strings.TrimSuffix with a case-insensitive match.
+func trimSuffixFold(s, suffix string) string {
+	if len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix) {
+		return s[:len(s)-len(suffix)]
+	}
 	return s
 }
