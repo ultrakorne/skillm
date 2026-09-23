@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // dirName is the conventional Home directory name under the user's home.
@@ -82,13 +83,15 @@ func CopyDir(srcDir, dstDir string) error {
 }
 
 // ReplaceDir replaces dstDir with a fresh copy of srcDir. It copies srcDir into
-// a uniquely named temporary sibling first (so concurrent or crashed runs never
-// share a staging dir), then removes any existing dstDir and renames the
-// staging copy into place. This is not atomic — between the remove and the
-// rename there is a brief window where dstDir does not exist — but it does
-// guarantee the destination is never left half-written: the copy is fully
-// staged before the old dstDir is touched, so a failure mid-copy leaves the
-// existing dstDir intact. The parent of dstDir is created if missing. This is
+// a uniquely named, hidden staging sibling first (so concurrent runs never
+// share one, and an agent scanning the skill folder never sees it as a skill),
+// then removes any existing dstDir and renames the staged copy into place. This
+// is not atomic — between the remove and the rename there is a brief window
+// where dstDir does not exist — but it does guarantee the destination is never
+// left half-written: the copy is fully staged before the old dstDir is touched,
+// so a failure mid-copy leaves the existing dstDir intact. Staging dirs left by
+// a killed run are swept first; callers hold Home's lock (see Lock), so no
+// other run is using them. The parent of dstDir is created if missing. This is
 // how a Vendored copy is written and refreshed.
 func ReplaceDir(srcDir, dstDir string) error {
 	info, err := os.Stat(srcDir)
@@ -98,36 +101,55 @@ func ReplaceDir(srcDir, dstDir string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("source path %s is not a directory", srcDir)
 	}
-	if err := os.MkdirAll(filepath.Dir(dstDir), 0o755); err != nil {
+	parent := filepath.Dir(dstDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("create parent of %s: %w", dstDir, err)
 	}
+	sweepStages(dstDir)
 
-	// Hidden, so an agent scanning the skill folder mid-copy never sees it as
-	// a skill.
-	stage, err := os.MkdirTemp(filepath.Dir(dstDir), "."+filepath.Base(dstDir)+".skillm-tmp-*")
+	// The copy goes one level inside the unique holder dir, so copyTree creates
+	// its root with the source's mode filtered by the umask, like every other
+	// directory in the copy (MkdirTemp would force 0700).
+	holder, err := os.MkdirTemp(parent, stagePrefix(dstDir))
 	if err != nil {
 		return fmt.Errorf("create staging dir for %s: %w", dstDir, err)
 	}
-	// MkdirTemp creates the dir 0700; give it the source's mode, as a fresh
-	// copy would have.
-	if err := os.Chmod(stage, info.Mode().Perm()); err != nil {
-		_ = os.RemoveAll(stage)
-		return fmt.Errorf("stage copy of %s: %w", srcDir, err)
-	}
+	defer os.RemoveAll(holder)
+	stage := filepath.Join(holder, filepath.Base(dstDir))
 	if err := CopyDir(srcDir, stage); err != nil {
-		_ = os.RemoveAll(stage)
 		return fmt.Errorf("stage copy of %s: %w", srcDir, err)
 	}
 
 	if err := os.RemoveAll(dstDir); err != nil {
-		_ = os.RemoveAll(stage)
 		return fmt.Errorf("clear destination %s: %w", dstDir, err)
 	}
 	if err := os.Rename(stage, dstDir); err != nil {
-		_ = os.RemoveAll(stage)
 		return fmt.Errorf("install copy into %s: %w", dstDir, err)
 	}
 	return nil
+}
+
+// stagePrefix is the name prefix of ReplaceDir's staging dirs for dstDir.
+func stagePrefix(dstDir string) string {
+	return "." + filepath.Base(dstDir) + ".skillm-tmp-"
+}
+
+// sweepStages removes staging dirs a killed ReplaceDir left next to dstDir,
+// including the fixed "<dst>.skillm-tmp" name older versions used.
+// Best-effort: a leftover it cannot remove does not block the copy.
+func sweepStages(dstDir string) {
+	_ = os.RemoveAll(dstDir + ".skillm-tmp")
+	parent := filepath.Dir(dstDir)
+	ents, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	prefix := stagePrefix(dstDir)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), prefix) {
+			_ = os.RemoveAll(filepath.Join(parent, e.Name()))
+		}
+	}
 }
 
 // DirContentEqual reports whether the directory trees at a and b have identical

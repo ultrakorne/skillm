@@ -142,9 +142,10 @@ func TestReplaceDir(t *testing.T) {
 	assertOnlyEntries(t, filepath.Dir(dst), "demo")
 }
 
-// ReplaceDir's unique staging dir must not leave the copy with MkdirTemp's
-// 0700 mode: the root keeps the source's permissions, as a plain copy would.
-func TestReplaceDir_KeepsSourceDirMode(t *testing.T) {
+// ReplaceDir's copy root gets the source's mode filtered by the umask, like
+// every other directory in the copy — not MkdirTemp's 0700, and not a
+// world-writable mode copied verbatim.
+func TestReplaceDir_RootModeFollowsUmask(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix permission bits")
 	}
@@ -152,9 +153,18 @@ func TestReplaceDir_KeepsSourceDirMode(t *testing.T) {
 	src := filepath.Join(root, "src")
 	dst := filepath.Join(root, "dst", "demo")
 	mustWrite(t, filepath.Join(src, "SKILL.md"), "v1\n", 0o644)
-	if err := os.Chmod(src, 0o755); err != nil {
+	if err := os.Chmod(src, 0o777); err != nil {
 		t.Fatal(err)
 	}
+	ref := filepath.Join(root, "ref")
+	if err := os.Mkdir(ref, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.Stat(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if err := ReplaceDir(src, dst); err != nil {
 		t.Fatalf("ReplaceDir: %v", err)
 	}
@@ -162,9 +172,28 @@ func TestReplaceDir_KeepsSourceDirMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o755 {
-		t.Errorf("dst mode = %v, want 0755", got)
+	if got := info.Mode().Perm(); got != want.Mode().Perm() {
+		t.Errorf("dst mode = %v, want %v", got, want.Mode().Perm())
 	}
+}
+
+// Staging dirs a killed run left behind (and the fixed name older versions
+// used) are swept on the next ReplaceDir of that destination.
+func TestReplaceDir_SweepsStaleStages(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	skills := filepath.Join(root, "skills")
+	dst := filepath.Join(skills, "demo")
+	mustWrite(t, filepath.Join(src, "SKILL.md"), "v1\n", 0o644)
+	mustWrite(t, filepath.Join(skills, ".demo.skillm-tmp-123", "demo", "SKILL.md"), "stale\n", 0o644)
+	mustWrite(t, filepath.Join(skills, "demo.skillm-tmp", "SKILL.md"), "legacy\n", 0o644)
+	mustWrite(t, filepath.Join(skills, ".other.skillm-tmp-9", "SKILL.md"), "not ours\n", 0o644)
+
+	if err := ReplaceDir(src, dst); err != nil {
+		t.Fatalf("ReplaceDir: %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "SKILL.md"), "v1\n")
+	assertOnlyEntries(t, skills, ".other.skillm-tmp-9", "demo")
 }
 
 func TestDirContentEqual(t *testing.T) {

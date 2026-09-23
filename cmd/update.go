@@ -72,7 +72,7 @@ func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 	}
 	// Hold Home's lock from load to save so a concurrent skillm process cannot
 	// interleave its writes with ours.
-	unlock, err := store.Lock(home)
+	unlock, err := lockHome(ctx, home, "skillm update")
 	if err != nil {
 		return err
 	}

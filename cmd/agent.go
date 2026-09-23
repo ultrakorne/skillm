@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -38,20 +39,20 @@ func newAgentCmd() *cobra.Command {
 			"aborting the sweep.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAgent()
+			return runAgent(cmd.Context())
 		},
 	}
 	return c
 }
 
-func runAgent() error {
+func runAgent(ctx context.Context) error {
 	home, err := store.Home(flagHome)
 	if err != nil {
 		return err
 	}
 	// Hold Home's lock from load to save so a concurrent skillm process cannot
 	// interleave its writes with ours.
-	unlock, err := store.Lock(home)
+	unlock, err := lockHome(ctx, home, "skillm agent")
 	if err != nil {
 		return err
 	}

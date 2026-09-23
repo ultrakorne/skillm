@@ -10,13 +10,20 @@ import (
 	"github.com/ultrakorne/skillm/internal/store"
 )
 
+// bgCmd is a command carrying a context, as cobra gives every RunE.
+func bgCmd() *cobra.Command {
+	c := &cobra.Command{}
+	c.SetContext(context.Background())
+	return c
+}
+
 // holdHomeLock points SKILLM_HOME at a fresh Home, takes its lock, and
 // releases it after hold. It returns the time the lock was taken.
 func holdHomeLock(t *testing.T, hold time.Duration) time.Time {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("SKILLM_HOME", home)
-	unlock, err := store.Lock(home)
+	unlock, err := store.Lock(context.Background(), home, "skillm test", nil)
 	if err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
@@ -34,11 +41,11 @@ func holdHomeLock(t *testing.T, hold time.Duration) time.Time {
 // lock — its result does not matter, only that it waited.
 func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 	cmds := map[string]func(t *testing.T) error{
-		"install":   func(*testing.T) error { return runInstall(&cobra.Command{}, nil, true, false, true) },
+		"install":   func(*testing.T) error { return runInstall(bgCmd(), nil, true, false, true) },
 		"update":    func(*testing.T) error { return runUpdate(context.Background(), "", "", false) },
-		"uninstall": func(*testing.T) error { return runUninstall(nil, true) },
+		"uninstall": func(*testing.T) error { return runUninstall(context.Background(), nil, true) },
 		"import":    func(t *testing.T) error { return runImport(context.Background(), t.TempDir()) },
-		"agent":     func(*testing.T) error { return runAgent() },
+		"agent":     func(*testing.T) error { return runAgent(context.Background()) },
 	}
 	const hold = 300 * time.Millisecond
 	for name, run := range cmds {

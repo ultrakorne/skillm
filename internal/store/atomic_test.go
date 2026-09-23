@@ -44,15 +44,6 @@ func TestWriteFileAtomic_CreatesAndReplaces(t *testing.T) {
 	assertFile(t, path, "v2\n")
 	assertOnlyEntries(t, dir, "state.toml")
 
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != 0o644 {
-			t.Errorf("mode = %v, want 0644 (not the temp file's 0600)", got)
-		}
-	}
 }
 
 // A write that fails part-way leaves the old file intact and no temp file —
@@ -86,4 +77,72 @@ func TestWriteFileAtomic_FailureLeavesOldContent(t *testing.T) {
 		t.Fatalf("failed write left %s behind: err = %v", fresh, err)
 	}
 	assertOnlyEntries(t, dir, "state.toml")
+}
+
+// A symlinked destination (config.toml linked from a dotfiles repo) stays a
+// link: the write lands in its target, as os.WriteFile's would.
+func TestWriteFileAtomic_WritesThroughSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "dotfiles", "skillm.toml")
+	mustWrite(t, target, "old\n", 0o644)
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteFileAtomic(link, []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("config.toml is no longer a symlink (err = %v)", err)
+	}
+	assertFile(t, target, "new\n")
+	assertOnlyEntries(t, filepath.Dir(target), "skillm.toml")
+}
+
+// An existing file keeps its mode; a new one gets perm filtered by the umask,
+// as os.WriteFile would give it.
+func TestWriteFileAtomic_Modes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	dir := t.TempDir()
+
+	private := filepath.Join(dir, "state.toml")
+	mustWrite(t, private, "old\n", 0o600)
+	if err := os.Chmod(private, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(private, []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	assertMode(t, private, 0o600)
+
+	ref := filepath.Join(dir, "ref")
+	if err := os.WriteFile(ref, nil, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := filepath.Join(dir, "config.toml")
+	if err := WriteFileAtomic(fresh, []byte("x"), 0o666); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	assertMode(t, fresh, info.Mode().Perm())
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("%s mode = %v, want %v", path, got, want)
+	}
 }

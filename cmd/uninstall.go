@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -37,21 +38,21 @@ func newUninstallCmd() *cobra.Command {
 			"confirms first unless --yes or --force is given.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUninstall(args, uninstallFlagAll)
+			return runUninstall(cmd.Context(), args, uninstallFlagAll)
 		},
 	}
 	c.Flags().BoolVar(&uninstallFlagAll, "all", false, "remove every skill in Home")
 	return c
 }
 
-func runUninstall(args []string, all bool) error {
+func runUninstall(ctx context.Context, args []string, all bool) error {
 	home, err := store.Home(flagHome)
 	if err != nil {
 		return err
 	}
 	// Hold Home's lock from load to save so a concurrent skillm process cannot
 	// interleave its writes with ours.
-	unlock, err := store.Lock(home)
+	unlock, err := lockHome(ctx, home, "skillm uninstall")
 	if err != nil {
 		return err
 	}

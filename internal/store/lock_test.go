@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +21,7 @@ func shortLockTimeout(t *testing.T, d time.Duration) {
 
 func TestLock_CreatesHomeAndLockFile(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "nested", ".skillm")
-	unlock, err := Lock(home)
+	unlock, err := Lock(context.Background(), home, "skillm test", nil)
 	if err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
@@ -36,7 +37,7 @@ func TestLock_SecondWaitsThenAcquires(t *testing.T) {
 	shortLockTimeout(t, 5*time.Second)
 	home := t.TempDir()
 
-	unlock1, err := Lock(home)
+	unlock1, err := Lock(context.Background(), home, "skillm test", nil)
 	if err != nil {
 		t.Fatalf("first Lock: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestLock_SecondWaitsThenAcquires(t *testing.T) {
 	done := make(chan result, 1)
 	start := time.Now()
 	go func() {
-		u, err := Lock(home)
+		u, err := Lock(context.Background(), home, "skillm test", nil)
 		done <- result{u, err, time.Since(start)}
 	}()
 
@@ -77,14 +78,14 @@ func TestLock_TimesOutNamingHolder(t *testing.T) {
 	shortLockTimeout(t, 200*time.Millisecond)
 	home := t.TempDir()
 
-	unlock, err := Lock(home)
+	unlock, err := Lock(context.Background(), home, "skillm test", nil)
 	if err != nil {
 		t.Fatalf("first Lock: %v", err)
 	}
 	defer unlock()
 
 	start := time.Now()
-	_, err = Lock(home)
+	_, err = Lock(context.Background(), home, "skillm test", nil)
 	var lerr *LockTimeoutError
 	if !errors.As(err, &lerr) {
 		t.Fatalf("err = %v, want *LockTimeoutError", err)
@@ -92,8 +93,8 @@ func TestLock_TimesOutNamingHolder(t *testing.T) {
 	if waited := time.Since(start); waited < 200*time.Millisecond {
 		t.Errorf("gave up after %v, before the 200ms timeout", waited)
 	}
-	if want := fmt.Sprintf("pid %d:", os.Getpid()); !strings.HasPrefix(lerr.Holder, want) {
-		t.Errorf("Holder = %q, want it to start with %q", lerr.Holder, want)
+	if want := fmt.Sprintf("pid %d: skillm test", os.Getpid()); lerr.Holder != want {
+		t.Errorf("Holder = %q, want %q", lerr.Holder, want)
 	}
 	if !strings.Contains(err.Error(), lerr.Holder) {
 		t.Errorf("error %q does not name the holder %q", err, lerr.Holder)
@@ -105,16 +106,46 @@ func TestLock_UnlockTwiceThenRelock(t *testing.T) {
 	shortLockTimeout(t, 200*time.Millisecond)
 	home := t.TempDir()
 
-	unlock, err := Lock(home)
+	unlock, err := Lock(context.Background(), home, "skillm test", nil)
 	if err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
 	unlock()
 	unlock()
 
-	unlock2, err := Lock(home)
+	unlock2, err := Lock(context.Background(), home, "skillm test", nil)
 	if err != nil {
 		t.Fatalf("Lock after unlock: %v", err)
 	}
 	unlock2()
+}
+
+// A waiter is told once who holds the lock, and gives up as soon as its
+// context is cancelled (Ctrl-C, or the GUI cancelling) instead of sitting out
+// the timeout.
+func TestLock_OnWaitAndCancel(t *testing.T) {
+	shortLockTimeout(t, 10*time.Second)
+	home := t.TempDir()
+
+	unlock, err := Lock(context.Background(), home, "skillm update", nil)
+	if err != nil {
+		t.Fatalf("first Lock: %v", err)
+	}
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var holders []string
+	start := time.Now()
+	_, err = Lock(ctx, home, "skillm install", func(h string) { holders = append(holders, h) })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the context's error", err)
+	}
+	if waited := time.Since(start); waited > 5*time.Second {
+		t.Errorf("cancelled Lock returned after %v; it must not sit out the timeout", waited)
+	}
+	want := fmt.Sprintf("pid %d: skillm update", os.Getpid())
+	if len(holders) != 1 || holders[0] != want {
+		t.Errorf("onWait calls = %q, want exactly one with %q", holders, want)
+	}
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -46,10 +47,14 @@ func (e *LockTimeoutError) Error() string {
 // skillm processes (the CLI and a GUI, say) never interleave their writes.
 // Read-only commands take no lock.
 //
-// Lock waits up to 30s for a current holder, then fails with a
-// *LockTimeoutError naming it. The lock is released by the returned unlock
-// (safe to call more than once) or when the process exits.
-func Lock(home string) (unlock func(), err error) {
+// op names the operation taking the lock (e.g. "skillm install"); it is
+// recorded in the lock file with the pid, so a waiter can say who it waits
+// for. When the lock is busy, Lock calls onWait (if non-nil) once with the
+// holder's description ("pid 123: skillm install", or "" if unknown), then
+// waits up to 30s before failing with a *LockTimeoutError. It returns ctx's
+// error as soon as ctx is cancelled. The lock is released by the returned
+// unlock (safe to call more than once) or when the process exits.
+func Lock(ctx context.Context, home, op string, onWait func(holder string)) (unlock func(), err error) {
 	if err := EnsureHome(home); err != nil {
 		return nil, err
 	}
@@ -60,7 +65,7 @@ func Lock(home string) (unlock func(), err error) {
 	}
 
 	deadline := time.Now().Add(lockTimeout)
-	for {
+	for waited := false; ; waited = true {
 		err := tryLock(f)
 		if err == nil {
 			break
@@ -69,17 +74,25 @@ func Lock(home string) (unlock func(), err error) {
 			f.Close()
 			return nil, fmt.Errorf("lock %s: %w", path, err)
 		}
+		if !waited && onWait != nil {
+			onWait(readHolder(path))
+		}
 		if time.Now().After(deadline) {
 			f.Close()
 			return nil, &LockTimeoutError{Path: path, Holder: readHolder(path), Timeout: lockTimeout}
 		}
-		time.Sleep(lockPoll)
+		select {
+		case <-ctx.Done():
+			f.Close()
+			return nil, ctx.Err()
+		case <-time.After(lockPoll):
+		}
 	}
 
 	// Record who holds the lock so a waiter can name it. Best-effort: the lock
 	// itself is what matters.
 	if err := f.Truncate(0); err == nil {
-		_, _ = f.WriteAt([]byte(holderLine()), 0)
+		_, _ = f.WriteAt(fmt.Appendf(nil, "pid %d: %s", os.Getpid(), op), 0)
 	}
 
 	var once sync.Once
@@ -90,13 +103,6 @@ func Lock(home string) (unlock func(), err error) {
 			f.Close()
 		})
 	}, nil
-}
-
-// holderLine describes this process for the lock file: its pid and command
-// line, e.g. "pid 123: skillm install foo".
-func holderLine() string {
-	args := append([]string{filepath.Base(os.Args[0])}, os.Args[1:]...)
-	return fmt.Sprintf("pid %d: %s", os.Getpid(), strings.Join(args, " "))
 }
 
 // readHolder returns the holder line the current lock holder wrote, or "".
