@@ -341,6 +341,38 @@ func TestDiscoverSkills_DedupesPerAgentCopies(t *testing.T) {
 			wantDir: "z/impeccable",
 		},
 		{
+			name: "nested skills folder wins over a shallower fixture",
+			dirs: []string{
+				"skills/writing/impeccable",
+				"test/impeccable",
+			},
+			wantDir: "skills/writing/impeccable",
+		},
+		{
+			name: "nested skills folder wins over an agent copy",
+			dirs: []string{
+				".claude/skills/impeccable",
+				"skills/writing/impeccable",
+			},
+			wantDir: "skills/writing/impeccable",
+		},
+		{
+			name: "curated skills folder wins over an agent copy",
+			dirs: []string{
+				".codex/skills/impeccable",
+				"skills/.curated/impeccable",
+			},
+			wantDir: "skills/.curated/impeccable",
+		},
+		{
+			name: "shallowest wins within the skills folder",
+			dirs: []string{
+				"skills/cat/impeccable",
+				"skills/impeccable",
+			},
+			wantDir: "skills/impeccable",
+		},
+		{
 			name: "walk order breaks a tie",
 			dirs: []string{
 				"plugin/skills/impeccable",
@@ -365,11 +397,44 @@ func TestDiscoverSkills_DedupesPerAgentCopies(t *testing.T) {
 				t.Fatalf("ids = %v, want %v", got, want)
 			}
 			for _, f := range found {
-				if f.Id == "impeccable" && f.Dir != filepath.Join(root, filepath.FromSlash(tc.wantDir)) {
+				if f.Id != "impeccable" {
+					continue
+				}
+				if f.Dir != filepath.Join(root, filepath.FromSlash(tc.wantDir)) {
 					t.Errorf("Dir = %q, want %q", f.Dir, tc.wantDir)
+				}
+				if len(f.Duplicates) != len(tc.dirs)-1 {
+					t.Errorf("Duplicates = %v, want the %d other copies", f.Duplicates, len(tc.dirs)-1)
+				}
+				for _, d := range f.Duplicates {
+					if d == f.Dir {
+						t.Errorf("Duplicates contains the kept Dir %q", d)
+					}
 				}
 			}
 		})
+	}
+}
+
+// The kept copy of a skill stays where the skill's first copy was in walk
+// order, even when the copy that wins comes after another skill.
+func TestDiscoverSkills_DedupeKeepsWalkOrder(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, ".claude", "skills", "foo"), "foo")
+	writeSkill(t, filepath.Join(root, "aaa"), "aaa")
+	writeSkill(t, filepath.Join(root, "skills", "foo"), "foo")
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatalf("DiscoverSkills: %v", err)
+	}
+	var got []string
+	for _, f := range found {
+		rel, _ := filepath.Rel(root, f.Dir)
+		got = append(got, f.Id+"@"+filepath.ToSlash(rel))
+	}
+	if want := []string{"foo@skills/foo", "aaa@aaa"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("found = %v, want %v", got, want)
 	}
 }
 

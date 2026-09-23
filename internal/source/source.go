@@ -246,6 +246,9 @@ type Found struct {
 	Dir string
 	// Skill is the parsed skill (via skill.Load).
 	Skill *skill.Skill
+	// Duplicates are the other directories holding a skill with the same Id,
+	// dropped by DiscoverSkills in favor of Dir (see preferFound).
+	Duplicates []string
 }
 
 // DiscoverSkills walks rootDir and returns one Found per skill ID, each from a
@@ -315,16 +318,19 @@ func dedupeByID(rootDir string, found []Found) []Found {
 			continue
 		}
 		if preferFound(rootDir, f, out[i]) {
+			f.Duplicates = append(out[i].Duplicates, out[i].Dir)
 			out[i] = f
+		} else {
+			out[i].Duplicates = append(out[i].Duplicates, f.Dir)
 		}
 	}
 	return out
 }
 
 // preferFound reports whether a should be kept over b, two directories holding
-// the same skill ID. The conventional homes win: a top-level skills/<id>, then
-// the cross-agent .agents/skills/<id>; otherwise the shallower directory wins,
-// and on a tie the earlier one in walk order (b) is kept.
+// the same skill ID. The conventional homes win: anywhere under a top-level
+// skills/, then the cross-agent .agents/skills/<id>; within a rank the shallower
+// directory wins, and on a tie the earlier one in walk order (b) is kept.
 func preferFound(rootDir string, a, b Found) bool {
 	ra, rb := foundRank(rootDir, a.Dir), foundRank(rootDir, b.Dir)
 	if ra != rb {
@@ -334,16 +340,19 @@ func preferFound(rootDir string, a, b Found) bool {
 }
 
 // foundRank orders skill directories by how conventional their location is:
-// 0 for skills/<id>, 1 for .agents/skills/<id>, 2 for anywhere else.
+// 0 for anywhere under a top-level skills/ (skills/<id>, skills/<category>/<id>,
+// skills/.curated/<id>), 1 for .agents/skills/<id> or .agent/skills/<id>, 2 for
+// anywhere else.
 func foundRank(rootDir, dir string) int {
 	rel, err := filepath.Rel(rootDir, filepath.Dir(dir))
 	if err != nil {
 		return 2
 	}
-	switch filepath.ToSlash(rel) {
-	case "skills":
+	rel = filepath.ToSlash(rel)
+	switch {
+	case rel == "skills" || strings.HasPrefix(rel, "skills/"):
 		return 0
-	case ".agents/skills":
+	case rel == ".agents/skills" || rel == ".agent/skills":
 		return 1
 	}
 	return 2
