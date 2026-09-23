@@ -83,6 +83,23 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertTrue(harness.commands().contains("agent set --disable claude --yes --json"))
     }
 
+    /// A Disable confirmed while another command runs is not lost: the
+    /// question stays until the disable can start.
+    func testADisableWaitsForTheRunningCommand() async throws {
+        let m = try await started(["FAKE_SKILLM_HANG_ON": "update"])
+        await m.load()
+        m.setAgent("claude", enabled: false)
+        let update = harness.app.updateAll()
+        XCTAssertNotNil(update)
+        XCTAssertNil(m.confirmDisable())
+        XCTAssertEqual(m.pendingDisable, "claude")
+        harness.app.cancel()
+        await update?.value
+        await m.confirmDisable()?.value
+        XCTAssertNil(m.pendingDisable)
+        XCTAssertTrue(harness.commands().contains("agent set --disable claude --yes --json"))
+    }
+
     func testTheLastEnabledAgentCannotBeDisabled() async throws {
         let m = try await started()
         await m.load()

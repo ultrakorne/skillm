@@ -34,8 +34,10 @@ struct SkillsView: View {
                 .help("Install skills from a repository or a folder")
             }
         }
-        // Lists on open, and again after anything changed what is installed.
-        .task(id: app.installsVersion) { await skills.load() }
+        // Lists on open, again once the CLI is ready (a window macOS
+        // restores at launch opens before), and after anything changed what
+        // is installed.
+        .task(id: ListKey(installsVersion: app.installsVersion, ready: app.isReady)) { await skills.load() }
         .sheet(item: $skills.pendingUninstall) { question in
             UninstallSheet(question: question, busy: app.isBusy) {
                 skills.confirmUninstall()
@@ -206,6 +208,12 @@ struct UninstallSheet: View {
         .padding(20)
         .frame(width: 440)
     }
+}
+
+/// What the Skills window lists again on.
+private struct ListKey: Equatable {
+    var installsVersion: Int
+    var ready: Bool
 }
 
 /// A notice line: an error with its icon, or plain text.

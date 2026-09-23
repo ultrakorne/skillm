@@ -3,9 +3,8 @@
   "data": null,
   "warnings": [
     {
-      "code": "link_refused",
-      "message": "beta: /Users/me/.claude/skills/beta is not a skillm link; left alone",
-      "skill_id": "beta"
+      "code": "agent_skipped",
+      "message": "skipped opencode: no global location"
     }
   ],
   "error": {

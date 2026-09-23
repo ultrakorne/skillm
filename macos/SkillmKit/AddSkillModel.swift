@@ -14,23 +14,51 @@ public final class AddSkillModel {
         case project(URL)
     }
 
-    /// Files skillm did not create are in the way of the install.
+    /// One install as it was asked: the inspection, the skills and the
+    /// target the form held when it started. A follow-up question retries
+    /// exactly this, whatever the form holds by then.
+    public struct InstallRequest: Equatable, Sendable {
+        public var inspection: InspectData
+        public var ids: [String]
+        public var target: Target
+
+        public init(inspection: InspectData, ids: [String], target: Target) {
+            self.inspection = inspection
+            self.ids = ids
+            self.target = target
+        }
+    }
+
+    /// Files skillm did not create are at the canonical copies' places, so
+    /// nothing was installed (`foreign_files`).
     public struct ForeignFilesQuestion: Identifiable, Equatable, Sendable {
+        /// The refused install; an answer retries it with one flag.
+        public var request: InstallRequest
         /// The canonical copies that would be overwritten.
         public var paths: [String]
-        /// Agent links another tool holds, which only `takeOver` replaces.
-        public var links: [String]
-        public var id: [String] { paths + links }
+        public var id: [String] { paths }
     }
 
     /// The user's answer to `ForeignFilesQuestion`.
     public enum ForeignFilesAnswer: String, Sendable, CaseIterable {
-        /// `--yes`: overwrite the canonical copies listed.
+        /// `--yes`: overwrite the canonical copies listed (never the agent
+        /// links, which the question did not list).
         case overwrite = "--yes"
-        /// `--force`: also take over the agent links another tool holds.
-        case takeOver = "--force"
         /// `--skip-foreign`: install the others, leave these skills out.
         case skip = "--skip-foreign"
+    }
+
+    /// The install landed, but another tool holds some of the agent link
+    /// paths, which skillm left alone (`link_refused` warnings). skillm
+    /// reports these only once the copies are in place, never alongside
+    /// `foreign_files`.
+    public struct RefusedLinksQuestion: Identifiable, Equatable, Sendable {
+        /// The install again, narrowed to the skills whose links were
+        /// refused; taking over retries it with `--force`.
+        public var request: InstallRequest
+        /// skillm's words for each refused link.
+        public var links: [String]
+        public var id: [String] { links }
     }
 
     public let app: AppModel
@@ -51,13 +79,19 @@ public final class AddSkillModel {
     public private(set) var installed: InstallData?
     /// The foreign-files question waiting for the user's answer.
     public var foreignFiles: ForeignFilesQuestion?
+    /// The refused-links question waiting for the user's answer.
+    public var refusedLinks: RefusedLinksQuestion?
 
     @ObservationIgnored private var inspectTask: Task<Void, Never>?
     /// What the running install found, acted on once it is done.
     @ObservationIgnored private var followUp: FollowUp?
+    /// Goes up with every inspect: an install's question about an older
+    /// inspection is dropped.
+    @ObservationIgnored private var inspectGeneration = 0
 
     private enum FollowUp {
-        case ask(ForeignFilesQuestion)
+        case foreignFiles(ForeignFilesQuestion)
+        case refusedLinks(RefusedLinksQuestion)
         case reinspect
     }
 
@@ -73,6 +107,12 @@ public final class AddSkillModel {
     /// The install can run: skills chosen and no command running.
     public var canInstall: Bool {
         inspection != nil && !selectedIDs.isEmpty && !app.isBusy && !isInspecting
+    }
+
+    /// An install is running: the form keeps what it was started with.
+    public var isInstalling: Bool {
+        if case .installing = app.activity { return true }
+        return false
     }
 
     // MARK: - Inspect
@@ -101,9 +141,12 @@ public final class AddSkillModel {
         args += ["--", src]
 
         inspectTask?.cancel()
+        inspectGeneration += 1
         message = notice
         installed = nil
         foreignFiles = nil
+        refusedLinks = nil
+        followUp = nil
         let task = Task { [weak self] in
             guard let self else { return }
             isInspecting = true
@@ -139,12 +182,31 @@ public final class AddSkillModel {
     // MARK: - Install
 
     /// `install --events` of the chosen skills from the inspected Source,
-    /// at the inspected commit, into `target`. `answer` is the reply to a
-    /// foreign-files question.
+    /// at the inspected commit, into `target`.
     @discardableResult
-    public func install(answer: ForeignFilesAnswer? = nil) -> Task<Void, Never>? {
+    public func install() -> Task<Void, Never>? {
         guard let inspection, !selectedIDs.isEmpty else { return nil }
-        let args = Self.installArguments(inspection, ids: selectedIDs, target: target, answer: answer)
+        return run(InstallRequest(inspection: inspection, ids: selectedIDs, target: target), flag: nil)
+    }
+
+    /// Answers `question`: retries the install it was about with `answer`.
+    /// nil when another command is running; the question then stays.
+    @discardableResult
+    public func answer(_ question: ForeignFilesQuestion, with answer: ForeignFilesAnswer) -> Task<Void, Never>? {
+        run(question.request, flag: answer.rawValue)
+    }
+
+    /// Takes over the links `question` lists: the same install of those
+    /// skills again, with `--force`. nil when another command is running;
+    /// the question then stays.
+    @discardableResult
+    public func takeOverLinks(_ question: RefusedLinksQuestion) -> Task<Void, Never>? {
+        run(question.request, flag: "--force")
+    }
+
+    private func run(_ request: InstallRequest, flag: String?) -> Task<Void, Never>? {
+        let args = Self.installArguments(request, flag: flag)
+        let generation = inspectGeneration
         followUp = nil
         let task = app.change(
             .installing(UpdateProgress()),
@@ -161,16 +223,16 @@ public final class AddSkillModel {
                         case .result(let data, let warnings):
                             installed = data
                             self.message = Self.installSummary(data, warnings: warnings)
+                            if let question = Self.refusedLinks(request, warnings: warnings) {
+                                followUp = .refusedLinks(question)
+                            }
                         }
                     }
                 } catch let error as SkillmError {
                     switch error.protocolError?.code {
                     case .foreignFiles?:
-                        guard case .command(let e, let warnings) = error else { break }
-                        followUp = .ask(
-                            ForeignFilesQuestion(
-                                paths: e.paths ?? [],
-                                links: warnings.filter { $0.code == "link_refused" }.map(\.message)))
+                        followUp = .foreignFiles(
+                            ForeignFilesQuestion(request: request, paths: error.protocolError?.paths ?? []))
                     case .commitMismatch?:
                         self.message = AppModel.Notice(
                             text: "The source changed since it was read. Check the skills and install again.",
@@ -178,6 +240,13 @@ public final class AddSkillModel {
                         followUp = .reinspect
                     default:
                         self.message = AppModel.failure(error)
+                        // Skills that landed before the failure may have
+                        // had links refused.
+                        if case .command(_, let warnings) = error,
+                            let question = Self.refusedLinks(request, warnings: warnings)
+                        {
+                            followUp = .refusedLinks(question)
+                        }
                     }
                 } catch is CancellationError {
                     self.message = AppModel.Notice(text: "Install stopped", isError: false)
@@ -188,8 +257,12 @@ public final class AddSkillModel {
             then: { [weak self] in
                 guard let self, let next = followUp else { return }
                 followUp = nil
+                // Read Skills ran meanwhile: the question is about a form
+                // that is gone.
+                guard generation == inspectGeneration else { return }
                 switch next {
-                case .ask(let question): foreignFiles = question
+                case .foreignFiles(let question): foreignFiles = question
+                case .refusedLinks(let question): refusedLinks = question
                 case .reinspect: reinspect()
                 }
             })
@@ -197,6 +270,7 @@ public final class AddSkillModel {
             message = nil
             installed = nil
             foreignFiles = nil
+            refusedLinks = nil
         }
         return task
     }
@@ -231,20 +305,36 @@ public final class AddSkillModel {
         return .success(s)
     }
 
-    static func installArguments(
-        _ inspection: InspectData, ids: [String], target: Target, answer: ForeignFilesAnswer?
-    ) -> [String] {
+    /// `request` as `install` arguments, with `flag` (`--yes`,
+    /// `--skip-foreign` or `--force`) when it answers a question.
+    static func installArguments(_ request: InstallRequest, flag: String?) -> [String] {
+        let inspection = request.inspection
         var args = ["install"]
         if inspection.kind == .git, let commit = inspection.commit {
             if let ref = inspection.ref { args += ["--ref", ref] }
             args += ["--commit", commit]
         }
-        switch target {
+        switch request.target {
         case .global: args.append("--global")
         case .project(let url): args += ["--project", url.path]
         }
-        if let answer { args.append(answer.rawValue) }
-        return args + ["--", inspection.source] + ids
+        if let flag { args.append(flag) }
+        return args + ["--", inspection.source] + request.ids
+    }
+
+    /// The take-over question for an install whose warnings include
+    /// `link_refused`: `request` narrowed to those skills, so `--force`
+    /// cannot also overwrite a canonical copy the install left out. nil
+    /// when no link was refused. (`link_failed` is an I/O failure that
+    /// `--force` does not fix.)
+    static func refusedLinks(_ request: InstallRequest, warnings: [Warning]) -> RefusedLinksQuestion? {
+        let refused = warnings.filter { $0.code == "link_refused" && $0.skillId != nil }
+        let ids = request.ids.filter { id in refused.contains { $0.skillId == id } }
+        guard !ids.isEmpty else { return nil }
+        var narrowed = request
+        narrowed.ids = ids
+        return RefusedLinksQuestion(
+            request: narrowed, links: refused.filter { ids.contains($0.skillId ?? "") }.map(\.message))
     }
 
     static func installSummary(_ data: InstallData, warnings: [Warning]) -> AppModel.Notice {

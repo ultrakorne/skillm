@@ -24,6 +24,9 @@ public final class SettingsModel {
     public private(set) var commandLineTool: URL?
 
     @ObservationIgnored private let loginItem: any LoginItemService
+    /// Goes up when an `agent set` starts and when it ends: an `agent ls`
+    /// read that overlapped one is dropped, since it may hold the old state.
+    @ObservationIgnored private var agentWrites = 0
     @ObservationIgnored private let toolDirectories: [URL]
 
     public init(
@@ -42,8 +45,9 @@ public final class SettingsModel {
         refreshLocalState()
         do {
             try await app.reloadSettings()
+            let writes = agentWrites
             let data: AgentsData = try await app.read(["agent", "ls"])
-            agents = data.agents
+            if writes == agentWrites { agents = data.agents }
             loadError = nil
         } catch is CancellationError {
         } catch {
@@ -69,12 +73,14 @@ public final class SettingsModel {
         }
     }
 
-    /// The user agreed to disable `pendingDisable`.
+    /// The user agreed to disable `pendingDisable`. nil when another
+    /// command is running; the question then stays.
     @discardableResult
     public func confirmDisable() -> Task<Void, Never>? {
         guard let name = pendingDisable else { return nil }
-        pendingDisable = nil
-        return agentSet(["--disable", name, "--yes"])
+        let task = agentSet(["--disable", name, "--yes"])
+        if task != nil { pendingDisable = nil }
+        return task
     }
 
     /// Only one agent is enabled: its toggle cannot turn off.
@@ -86,6 +92,7 @@ public final class SettingsModel {
     private func agentSet(_ flags: [String]) -> Task<Void, Never>? {
         let task = app.change(.savingSettings) { [weak self] client in
             do {
+                defer { self?.agentWrites += 1 }
                 let data: AgentsSetData = try await client.run(["agent", "set"] + flags)
                 guard let self else { return }
                 for i in agents.indices { agents[i].enabled = data.enabled.contains(agents[i].name) }
@@ -98,7 +105,10 @@ public final class SettingsModel {
                 self?.message = AppModel.failure(error)
             }
         }
-        if task != nil { message = nil }
+        if task != nil {
+            agentWrites += 1
+            message = nil
+        }
         return task
     }
 

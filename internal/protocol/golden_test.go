@@ -115,8 +115,11 @@ func TestGoldenFixtures(t *testing.T) {
 		}},
 		{"error_cancelled.json", func(w *Writer) error { return w.Fail(context.Canceled) }},
 		{"error_foreign_files.json", func(w *Writer) error {
-			w.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn, Skill: "beta",
-				Code: core.CodeLinkRefused, Text: "beta: /Users/me/.claude/skills/beta is not a skillm link; left alone"})
+			// InstallSkills refuses before anything is copied or linked, so
+			// the only warnings that can come first are agent_skipped (never
+			// link_refused, which a successful install reports).
+			w.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn,
+				Code: core.CodeAgentSkipped, Text: "skipped opencode: no global location"})
 			return w.Fail(&core.ForeignFilesError{Paths: []string{"/Users/me/.agents/skills/beta"}})
 		}},
 		{"install.json", func(w *Writer) error { return w.Result(NewInstallData(install)) }},

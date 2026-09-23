@@ -27,6 +27,10 @@
 #   FAKE_SKILLM_NO_FOREIGN  if set, install succeeds without an answer flag;
 #                         otherwise it answers foreign_files unless given
 #                         --yes, --force or --skip-foreign
+#   FAKE_SKILLM_LINK_REFUSED  a skill id: install --events succeeds with a
+#                         link_refused warning for it, unless given --force
+#                         (skillm reports refused links only on a result
+#                         whose copies landed, never with foreign_files)
 #   FAKE_SKILLM_NEEDS_FORCE  if set, uninstall answers needs_force unless
 #                         given --force
 set -u
@@ -195,7 +199,12 @@ install)
 	elif [ $answered = no ] && [ -z "${FAKE_SKILLM_NO_FOREIGN:-}" ]; then
 		answer_error "$fx/error_foreign_files.json"
 	elif [ $events = yes ]; then
-		cat "$fx/install_events.ndjson"
+		if [ -n "${FAKE_SKILLM_LINK_REFUSED:-}" ] && [ $forced = no ]; then
+			id=$FAKE_SKILLM_LINK_REFUSED
+			sed "s|\"warnings\":\[\]|\"warnings\":[{\"code\":\"link_refused\",\"message\":\"$id: /Users/me/.claude/skills/$id is not a skillm link; left alone\",\"skill_id\":\"$id\"}]|" "$fx/install_events.ndjson"
+		else
+			cat "$fx/install_events.ndjson"
+		fi
 	else
 		cat "$fx/install.json"
 	fi

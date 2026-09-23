@@ -22,24 +22,26 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 480, height: 620)
         // Read again every time Settings opens (the menu activates the app
-        // first) and whenever the app comes back to the front: the user may
-        // have changed the login item in System Settings, or the config in a
-        // terminal, meanwhile.
-        .task { await settings.load() }
+        // first), once the CLI is ready (a window macOS restores at launch
+        // opens before), and whenever the app comes back to the front: the
+        // user may have changed the login item in System Settings, or the
+        // config in a terminal, meanwhile.
+        .task(id: app.isReady) { await settings.load() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await settings.load() }
         }
-        .confirmationDialog(
-            "Disable \(settings.pendingDisable ?? "")?",
+        // A sheet, not a confirmation dialog: it stays open while another
+        // command runs, and closes once the disable has started.
+        .sheet(
             isPresented: Binding(
                 get: { settings.pendingDisable != nil },
-                set: { if !$0 { settings.pendingDisable = nil } }),
-            titleVisibility: .visible
+                set: { if !$0 { settings.pendingDisable = nil } })
         ) {
-            Button("Disable", role: .destructive) { settings.confirmDisable() }
-            Button("Cancel", role: .cancel) { settings.pendingDisable = nil }
-        } message: {
-            Text("Its links to your skills are removed everywhere. The skills stay installed for the other agents.")
+            DisableAgentSheet(name: settings.pendingDisable ?? "", busy: app.isBusy) {
+                settings.confirmDisable()
+            } cancel: {
+                settings.pendingDisable = nil
+            }
         }
     }
 
@@ -168,5 +170,35 @@ struct SettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Disabling an agent removes its links: asked first.
+struct DisableAgentSheet: View {
+    let name: String
+    /// Another command is running: Disable waits for it.
+    let busy: Bool
+    let confirm: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Disable \(name)?").font(.headline)
+            Text("Its links to your skills are removed everywhere. The skills stay installed for the other agents.")
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                if busy {
+                    Text("Waiting for the running command…").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel", role: .cancel, action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Disable", role: .destructive, action: confirm)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(busy)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
     }
 }

@@ -89,12 +89,21 @@ public final class AppModel {
     public var hasRunningCommands: Bool { operation != nil || !reads.isEmpty }
     /// The skillm the app runs; nil until the launch checks passed.
     public var cliExecutable: URL? { client?.executable }
+    /// The launch checks passed: commands can run. Observable, unlike
+    /// `cliExecutable`, so a window restored at launch loads once it is true.
+    public var isReady: Bool {
+        if case .ready = cli { return true }
+        return false
+    }
 
     @ObservationIgnored private var client: SkillmClient?
     @ObservationIgnored private var operation: Task<Void, Never>?
     /// The reads running beside `operation`.
     @ObservationIgnored private var reads: [UUID: RunningRead] = [:]
     @ObservationIgnored private var scheduler: RefreshScheduler?
+    /// Goes up when a `config set` starts and when it ends: a `config get`
+    /// read that overlapped one is dropped, since it may hold the old values.
+    @ObservationIgnored private var settingsWrites = 0
     @ObservationIgnored private var isShuttingDown = false
     @ObservationIgnored private let makeClient: @MainActor () throws -> SkillmClient
     @ObservationIgnored private let checksGit: Bool
@@ -244,7 +253,7 @@ public final class AppModel {
         _ key: String, _ value: String, checksAfter: Bool, report: (@MainActor (Notice) -> Void)? = nil
     ) -> Task<Void, Never>? {
         var saved = false
-        return perform(
+        let task = perform(
             .savingSettings, clearsNotice: false,
             { model, client in
                 do {
@@ -254,15 +263,21 @@ public final class AppModel {
                 } catch {
                     if let report { report(Self.failure(error)) } else { model.notice = Self.failure(error) }
                 }
+                model.settingsWrites += 1
             },
             then: { model in
                 if saved, checksAfter, model.settings?.enabled == true { model.scheduledRefresh() }
             })
+        if task != nil { settingsWrites += 1 }
+        return task
     }
 
     /// Reads the settings again (`config get`), for the Settings window.
+    /// A read that overlapped a `config set` keeps what the write left.
     public func reloadSettings() async throws {
+        let writes = settingsWrites
         let config: ConfigData = try await read(["config", "get"])
+        guard writes == settingsWrites else { return }
         settings = config.refresh
     }
 

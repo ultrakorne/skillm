@@ -104,7 +104,7 @@ final class SkillmClientTests: XCTestCase {
         } catch let SkillmError.command(e, warnings) {
             XCTAssertEqual(e.code, .foreignFiles)
             XCTAssertEqual(e.paths, ["/Users/me/.agents/skills/beta"])
-            XCTAssertEqual(warnings.map(\.code), ["link_refused"])
+            XCTAssertEqual(warnings.map(\.code), ["agent_skipped"])
         }
 
         do {

@@ -3,7 +3,8 @@ import XCTest
 @testable import SkillmKit
 
 /// The Add Skill window's model against the fake: inspect, install at the
-/// inspected commit, the foreign-files question, and a Source that moved.
+/// inspected commit, the foreign-files and refused-links questions, and a
+/// Source that moved.
 @MainActor
 final class AddSkillModelTests: XCTestCase {
     private var harness: FakeHarness!
@@ -85,11 +86,11 @@ final class AddSkillModelTests: XCTestCase {
         await m.install()?.value
         let question = try XCTUnwrap(m.foreignFiles)
         XCTAssertEqual(question.paths, ["/Users/me/.agents/skills/beta"])
-        XCTAssertEqual(question.links, ["beta: /Users/me/.claude/skills/beta is not a skillm link; left alone"])
         XCTAssertNil(m.installed)
+        XCTAssertNil(m.refusedLinks)
 
-        for (answer, flag) in [(AddSkillModel.ForeignFilesAnswer.overwrite, "--yes"), (.takeOver, "--force"), (.skip, "--skip-foreign")] {
-            await m.install(answer: answer)?.value
+        for (answer, flag) in [(AddSkillModel.ForeignFilesAnswer.overwrite, "--yes"), (.skip, "--skip-foreign")] {
+            await m.answer(question, with: answer)?.value
             XCTAssertEqual(
                 harness.commands().filter { $0.hasPrefix("install") }.last,
                 Self.installGit
@@ -97,6 +98,91 @@ final class AddSkillModelTests: XCTestCase {
             XCTAssertNil(m.foreignFiles)
             XCTAssertNotNil(m.installed)
         }
+    }
+
+    /// The form edited while the install ran does not change what an answer
+    /// retries: the question is about the install as it was started.
+    func testAnAnswerRetriesTheInstallItWasAskedAbout() async throws {
+        let m = try await inspected()
+        m.target = .project(URL(fileURLWithPath: "/Users/me/src/app"))
+        let task = m.install()
+        XCTAssertTrue(m.isInstalling)
+        m.target = .global
+        m.selected = ["grill-with-docs", "notes"]
+        await task?.value
+        let question = try XCTUnwrap(m.foreignFiles)
+        await m.answer(question, with: .overwrite)?.value
+        XCTAssertEqual(
+            harness.commands().filter { $0.hasPrefix("install") }.last,
+            Self.installGit
+                + " --project /Users/me/src/app --yes --json --events -- https://github.com/acme/skills grill-with-docs")
+    }
+
+    /// An answer given while another command runs is not lost: the
+    /// question stays until the retry can start.
+    func testAQuestionWaitsForTheRunningCommand() async throws {
+        let m = try await inspected(["FAKE_SKILLM_HANG_ON": "update"])
+        await m.install()?.value
+        let question = try XCTUnwrap(m.foreignFiles)
+        let update = harness.app.updateAll()
+        XCTAssertNotNil(update)
+        XCTAssertNil(m.answer(question, with: .overwrite))
+        XCTAssertEqual(m.foreignFiles, question)
+        harness.app.cancel()
+        await update?.value
+        await m.answer(question, with: .overwrite)?.value
+        XCTAssertNil(m.foreignFiles)
+        XCTAssertNotNil(m.installed)
+    }
+
+    /// skillm reports refused agent links on a result whose copies landed:
+    /// taking them over retries the same install, of those skills only,
+    /// with --force.
+    func testRefusedLinksAreOfferedForTakeOver() async throws {
+        let m = try await inspected(["FAKE_SKILLM_NO_FOREIGN": "1", "FAKE_SKILLM_LINK_REFUSED": "notes"])
+        m.selected = ["grill-with-docs", "notes"]
+        await m.install()?.value
+        let question = try XCTUnwrap(m.refusedLinks)
+        XCTAssertEqual(question.request.ids, ["notes"])
+        XCTAssertEqual(question.links, ["notes: /Users/me/.claude/skills/notes is not a skillm link; left alone"])
+        XCTAssertNil(m.foreignFiles)
+        XCTAssertEqual(m.message?.isError, true, "the summary names the refused link")
+
+        await m.takeOverLinks(question)?.value
+        XCTAssertEqual(
+            harness.commands().filter { $0.hasPrefix("install") }.last,
+            Self.installGit + " --global --force --json --events -- https://github.com/acme/skills notes")
+        XCTAssertNil(m.refusedLinks)
+        XCTAssertEqual(m.message?.isError, false)
+    }
+
+    /// Overwriting the foreign files can still leave links refused: the
+    /// take-over question follows.
+    func testRefusedLinksAfterAnOverwrite() async throws {
+        let m = try await inspected(["FAKE_SKILLM_LINK_REFUSED": "grill-with-docs"])
+        await m.install()?.value
+        let foreign = try XCTUnwrap(m.foreignFiles)
+        await m.answer(foreign, with: .overwrite)?.value
+        XCTAssertNil(m.foreignFiles)
+        XCTAssertEqual(m.refusedLinks?.request.ids, ["grill-with-docs"])
+    }
+
+    func testRefusedLinksQuestion() {
+        let inspection = InspectData(source: "/Users/me/skills", kind: .local, ref: nil, commit: nil, skills: [])
+        let request = AddSkillModel.InstallRequest(inspection: inspection, ids: ["a", "b", "c"], target: .global)
+        XCTAssertNil(
+            AddSkillModel.refusedLinks(
+                request, warnings: [Warning(code: "link_failed", message: "a: permission denied", skillId: "a")]),
+            "an I/O failure is not something --force fixes")
+        let question = AddSkillModel.refusedLinks(
+            request,
+            warnings: [
+                Warning(code: "link_refused", message: "c: held", skillId: "c"),
+                Warning(code: "agent_skipped", message: "skipped opencode", skillId: nil),
+                Warning(code: "link_refused", message: "a: held", skillId: "a"),
+            ])
+        XCTAssertEqual(question?.request.ids, ["a", "c"])
+        XCTAssertEqual(question?.links, ["c: held", "a: held"])
     }
 
     func testAMovedSourceIsInspectedAgain() async throws {
@@ -134,7 +220,7 @@ final class AddSkillModelTests: XCTestCase {
     func testLocalSourceNeedsNoCommit() {
         let local = InspectData(source: "/Users/me/skills", kind: .local, ref: nil, commit: nil, skills: [])
         XCTAssertEqual(
-            AddSkillModel.installArguments(local, ids: ["a"], target: .global, answer: nil),
+            AddSkillModel.installArguments(.init(inspection: local, ids: ["a"], target: .global), flag: nil),
             ["install", "--global", "--", "/Users/me/skills", "a"])
     }
 }

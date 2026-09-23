@@ -11,11 +11,15 @@ struct AddSkillView: View {
 
     var body: some View {
         Form {
-            sourceSection
-            if let inspection = add.inspection {
-                skillsSection(inspection)
-                targetSection
+            // The form keeps what a running install was started with.
+            Group {
+                sourceSection
+                if let inspection = add.inspection {
+                    skillsSection(inspection)
+                    targetSection
+                }
             }
+            .disabled(add.isInstalling)
             if let message = add.message {
                 Section { NoticeText(notice: message) }
             }
@@ -23,10 +27,22 @@ struct AddSkillView: View {
         .formStyle(.grouped)
         .safeAreaInset(edge: .bottom) { bottomBar }
         .frame(minWidth: 460, minHeight: 300)
+        // A question closes once its retry has started; while another
+        // command runs it stays, with its buttons greyed out.
         .sheet(item: $add.foreignFiles) { question in
-            ForeignFilesSheet(question: question) { answer in
-                add.foreignFiles = nil
-                if let answer { add.install(answer: answer) }
+            ForeignFilesSheet(question: question, busy: app.isBusy) { answer in
+                if let answer {
+                    add.answer(question, with: answer)
+                } else {
+                    add.foreignFiles = nil
+                }
+            }
+        }
+        .sheet(item: $add.refusedLinks) { question in
+            RefusedLinksSheet(question: question, busy: app.isBusy) {
+                add.takeOverLinks(question)
+            } cancel: {
+                add.refusedLinks = nil
             }
         }
     }
@@ -194,44 +210,81 @@ struct AddSkillView: View {
     }
 }
 
-/// Files skillm did not create are in the way: overwrite them, take over
-/// the agent links too, skip those skills, or cancel.
+/// Files skillm did not create are at the canonical copies' places:
+/// overwrite them, skip those skills, or cancel.
 struct ForeignFilesSheet: View {
     let question: AddSkillModel.ForeignFilesQuestion
+    /// Another command is running: the answers wait for it.
+    let busy: Bool
     /// nil: cancel.
     let answer: (AddSkillModel.ForeignFilesAnswer?) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Files skillm did not create are in the way").font(.headline)
-            if !question.paths.isEmpty {
-                Text("Installing overwrites:")
-                list(question.paths.map { SkillsModel.abbreviate($0) })
-            }
-            if !question.links.isEmpty {
-                Text("Another tool also holds these agent links:")
-                list(question.links)
-            }
+            Text("Installing overwrites:")
+            PathList(items: question.paths.map { SkillsModel.abbreviate($0) })
             Text("Skip installs the other skills and leaves these as they are.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             HStack {
+                if busy {
+                    Text("Waiting for the running command…").foregroundStyle(.secondary)
+                }
+                Spacer()
                 Button("Cancel", role: .cancel) { answer(nil) }
                     .keyboardShortcut(.cancelAction)
-                Spacer()
                 Button("Skip These") { answer(.skip) }
-                if !question.links.isEmpty {
-                    Button("Overwrite and Take Over Links", role: .destructive) { answer(.takeOver) }
-                }
+                    .disabled(busy)
                 Button("Overwrite", role: .destructive) { answer(.overwrite) }
                     .keyboardShortcut(.defaultAction)
+                    .disabled(busy)
             }
         }
         .padding(20)
         .frame(width: 520)
     }
+}
 
-    private func list(_ items: [String]) -> some View {
+/// The skills were installed, but another tool holds some agent link
+/// paths, which skillm left alone: take them over, or leave them.
+struct RefusedLinksSheet: View {
+    let question: AddSkillModel.RefusedLinksQuestion
+    /// Another command is running: Take Over waits for it.
+    let busy: Bool
+    let takeOver: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Another tool holds some agent links").font(.headline)
+            Text("skillm installed \(question.request.ids.joined(separator: ", ")) but left these alone:")
+            PathList(items: question.links)
+            Text("Those agents do not see the skill until skillm's link replaces what is there.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            HStack {
+                if busy {
+                    Text("Waiting for the running command…").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Leave Them", role: .cancel, action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Take Over Links", role: .destructive, action: takeOver)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(busy)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
+/// A short scrolling list of paths or messages, selectable.
+private struct PathList: View {
+    let items: [String]
+
+    var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(items, id: \.self) { Text($0).font(.callout.monospaced()).textSelection(.enabled) }
