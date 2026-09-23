@@ -12,9 +12,9 @@ script running in the background) and must never corrupt Home or each other's in
 | Command | Changes Home and installs | Holds the Home lock |
 |---------|---------------------------|---------------------|
 | `install` | yes | yes, while it writes |
-| `update` | yes | yes |
+| `update` | yes | yes, while it writes |
 | `uninstall` | yes | yes |
-| `import` | yes | yes |
+| `import` | yes | yes, while it writes |
 | `agent` | yes | yes |
 | `list`, `check` | no | no |
 | `upgrade` | no (replaces the skillm binary only) | no |
@@ -24,7 +24,10 @@ script running in the background) and must never corrupt Home or each other's in
 ## Flows
 
 - **A changing command** — takes the Home lock, reads Config and the Registry, does its work
-  (fetching, prompting, writing copies and links), saves, and releases the lock when it ends.
+  (prompting, writing copies and links), saves, and releases the lock when it ends.
+- **Updating and importing** — skillm fetches every source with Home free, then takes the lock,
+  re-reads Home and writes. A skill another skillm process reinstalled or updated meanwhile is
+  not rolled back: that skill fails with "run update again" and the rest are updated.
 - **Installing from a Source** — skillm reads the Source and asks which skills and where before
   it takes the Home lock; an overwrite question is also asked with Home free. Once locked, it
   re-reads Home and re-checks the choice, then installs exactly the commit it read.
@@ -40,16 +43,17 @@ script running in the background) and must never corrupt Home or each other's in
   only a crash in the brief swap step leaves it missing. The next write to that skill clears
   any staging leftovers.
 - **Quitting a live `check` or `update`** — rows still running stay unresolved rather than
-  showing as failed, and the command returns within seconds even when a git server stalls.
+  showing as failed, `update` writes no skill, and the command returns within seconds even when
+  a git server stalls.
 
 ## Decisions
 
 - **One lock over read, decide and write, not per file** — a command reads, decides and writes
   across Config, the Registry, Canonical copies and Lockfiles; locking only the saves would
   still let two commands act on the same stale read.
-- **Install asks before it locks** — a question can stay open indefinitely, and holding Home
-  through it would make every other command wait and then fail. Re-reading Home under the
-  lock keeps the decision fresh.
+- **Fetch and ask before locking** — a question can stay open indefinitely and a fetch can
+  stall, and holding Home through either would make every other command wait and then fail.
+  Re-reading Home under the lock keeps the decision fresh.
 - **A relative path is resolved where the user typed it, then recorded absolute** — a GUI
   runs from `/`, so the caller always names the directory to resolve against, and the
   recorded Source then works from anywhere.

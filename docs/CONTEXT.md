@@ -76,7 +76,9 @@ their content differs (so an unchanged skill produces no git churn), and left as
 warning when that source directory is gone. An all-skills Update also runs **Import**'s adoption
 over every tracked project first, so skills a teammate added to a Lockfile join the update. A
 recorded install whose copy has vanished is reported and forgotten; if that was a skill's last
-install, its Registry entry is dropped. Shows a progress bar when there is enough work to
+install, its Registry entry is dropped. Update fetches before it takes the **Home lock**; a
+skill another skillm process reinstalled or updated meanwhile is never rolled back: its update
+fails and asks to run Update again. Shows a progress bar when there is enough work to
 warrant one. Does not show diffs.
 
 ### List
@@ -228,8 +230,9 @@ lockfiles alone cannot provide.
 ### Home lock
 The exclusive, cross-process lock on Home that serializes skillm processes. Every command that
 changes Config, the Registry or any install (Install, Update, Uninstall, Import, and enabling
-or disabling agents) holds it from reading Home to its last save; Install takes its Inspection
-and asks its questions before locking, then re-reads Home under the lock. List, Check and
+or disabling agents) holds it across its writes. Uninstall and enabling or disabling agents
+hold it from reading Home to their last save. Install, Update and Import fetch (and Install
+asks its questions) before locking, then re-read Home under the lock. List, Check and
 Upgrade take none. A command that finds Home locked waits for the holder, then gives
 up after a bounded wait with an error naming the holding command. Readers need no lock because
 every save of `config.toml` and `state.toml` replaces the file in one step.

@@ -10,3 +10,4 @@ The Go program behind every skillm command: it runs each operation on Config, th
 | [check-and-list.md](check-and-list.md) | `core.Check`/`core.List` result semantics and cancellation |
 | [install-primitives.md](install-primitives.md) | Copy, Link, Lockfile and Source-identity primitives: event codes, force and failure rules |
 | [inspect-and-install.md](inspect-and-install.md) | `core.Inspect`/`core.InstallSkills`: the pinned commit, batch checks, lock hand-off, path resolution |
+| [update-and-import.md](update-and-import.md) | `core.Update`/`core.Import`: the unlocked fetch, stale-fetch judgement, per-skill outcomes |

@@ -18,7 +18,7 @@ items below were confirmed by probing the real function — they are pre-existin
 Background: `NormalizeRemote` reduces a git remote to a comparable form so that one repo
 typed several ways reads as one Source. It decides identity in `SrcIdentity.Matches`
 (`internal/core/source.go`), which tells a same-source refresh from a `--as` collision on
-install, and in `lockEntryMatches` (`cmd/import.go`), which tells "already managed" from a
+install, and in `lockEntryMatches` (`internal/core/import.go`), which tells "already managed" from a
 genuine name collision on import; `MergeEntry` also uses it to keep a recorded remote's
 spelling. When it under-normalizes, one repo reads as two
 Sources: the user hits a spurious "already installed from a different source" error and,
@@ -43,7 +43,7 @@ Consequences, all confirmed in code:
 - `core.SourceLabel` (`internal/core/check.go`) renders `e.Source` as the Source column, so
   `skillm list` **prints the token** to the terminal, into scrollback, and into any CI log.
 - `update`, `check` and a re-fetch by Skill ID hand `e.Source` back to `gitx.TreelessClone`
-  (`cmd/update.go`, `internal/core/check.go`, `core.RefetchSkill` in
+  (`internal/core/update.go`, `internal/core/check.go`, `core.RefetchSkill` in
   `internal/core/source.go`), so the stored credential keeps being used.
 
 Separately, `NormalizeRemote` does not strip the `user:token@` userinfo, so the same repo

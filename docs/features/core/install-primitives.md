@@ -7,9 +7,11 @@ install live in `internal/core`: writing, refreshing and removing a Canonical co
 agent Links (`internal/core/vendor.go`), keeping a Local install root's `skills-lock.json`
 entry in step (`internal/core/locksync.go`), and deciding Source identity
 (`internal/core/source.go`). They are presentation-free: each reports what it did as a log
-Event with a stable `Code` and a human `Text`, and returns its failures. The commands keep the
-loops, prompts and Home lock, and pass `termLog` (`cmd/reporter.go`), which prints each Text
-through the `ui` helper for its level the moment it is reported. A Text never names a CLI flag:
+Event with a stable `Code` and a human `Text`, and returns its failures. Their callers keep
+the loops and the Home lock. These callers are `uninstall` and `agent` in `cmd`, and core's
+`InstallSkills`, `Update` and `Import`. The prompts stay in `cmd`, which passes `termLog` or
+`termReporter` (`cmd/reporter.go`) to print each Text through the `ui` helper for its level
+the moment it is reported. A Text never names a CLI flag:
 `termLog` appends the `--force` advice for the codes a flag resolves.
 
 ## Noteworthy
