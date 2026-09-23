@@ -17,8 +17,9 @@ and must never corrupt Home or each other's installs.
 | `import` | yes | yes, while it writes |
 | `agent`, `agent set` | yes | yes, while it writes |
 | `config set` | `config.toml` only | yes |
-| `list`, `check`, `version`, `source inspect`, `agent ls`, `config get` | no | no |
-| `upgrade` | no (replaces the skillm binary only) | no |
+| `refresh` | `status.json` only ([refresh-status](../refresh-status/DESIGN.md)) | yes, while it writes |
+| `list`, `check`, `status`, `version`, `source inspect`, `agent ls`, `config get` | no | no |
+| `upgrade` | replaces the skillm binary; `status.json` when a refresh ran | only for `status.json` |
 
 `--home` or `$SKILLM_HOME` points any command at a different Home; the default is `~/.skillm`.
 
@@ -60,11 +61,10 @@ and must never corrupt Home or each other's installs.
 - **A relative path is resolved where the user typed it, then recorded absolute** — a GUI
   runs from `/`, so the caller names the directory to resolve against; `skillm install
   ./skills/foo` then records an absolute Source that `update` finds from any directory.
-- **Read-only commands take no lock** — every save replaces its file in one step, so readers
-  are safe without waiting, and `list`/`check` stay instant while a long update runs.
+- **Read-only commands take no lock** — every save replaces its file in one step, so readers are
+  safe without waiting, and `list`/`check`/`status` stay instant while a long update runs.
 - **Wait, then fail with a name** — a bounded wait keeps scripts from hanging forever, and
   naming the holding command tells the user what to wait for or stop.
 - **The lock is advisory and per Home** — it guards skillm against itself; a different Home,
   or a hand edit to `config.toml`, is outside its reach.
-- **Saves follow a symlinked Config** — a `config.toml` linked from a dotfiles repo stays a
-  link, and an existing file keeps its permissions.
+- **Saves follow a symlinked Config** — a `config.toml` linked from dotfiles stays a link; any existing file keeps its mode.

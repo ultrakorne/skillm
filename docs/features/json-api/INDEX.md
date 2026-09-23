@@ -1,6 +1,6 @@
 # JSON API
 
-`skillm <command> --json` is skillm's machine-readable surface: one JSON document (or, with `--events`, an NDJSON event stream ending in a result line) on stdout, never a prompt or terminal UI. GUIs such as the macOS menu bar app run the CLI this way instead of parsing its terminal output. `version`, `list`, `check`, `source inspect`, `install`, `update`, `import`, `uninstall`, `upgrade`, `agent ls`/`set` and `config get`/`set` have a JSON mode; a question the terminal would ask becomes a required flag or a typed refusal the GUI answers by retrying with a flag.
+`skillm <command> --json` is skillm's machine-readable surface: one JSON document (or, with `--events`, an NDJSON event stream ending in a result line) on stdout, never a prompt or terminal UI. GUIs such as the macOS menu bar app run the CLI this way instead of parsing its terminal output. `version`, `list`, `check`, `source inspect`, `install`, `update`, `import`, `uninstall`, `upgrade`, `agent ls`/`set`, `config get`/`set`, `refresh` and `status` have a JSON mode; a question the terminal would ask becomes a required flag or a typed refusal the GUI answers by retrying with a flag.
 
 ## Documents
 | Document | Purpose |

@@ -28,6 +28,7 @@ styled stderr message; `main.go` exits non-zero either way.
 | `internal/protocol/data.go` | `VersionData`, `ListData`, `CheckData` and their conversions from core's results; `Time` |
 | `internal/protocol/data_mutating.go` | The data of `install`, `update`, `import`, `uninstall` and `upgrade`, converted from core's typed results |
 | `internal/protocol/data_settings.go` | The data of `source inspect`, `agent ls`/`set` and `config get`/`set` |
+| `internal/protocol/data_status.go` | The data of `status` and `refresh`: the Refresh cache's fields plus `stale` and `refreshed` |
 | `internal/protocol/testdata/` | Golden fixtures: the cross-language contract a GUI's tests decode |
 | `internal/protocol/golden_test.go` | Writes each fixture through the `Writer` and decodes every fixture strictly back into the Go types |
 | `cmd/json.go` | The flags, the annotation, JSON-mode detection, `Execute` with its error handler, quiet git, `capabilities` |
@@ -35,8 +36,9 @@ styled stderr message; `main.go` exits non-zero either way.
 | `cmd/list.go`, `cmd/check.go` | Their `--json` branches over `core.List` / `core.Check` |
 | `cmd/install.go`, `cmd/update.go`, `cmd/import.go`, `cmd/uninstall.go`, `cmd/upgrade.go`, `cmd/agent.go` | Each command's JSON branch: the flags it requires in place of a question, then the core call with the Writer |
 | `cmd/source.go`, `cmd/config.go` | `source inspect` over `core.Inspect`; `config get`/`set` over `internal/config` |
+| `cmd/refresh.go` | `refresh` and `status` over `core.Refresh`/`core.ReadStatus` ([refresh-status](../refresh-status/TECHNICAL.md)) |
 | `cmd/lock.go` | `lockHome`: the waiting notice as a `lock_wait` info event in JSON mode |
-| `cmd/json_test.go`, `cmd/json_mutating_test.go`, `cmd/json_settings_test.go` | Run the built binary with `--json`, as a GUI does, and decode stdout; stderr must stay empty |
+| `cmd/json_test.go`, `cmd/json_mutating_test.go`, `cmd/json_settings_test.go`, `cmd/json_status_test.go` | Run the built binary with `--json`, as a GUI does, and decode stdout; stderr must stay empty |
 
 ## Noteworthy
 
@@ -45,7 +47,9 @@ styled stderr message; `main.go` exits non-zero either way.
 A change to a protocol type changes a fixture, and every GUI decodes the same files, so a
 field is added or changed in the Go type, the fixture (regenerate with `SKILLM_UPDATE_GOLDEN=1`)
 and each GUI's decoder together. `TestFixturesDecode` refuses unknown fields, so a fixture can
-never drift from the Go structs. Error codes are never renamed or reused.
+never drift from the Go structs. Error codes are never renamed or reused. `TestFixturesDecode`
+decodes every file directly in the fixture folder as an envelope or event stream, so other formats
+sit in a subdirectory: `internal/protocol/testdata/cache/status.json` is the Refresh cache file.
 
 ### Capabilities are derived, their fixture is not
 
@@ -66,9 +70,9 @@ successful parse only the parsed value counts.
 (`source`, `config`, `completion`) are answered by cobra with help text and exit 0 before any
 hook runs. `Execute` refuses them with `json_unsupported` before fang starts; it first adds
 cobra's `help` and `completion` commands, which cobra otherwise adds only inside its own
-`Execute`, so `completion --json` resolves to the group it is. Usage errors are recognised by cobra's message prefixes (`isUsageError`), because cobra
-has no typed usage errors; the flag-group messages (`--global`/`--local`/`--project` together)
-are among them, and a cobra upgrade that rewords any of them turns `usage` into `error`.
+`Execute`, so `completion --json` resolves to the group it is. Usage errors are recognised by
+cobra's message prefixes (`isUsageError`), since cobra has no typed usage errors; the flag-group
+messages are among them, and a cobra upgrade that rewords any of them turns `usage` into `error`.
 
 ### One final document, whichever path ends the run
 
@@ -83,18 +87,14 @@ Only `warn`/`error` log events become envelope warnings; a check's `update_avail
 `item_done` event, not a warning. JSON output carries core's Event text unchanged, so a check
 `error` row names its real cause where the terminal shows the historic "untracked" line
 ([check-and-list.md](../core/check-and-list.md)). `lock_wait` is `info`, so it streams with
-`--events` but is never a warning.
+`--events` but is never a warning. `index`, `done` and `total` are emitted exactly when the
+event type carries them, so item 0 and a zero count appear.
 
 ### Git never prompts in JSON mode
 
 `quietGit` sets `GIT_TERMINAL_PROMPT=0` and, unless the user set `GIT_SSH_COMMAND` or
 `GIT_SSH`, runs ssh with `BatchMode=yes`, in this process's environment so every git child
 inherits it. A remote that now wants credentials fails fast as a check `error` row.
-
-### Stream field presence
-
-`index`, `done` and `total` are emitted exactly when the event type carries them (so item 0 and
-a zero count appear), and `data` is `null` on error while `warnings` is always a list.
 
 ### No prompt is reachable in JSON mode
 

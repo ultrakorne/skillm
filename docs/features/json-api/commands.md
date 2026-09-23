@@ -6,7 +6,8 @@ What each command with a JSON mode takes and returns, and how a GUI answers its 
 exact field set of every data type is in its golden fixture in `internal/protocol/testdata/`
 and its Go type in `internal/protocol/data.go` (`version`, `list`, `check`),
 `internal/protocol/data_mutating.go` (the skill-changing commands) or
-`internal/protocol/data_settings.go` (`source inspect`, `agent`, `config`). Every list in a
+`internal/protocol/data_settings.go` (`source inspect`, `agent`, `config`) or
+`internal/protocol/data_status.go` (`refresh`, `status`). Every list in a
 result is present, never `null`. A changing command in JSON mode never asks: each terminal
 question becomes either a required flag or a typed refusal the GUI answers by running the
 command again with a flag.
@@ -30,6 +31,26 @@ are omitted for a local Source, where `--ref` is `usage`. A GUI passes a local S
 (`{refresh: {enabled, interval_hours}}`) with its effective value, the default where
 `config.toml` has none; a key, when given, is only checked (`unknown_key`). `agent ls` and
 `config get` need no git, so a GUI's Settings work before it can report git missing.
+
+## `refresh` and `status`
+
+**`status`** returns the Refresh cache offline, plus `stale`: the cache's own `schema_version`,
+`checked_at`, `next_due_at`, one row per skill (`up_to_date`, `update_available`, `untracked`,
+`local`, `error`, with the Revisions compared and the lookup error), `updates`, `self` (the
+Self status of `upgrade --check`, plus the lookup's `error`), `errors` (each `untracked` or
+`error` skill and a failed self lookup, coded `self_check`) and `badge`. Before any refresh the
+times are absent, `self` is `null`, the lists are empty, `badge` is false and `stale` true. It
+needs no git. `self` is judged for the running skillm, so it can differ from the file's.
+
+**`refresh [--if-due]`** returns the same data plus `refreshed`: false when `--if-due` found no
+check due, in which case nothing was looked up and the data is the cache as it was. With
+`--events` it streams `check`'s rows. A failed lookup is never a failed command: a skill's is its
+row and an `errors` entry, the self lookup's an `errors` entry and a `self_check_failed` warning.
+It writes under the Home lock, so it can fail with `home_locked`. A cache that cannot be read is
+a `status_unreadable` warning and reads as never written. A GUI shows `badge` as it is, never
+recomputing it, and schedules nothing itself: it runs `refresh --if-due` as often as it likes.
+`install`, `update`, `uninstall` and `upgrade` may add a `status_not_saved` warning when they
+could not bring the cache in line; their own work is done.
 
 ## `install`
 
@@ -129,4 +150,6 @@ binary as a GUI does: the refused questions, the install, update and uninstall r
 uninstall retry after `needs_confirm`, `update_failed`, import's missing directory, `upgrade` on a
 source build and inside an app bundle, inspect-then-install with `--commit` (and
 `commit_mismatch` after the Source moves), `agent ls`/`agent set`, the `config get`/`config set`
-round trip with no git on `PATH`, and the group commands refused.
+round trip with no git on `PATH`, and the group commands refused. `cmd/json_status_test.go`
+runs the badge cycle: `status` with no git, `refresh`, `refresh --if-due`, then `update` and
+`uninstall` clearing the badge.

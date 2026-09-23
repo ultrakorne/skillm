@@ -12,8 +12,8 @@ files (references, sub-docs, scripts). One skill = one directory.
 
 ### Home
 The single central directory holding skillm's own state — `~/.skillm/`, which contains
-**only** `config.toml`, `state.toml` and the `.lock` file behind the **Home lock**. There is
-exactly one Home per machine. Home does
+**only** `config.toml`, `state.toml`, the `.lock` file behind the **Home lock** and, once a
+**Refresh** ran, the **Refresh cache** `status.json`. There is exactly one Home per machine. Home does
 **not** store skills: there is no skills library. A skill's files live solely in its
 **Canonical copies** (the Installs), which are the only copies of its content. Two installs
 of the same skill cannot share a Skill ID; a colliding install from a different Source is an
@@ -231,6 +231,38 @@ Enabled set is changed via `skillm agent` (a multiselect over the defined agents
 `skillm agent set --enable/--disable`, and listed by `skillm agent ls`; changing it Enables or Disables the affected agents, reconciling their Links
 immediately rather than only affecting future installs.
 
+## Update status
+
+### Refresh
+One **Check** of every skill together with a lookup of the latest release (the **Self status**),
+saved as the **Refresh cache**. A scheduled Refresh (`skillm refresh --if-due`) runs only when
+one is **Due**, and otherwise changes nothing and makes no network request.
+_Avoid_: sync, poll
+
+### Refresh cache
+`~/.skillm/status.json` — the outcome of the last Refresh: each skill's upstream status, the Self
+status, the problems it hit and the **Badge**, with when it was checked and when the next
+scheduled Refresh is due. Only a Refresh creates it; Install, Update, Uninstall and Upgrade then
+keep it in line with what they change. `skillm status` reads it offline, and a GUI may watch the
+file itself.
+_Avoid_: status file, update cache
+
+### Badge
+The one update indicator every GUI shows: on when a skill has an update available or a newer
+skillm release exists. A lookup that failed is a problem in the Refresh cache, never part of the
+Badge and never "up to date".
+_Avoid_: dot, notification
+
+### Due
+The condition under which a scheduled Refresh runs: the refresh Setting is on, and no Refresh
+ever ran, the refresh interval has passed since the last one (an hour, when every lookup of the
+last one failed), or the last one is dated in the future. Which skillm wrote the cache never
+makes a Refresh Due.
+
+### Stale
+A Refresh cache older than the refresh interval, dated in the future, or never written. A stale
+cache is still read; how to show its age is the GUI's choice.
+
 ## JSON protocol
 
 ### JSON mode
@@ -271,8 +303,8 @@ set` (a Setting). Such a rewrite replaces the whole file, dropping hand-written 
 ### Setting
 A named preference a GUI offers, kept in Config beside the Agent definitions and read or changed
 by key (`refresh.enabled`, `refresh.interval_hours`). A Setting Config does not hold, or holds a
-value it cannot use, has its default. The **refresh** Settings say whether a GUI checks for
-updates on its own schedule and how many hours apart.
+value it cannot use, has its default. The **refresh** Settings say whether a scheduled
+**Refresh** runs at all and how many hours apart.
 _Avoid_: option, preference
 
 ### Registry
@@ -290,9 +322,10 @@ lockfiles alone cannot provide.
 ### Home lock
 The exclusive, cross-process lock on Home that serializes skillm processes. Every command that
 changes Config, the Registry or any install (Install, Update, Uninstall, Import, enabling or
-disabling agents, and changing a Setting) holds it across its writes. Each asks its questions
-(and fetches) before locking, then re-reads Home under the lock. List, Check, Upgrade, taking an
-Inspection, listing agents and reading Settings take none. A command that
+disabling agents, and changing a Setting) holds it across its writes, and so does every write of
+the **Refresh cache**. Each asks its questions (and fetches or checks) before locking, then
+re-reads Home under the lock. List, Check, Status, taking an Inspection, listing agents and
+reading Settings take none; Upgrade takes it only to record its result in the Refresh cache. A command that
 finds Home locked waits for the holder, then gives up after a bounded wait with an error naming
 the holding command. Readers need no lock because every save of `config.toml` and `state.toml`
 replaces the file in one step.

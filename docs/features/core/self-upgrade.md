@@ -2,9 +2,10 @@
 
 ## Overview
 
-`upgrade` replaces the skillm binary itself and never touches Home: it takes no Home lock and
-skips the git check every other command runs. `cmd/upgrade.go` keeps only the prompt and the
-printing over three core calls in `internal/core/selfstatus.go`: `core.SelfMethod` (how this
+`upgrade` replaces the skillm binary itself and skips the git check. It changes nothing in Home
+but the Refresh cache: when one exists, `cmd/upgrade.go` takes the Home lock just to record the
+Self status it found or installed ([refresh-status](../refresh-status/TECHNICAL.md)); otherwise it
+takes no lock. `cmd/upgrade.go` keeps only the prompt and the printing over three core calls in `internal/core/selfstatus.go`: `core.SelfMethod` (how this
 binary is upgraded, judged offline), `core.CheckSelf` (the running version against the latest
 release, as a `SelfStatus`) and `core.UpgradeSelf` (install the release `CheckSelf` found).
 `internal/selfupdate` does the release lookup, download, checksum and swap. These rules matter

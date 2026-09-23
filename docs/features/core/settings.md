@@ -5,9 +5,10 @@
 `config get [key]` and `config set <key> <value>` (`cmd/config.go`) read and change the settings
 a GUI offers, stored in `config.toml` beside the Agent definitions. The keys, their defaults and
 bounds, and their parsing live in `internal/config/settings.go`: the `[refresh]` table,
-`refresh.enabled` and `refresh.interval_hours`, which schedule the GUIs' update check. Agents are
-changed through `skillm agent`, never through `config`. Both commands work without git, so a GUI
-can show its Settings before it can report git missing.
+`refresh.enabled` and `refresh.interval_hours`, the schedule `skillm refresh --if-due` follows
+([refresh-status](../refresh-status/DESIGN.md)). Agents are changed through `skillm agent`, never
+through `config`. Both commands work without git, so a GUI can show its Settings before it can
+report git missing.
 
 ## Noteworthy
 

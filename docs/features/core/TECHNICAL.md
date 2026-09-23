@@ -11,7 +11,7 @@ the write phase then takes the Home lock and re-reads Config and the Registry un
 and `import` take it through the `Options.Lock` hook after their fetches; the others take it in
 `cmd` around the core call. Core writes through its install primitives (Canonical copies, agent
 Links, Lockfile entries, Source identity; see [install-primitives.md](install-primitives.md)).
-`upgrade` runs over `core.CheckSelf`/`core.UpgradeSelf` and never touches Home.
+`upgrade` runs over `core.CheckSelf`/`core.UpgradeSelf`; in Home it touches only the Refresh cache.
 
 `check` and `list` call `core.Check` and `core.List`, which read Home with no lock. Every core
 operation takes a `core.Options` and reports through a `Reporter`'s `Event`: `cmd`'s
@@ -23,9 +23,10 @@ cobra/bubbletea/huh/lipgloss, never touches the standard streams, and never read
 working directory (`os.Getwd` or `filepath.Abs`); it resolves relative paths against
 `Options.Cwd`. `internal/core/arch_test.go` enforces all of it.
 
-Home holds three files: `config.toml` (Config), `state.toml` (Registry) and `.lock`. Both TOML
-files are replaced whole on every save through one atomic-write primitive; the lock file holds
-nothing but the current holder's description.
+Home holds `config.toml` (Config), `state.toml` (Registry), `.lock` and, once a refresh ran,
+`status.json` (the Refresh cache, [refresh-status](../refresh-status/TECHNICAL.md)). Each data file
+is replaced whole on every save through one atomic-write primitive; the lock file holds nothing
+but the current holder's description.
 
 ## Where things live
 
@@ -86,5 +87,4 @@ caller holds the Home lock.
 
 ### Sub-component rules live on topic pages
 
-Each operation's result semantics, refusals and cancellation rules live on its own page, listed
-in [INDEX.md](INDEX.md).
+Each operation's results, refusals and cancellation rules have a page listed in [INDEX.md](INDEX.md).
