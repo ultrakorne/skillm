@@ -15,8 +15,9 @@ and must never corrupt Home or each other's installs.
 | `update` | yes | yes, while it writes |
 | `uninstall` | yes | yes, while it writes |
 | `import` | yes | yes, while it writes |
-| `agent` | yes | yes, while it writes |
-| `list`, `check`, `version` | no | no |
+| `agent`, `agent set` | yes | yes, while it writes |
+| `config set` | `config.toml` only | yes |
+| `list`, `check`, `version`, `source inspect`, `agent ls`, `config get` | no | no |
 | `upgrade` | no (replaces the skillm binary only) | no |
 
 `--home` or `$SKILLM_HOME` points any command at a different Home; the default is `~/.skillm`.
@@ -28,9 +29,9 @@ and must never corrupt Home or each other's installs.
 - **Updating and importing** — skillm fetches every source with Home free, then takes the lock,
   re-reads Home and writes. A skill another skillm process reinstalled or updated meanwhile is
   not rolled back: that skill fails with "run update again" and the rest are updated.
-- **Installing from a Source** — skillm reads the Source and asks which skills and where before
-  it takes the Home lock; an overwrite question is also asked with Home free. Once locked, it
-  re-reads Home and re-checks the choice, then installs exactly the commit it read.
+- **Installing from a Source** — skillm reads the Source and asks which skills, where, and any
+  overwrite question with Home free. Locked, it re-reads Home, re-checks the choice and installs
+  the commit it read (with `--commit`, the one `source inspect` showed, refusing a moved Source).
 - **Uninstalling** — the confirmation names every project whose committed copies are deleted. If
   another skillm process installs one of the skills into a new project meanwhile, skillm asks
   again with the new list. Ctrl-C stops between skills; those already removed stay removed.
@@ -40,9 +41,8 @@ and must never corrupt Home or each other's installs.
 - **A read during a write** — `list` or `check` run alongside a changing command and see the
   Registry as it was before or after that command's save, never a half-written file.
 - **A crash mid-save or mid-copy** — Config and the Registry keep their previous content. A
-  skill's Canonical copy is never half-written: a crash while copying leaves the old copy, and
-  only a crash in the brief swap step leaves it missing. The next write to that skill clears
-  any staging leftovers.
+  Canonical copy is never half-written: a crash while copying leaves the old copy, and only one in
+  the brief swap step leaves it missing. The next write to that skill clears staging leftovers.
 - **Upgrading skillm** — `upgrade` swaps in a newer release and leaves a source build alone; the
   skillm inside the macOS app refuses, even offline, and points at the app's Upgrade menu item.
 - **Quitting a live `check` or `update`** — rows still running stay unresolved rather than

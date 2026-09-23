@@ -2,8 +2,9 @@
 
 ## Overview
 
-`uninstall` runs over `core.Uninstall` (`internal/core/uninstall.go`), and `agent` over
-`core.Agents` and `core.SetAgents` (`internal/core/agents.go`). The pruning of tracked
+`uninstall` runs over `core.Uninstall` (`internal/core/uninstall.go`), and `agent`, `agent ls`
+and `agent set` over `core.Agents` and `core.SetAgents` (`internal/core/agents.go`); `agent set`
+is the picker's change named by `--enable`/`--disable` flags. The pruning of tracked
 project roots both share lives in `internal/core/roots.go`. `cmd/uninstall.go` and
 `cmd/agent.go` keep the pickers and the confirmations, run them with Home unlocked, then take
 the Home lock around the one core call, which re-reads Config and the Registry under it.
@@ -64,6 +65,14 @@ before disables, so a swap lets the new agent copy the old one's links while the
 disk. SetAgents toggles, it does not repair drift: an agent already in the asked-for state is
 left alone, and a call that changes nothing writes nothing.
 
+### `agent set` refuses before it asks, and in JSON mode ignores the working directory
+
+`cmd/agent.go` refuses an undefined name, a name in both lists, and a change leaving no agent
+enabled before the confirmation, as the picker refuses an empty selection; core re-checks under
+the lock. Only a disable of an agent enabled now removes links, so only that asks. JSON mode
+builds `core.Options` without `Cwd`, so the reconcile covers the global folders and the recorded
+projects only: a GUI's working directory is not a project the user meant.
+
 ### Enabling mirrors live peers, never into a missing copy
 
 A newly enabled agent gets a link wherever the previously enabled agents hold one (read live
@@ -90,5 +99,5 @@ words `ErrNoAgentEnabled` for the terminal.
 `internal/core/setagents_test.go` covers `Agents`, the swap, the refusals and the uninstall
 errors (not installed, blocked by a foreign entry or by I/O, scope changed, the Global unlink
 warning); `internal/core/agents_test.go` the enable and disable sweeps; `internal/core/roots_test.go`
-the home-alias pruning. `cmd/agent_test.go` pins the printed advice, and `cmd/lock_test.go`
-checks that both commands wait for a held Home lock.
+the home-alias pruning. `cmd/agent_test.go` pins the printed advice, `cmd/json_settings_test.go` `agent ls`/`set` in JSON
+mode, and `cmd/lock_test.go` checks that both commands wait for a held Home lock.

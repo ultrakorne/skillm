@@ -27,14 +27,16 @@ styled stderr message; `main.go` exits non-zero either way.
 | `internal/protocol/errors.go` | The error code constants and `ErrorFrom`, mapping every typed core and store error to its code and fields |
 | `internal/protocol/data.go` | `VersionData`, `ListData`, `CheckData` and their conversions from core's results; `Time` |
 | `internal/protocol/data_mutating.go` | The data of `install`, `update`, `import`, `uninstall` and `upgrade`, converted from core's typed results |
+| `internal/protocol/data_settings.go` | The data of `source inspect`, `agent ls`/`set` and `config get`/`set` |
 | `internal/protocol/testdata/` | Golden fixtures: the cross-language contract a GUI's tests decode |
 | `internal/protocol/golden_test.go` | Writes each fixture through the `Writer` and decodes every fixture strictly back into the Go types |
 | `cmd/json.go` | The flags, the annotation, JSON-mode detection, `Execute` with its error handler, quiet git, `capabilities` |
 | `cmd/version.go` | `skillm version` (plain line, or `VersionData` with `--json`) |
 | `cmd/list.go`, `cmd/check.go` | Their `--json` branches over `core.List` / `core.Check` |
-| `cmd/install.go`, `cmd/update.go`, `cmd/import.go`, `cmd/uninstall.go`, `cmd/upgrade.go` | Each command's JSON branch: the flags it requires in place of a question, then the core call with the Writer |
+| `cmd/install.go`, `cmd/update.go`, `cmd/import.go`, `cmd/uninstall.go`, `cmd/upgrade.go`, `cmd/agent.go` | Each command's JSON branch: the flags it requires in place of a question, then the core call with the Writer |
+| `cmd/source.go`, `cmd/config.go` | `source inspect` over `core.Inspect`; `config get`/`set` over `internal/config` |
 | `cmd/lock.go` | `lockHome`: the waiting notice as a `lock_wait` info event in JSON mode |
-| `cmd/json_test.go`, `cmd/json_mutating_test.go` | Run the built binary with `--json`, as a GUI does, and decode stdout; stderr must stay empty |
+| `cmd/json_test.go`, `cmd/json_mutating_test.go`, `cmd/json_settings_test.go` | Run the built binary with `--json`, as a GUI does, and decode stdout; stderr must stay empty |
 
 ## Noteworthy
 
@@ -45,6 +47,12 @@ field is added or changed in the Go type, the fixture (regenerate with `SKILLM_U
 and each GUI's decoder together. `TestFixturesDecode` refuses unknown fields, so a fixture can
 never drift from the Go structs. Error codes are never renamed or reused.
 
+### Capabilities are derived, their fixture is not
+
+`capabilities` is built from the annotated commands' paths at run time, but `version.json` is
+written from a hand-kept list in `internal/protocol/golden_test.go`: a new JSON command goes into
+that list too, or the fixture a GUI tests against under-reports what the CLI offers.
+
 ### JSON mode is known before the command line parses
 
 An error cobra hits before it has parsed `--json` (an unknown flag in front of it) must still be
@@ -54,9 +62,11 @@ successful parse only the parsed value counts.
 
 ### cobra's own answers are refused up front
 
-`--help`/`-h`, `--version` and a bare `skillm --json` are answered by cobra before any hook runs,
-with terminal text and exit 0. `Execute` refuses them with `json_unsupported` before fang
-starts. Usage errors are recognised by cobra's message prefixes (`isUsageError`), because cobra
+`--help`/`-h`, `--version`, a bare `skillm --json` and a group command that is not runnable
+(`source`, `config`, `completion`) are answered by cobra with help text and exit 0 before any
+hook runs. `Execute` refuses them with `json_unsupported` before fang starts; it first adds
+cobra's `help` and `completion` commands, which cobra otherwise adds only inside its own
+`Execute`, so `completion --json` resolves to the group it is. Usage errors are recognised by cobra's message prefixes (`isUsageError`), because cobra
 has no typed usage errors; the flag-group messages (`--global`/`--local`/`--project` together)
 are among them, and a cobra upgrade that rewords any of them turns `usage` into `error`.
 

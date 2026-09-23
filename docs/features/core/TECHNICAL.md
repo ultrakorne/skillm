@@ -2,10 +2,11 @@
 
 ## Architecture
 
-Each command in `cmd/` is a cobra command over one or more core operations: `install` over
-`core.Inspect`/`core.InstallSkills`, `update` over `core.Update`, `import` over `core.Import`,
-`uninstall` over `core.Uninstall`, and `agent` over `core.Agents`/`core.SetAgents`. Every
-question (pickers, scope, overwrite, confirmations) and every fetch runs with Home unlocked;
+Each command in `cmd/` is a cobra command over core operations: `install` over `core.Inspect`
+and `core.InstallSkills`, `source inspect` over `core.Inspect`, `update`, `import` and
+`uninstall` over their namesakes, `agent` (and `agent ls`/`set`) over `core.Agents` and
+`core.SetAgents`, and `config get`/`set` over `internal/config` ([settings.md](settings.md)).
+Every question (pickers, scope, overwrite, confirmations) and every fetch runs with Home unlocked;
 the write phase then takes the Home lock and re-reads Config and the Registry under it. `update`
 and `import` take it through the `Options.Lock` hook after their fetches; the others take it in
 `cmd` around the core call. Core writes through its install primitives (Canonical copies, agent
@@ -32,17 +33,17 @@ nothing but the current holder's description.
 |------|------|
 | `cmd/root.go`, `cmd/lock.go` | Root command and global flags; taking the Home lock with its "waiting for …" notice |
 | `cmd/install.go` | `install`: source or id mode, the scope question, the overwrite retry, flag advice for core's typed errors |
-| `cmd/fetch.go` | The skill picker over an Inspection |
+| `cmd/fetch.go`, `cmd/source.go` | The skill picker over an Inspection; `source inspect`'s listing |
 | `cmd/reporter.go` | `coreOptions`, `termReporter` (core Events → checklist and prints), `termLog` with its flag advice |
 | `cmd/update.go`, `cmd/import.go` | Build `core.Options` with the lock hook, render Events, print the summary line |
-| `cmd/uninstall.go`, `cmd/agent.go` | The skill and agent pickers and confirmations, then the core call under the Home lock |
+| `cmd/uninstall.go`, `cmd/agent.go` | The skill and agent pickers (and `agent ls`/`set`) and confirmations, then the core call under the Home lock |
 | `cmd/check.go` | `check` over `core.Check`, with `checkReporter` restoring the CLI's "untracked" line |
 | `cmd/upgrade.go` | `upgrade`'s confirmation and output over `core.SelfMethod`/`CheckSelf`/`UpgradeSelf` |
 | `internal/store/store.go` | Home resolution (`--home`, `$SKILLM_HOME`, `~/.skillm`) and the directory-copy primitives |
 | `internal/store/atomic.go` | Atomic file replace used by every Config and Registry save |
 | `internal/store/lock.go` | The cross-process Home lock (`flock`/`LockFileEx` in its `_unix`/`_windows` files) |
 | `internal/store/rename_windows.go` | Replacing rename that retries while a reader holds the file open |
-| `internal/config/config.go`, `internal/state/state.go` | Load and save `config.toml` and `state.toml` |
+| `internal/config/config.go`, `internal/state/state.go` | Load and save `config.toml` and `state.toml`; `internal/config/settings.go` holds the `[refresh]` settings |
 | `internal/linker/linker.go` | Creates, removes and discovers skillm-owned agent Links |
 | `internal/gitx/gitx.go` | Treeless git fetches and Revision lookup via the system `git`; a missing subtree is a `*gitx.NotFoundError` |
 | `internal/lockfile/lockfile.go` | Reads and writes the vercel-compatible Lockfile |
@@ -85,5 +86,5 @@ caller holds the Home lock.
 
 ### Sub-component rules live on topic pages
 
-Each core operation's result semantics, refusals and cancellation rules live on its own page,
-listed in [INDEX.md](INDEX.md), from check and list through self-upgrade and the bundle guard.
+Each operation's result semantics, refusals and cancellation rules live on its own page, listed
+in [INDEX.md](INDEX.md).

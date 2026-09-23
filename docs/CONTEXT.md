@@ -47,6 +47,8 @@ A Source read once, ahead of an Install: a git repository cloned and pinned to o
 local directory, together with the skills found in it (Skill ID, name, description, location).
 Inspecting prompts for nothing and installs nothing; an Install from it copies exactly the
 inspected commit, while the recorded ref stays the branch or tag so Update keeps following it.
+`skillm source inspect` takes one on its own; an Install run afterwards names the inspected
+commit, and refuses a Source that has moved on since rather than install what nobody saw.
 _Avoid_: preview
 
 ### Skill ID
@@ -185,7 +187,8 @@ the already-Enabled agents are currently linked — the Global folder and every 
 project — and, at every recorded install whose Canonical copy still exists (the Global one and
 every Local root), gives the agent its link into it, bringing it to parity with its peers (a
 canonical-folder agent is served by the copy itself and needs nothing). Enabling an agent while
-nothing is installed anywhere does nothing. Performed interactively via `skillm agent`.
+nothing is installed anywhere does nothing. Performed via `skillm agent` (a picker) or
+`skillm agent set --enable`.
 
 ### Disable (an agent)
 Stop applying Installs for an Agent: remove that agent's symlinks across every Scope and every
@@ -224,8 +227,8 @@ whether a newer release is **available**, and whether Upgrade is **eligible** to
 ### Enabled agents
 The Agents that Links are applied to: the subset of agents **defined** in Config whose
 `enabled` flag is set. An agent must be defined in Config before it can be enabled. The
-Enabled set is changed interactively via `skillm agent` (a multiselect over the defined
-agents); changing it Enables or Disables the affected agents, reconciling their Links
+Enabled set is changed via `skillm agent` (a multiselect over the defined agents) or
+`skillm agent set --enable/--disable`, and listed by `skillm agent ls`; changing it Enables or Disables the affected agents, reconciling their Links
 immediately rather than only affecting future installs.
 
 ## JSON protocol
@@ -260,9 +263,17 @@ reported alongside it name the commands that have a JSON mode.
 ### Config
 `~/.skillm/config.toml` — user-owned, hand-editable, and the **single source of truth for
 where skills are installed**. It holds the Agent definitions: for each known agent, the
-skill-folder locations it reads at each Scope and whether it is Enabled. skillm seeds it
-with the built-in defaults the first time Home is created, and otherwise avoids rewriting
-it (only `skillm agent` does, to toggle the Enabled flags).
+skill-folder locations it reads at each Scope and whether it is Enabled, and the **Settings**.
+skillm seeds it with the built-in defaults the first time Home is created, and otherwise
+rewrites it only on an explicit change: `skillm agent` (the Enabled flags) and `skillm config
+set` (a Setting). Such a rewrite replaces the whole file, dropping hand-written comments.
+
+### Setting
+A named preference a GUI offers, kept in Config beside the Agent definitions and read or changed
+by key (`refresh.enabled`, `refresh.interval_hours`). A Setting Config does not hold, or holds a
+value it cannot use, has its default. The **refresh** Settings say whether a GUI checks for
+updates on its own schedule and how many hours apart.
+_Avoid_: option, preference
 
 ### Registry
 `~/.skillm/state.toml` — machine-managed record skillm writes freely. One entry per installed
@@ -278,9 +289,10 @@ lockfiles alone cannot provide.
 
 ### Home lock
 The exclusive, cross-process lock on Home that serializes skillm processes. Every command that
-changes Config, the Registry or any install (Install, Update, Uninstall, Import, and enabling
-or disabling agents) holds it across its writes. Each asks its questions (and fetches) before
-locking, then re-reads Home under the lock. List, Check and Upgrade take none. A command that
+changes Config, the Registry or any install (Install, Update, Uninstall, Import, enabling or
+disabling agents, and changing a Setting) holds it across its writes. Each asks its questions
+(and fetches) before locking, then re-reads Home under the lock. List, Check, Upgrade, taking an
+Inspection, listing agents and reading Settings take none. A command that
 finds Home locked waits for the holder, then gives up after a bounded wait with an error naming
 the holding command. Readers need no lock because every save of `config.toml` and `state.toml`
 replaces the file in one step.

@@ -4,19 +4,32 @@
 
 What each command with a JSON mode takes and returns, and how a GUI answers its refusals. The
 exact field set of every data type is in its golden fixture in `internal/protocol/testdata/`
-and its Go type in `internal/protocol/data.go` (read-only commands) or
-`internal/protocol/data_mutating.go` (changing ones). Every list in a result is present, never
-`null`. A changing command in JSON mode never asks: each terminal question becomes either a
-required flag or a typed refusal the GUI answers by running the command again with a flag.
+and its Go type in `internal/protocol/data.go` (`version`, `list`, `check`),
+`internal/protocol/data_mutating.go` (the skill-changing commands) or
+`internal/protocol/data_settings.go` (`source inspect`, `agent`, `config`). Every list in a
+result is present, never `null`. A changing command in JSON mode never asks: each terminal
+question becomes either a required flag or a typed refusal the GUI answers by running the
+command again with a flag.
 
 ## Reading
 
 **`version`** returns `{version, api_version, capabilities}`; it needs no git, so a GUI runs it
-first and refuses an `api_version` it does not know. **`list`** returns every skill and its
-installs, offline, in Registry order. **`check`** returns each skill's upstream status
-(`up_to_date`, `update_available`, `untracked`, `local`, `error`) and the `updates` count; a
-skill that could not be checked is an `error` row, not a failed command, and `--events` streams
-one row per skill as it resolves.
+first and refuses an `api_version` it does not know. `capabilities` are command paths
+(`agent ls`, `config set`, …) plus `events`. **`list`** returns every skill and its installs,
+offline, in Registry order. **`check`** returns each skill's upstream status (`up_to_date`,
+`update_available`, `untracked`, `local`, `error`) and the `updates` count; a skill that could
+not be checked is an `error` row, not a failed command, and `--events` streams one row per skill
+as it resolves.
+
+**`source inspect <src> [--ref R]`** reads a Source once and returns `{source, kind, ref, commit,
+skills: [{id, name, description, path}]}`, the data of the Add Skill picker. `ref` is the branch
+or tag an install records (`--ref`, or the default branch) and `commit` the full SHA read; both
+are omitted for a local Source, where `--ref` is `usage`. A GUI passes a local Source absolute.
+**`agent ls`** returns every defined agent, sorted by name, with `enabled` and its `global` and
+`local` folders as `config.toml` writes them. **`config get [key]`** returns every setting
+(`{refresh: {enabled, interval_hours}}`) with its effective value, the default where
+`config.toml` has none; a key, when given, is only checked (`unknown_key`). `agent ls` and
+`config get` need no git, so a GUI's Settings work before it can report git missing.
 
 ## `install`
 
@@ -36,7 +49,13 @@ before anything is written. The GUI asks the user, then retries with one of thre
 by another tool; `--skip-foreign` installs the rest and reports each left-out skill as `skipped`
 with an `install_blocked` warning. `--skip-foreign` together with `--yes` or `--force` is
 `usage`. Other refusals: `source_collision` (retry with `--as`), `as_multiple`,
-`local_scope_aliased`, `commit_mismatch` and `not_installed` for an unknown id.
+`local_scope_aliased` and `not_installed` for an unknown id.
+
+`--commit <sha>` installs from a git Source only if it is still at the commit `source inspect`
+reported (the full SHA or at least 7 hex characters of it); the GUI passes the same `--ref`, so
+the branch or tag stays recorded for `update`. A Source that moved fails with `commit_mismatch`
+before any question or write: inspect it again and show the new skills. A value that is not a
+7 to 64 character hex SHA, or `--commit` without a git Source, is `usage`.
 
 ## `update`
 
@@ -83,9 +102,31 @@ executable}`; a `dev` build looks nothing up and omits `latest`, and a `bundled`
 request; the app treats `managed_by_app` as "use the app's own Upgrade", not as a failure.
 Neither form needs git.
 
+## `agent set`
+
+`agent set --enable a --disable b` (either flag repeated or comma-separated) enables and
+disables agents as the Settings toggles do, reconciling their links at once; the skills stay
+installed. A run with `--disable` needs `--yes`, since it removes links: the GUI confirms first.
+JSON mode does not treat the working directory as a project: only the global folders and the
+recorded projects are reconciled. The result is `{enabled, changes: [{name, enabled, skills,
+places, warnings}]}`; an agent already in the asked-for state is left out, and empty `changes`
+means nothing was written. A non-empty `warnings` is a partial success whose links were left as
+they were. A name both enabled and disabled is `usage`; an undefined agent is `unknown_agent` and
+a change leaving no agent enabled `no_agent_enabled`, both before anything is written.
+
+## `config set`
+
+`config set <key> <value>` stores one setting and returns every setting afterwards, like
+`config get`. The keys are `refresh.enabled` (`true`/`false`) and `refresh.interval_hours` (a
+whole number from 1 to 720). An unknown key is `unknown_key` and a value the key refuses
+`invalid_value`; either way nothing is written, and neither waits for Home. It rewrites the
+whole `config.toml` under the Home lock, so comments in it are dropped. Needs no git.
+
 ## Integration
 
-`cmd/json_test.go` and `cmd/json_mutating_test.go` run the built binary as a GUI does: the
-refused questions, the install, update and uninstall round trip, the uninstall retry after
-`needs_confirm`, `update_failed`, import's missing directory, and `upgrade` on a source build
-and inside an app bundle.
+`cmd/json_test.go`, `cmd/json_mutating_test.go` and `cmd/json_settings_test.go` run the built
+binary as a GUI does: the refused questions, the install, update and uninstall round trip, the
+uninstall retry after `needs_confirm`, `update_failed`, import's missing directory, `upgrade` on a
+source build and inside an app bundle, inspect-then-install with `--commit` (and
+`commit_mismatch` after the Source moves), `agent ls`/`agent set`, the `config get`/`config set`
+round trip with no git on `PATH`, and the group commands refused.

@@ -8,7 +8,8 @@ listing its skills; it prompts for nothing and writes only to a temp dir. `core.
 (`internal/core/install.go`) installs a selection at an explicit Scope and Base, either from
 that Inspection (source mode) or from registered Skill IDs (id mode). Between the two, `cmd`
 runs the skill picker (`cmd/fetch.go`), the scope question and the overwrite question
-(`cmd/install.go`). The split lets a GUI show what a Source holds before anything is installed.
+(`cmd/install.go`). The split lets a GUI show what a Source holds before anything is installed:
+`source inspect` (`cmd/source.go`) runs `core.Inspect` alone and prints or returns the Inspection.
 
 ## Noteworthy
 
@@ -16,9 +17,17 @@ runs the skill picker (`cmd/fetch.go`), the scope question and the overwrite que
 
 A git skill's Revision is read at the Inspection's commit before its content is materialized,
 so the recorded Revision always matches what was copied. The recorded Ref stays the ref asked
-for, or the default branch, so `update` keeps following it. `InstallRequest.Commit` lets a
-caller that inspected in another process refuse a ref that moved since with a
-`*CommitMismatchError`, before anything is written.
+for, or the default branch, so `update` keeps following it.
+
+### `--commit` binds an install to another process's Inspection
+
+`install --commit <sha>` sets `InstallRequest.Commit`, refusing a Source whose ref moved since
+`source inspect` with a `*CommitMismatchError`; `cmd` checks it (`Inspection.CheckCommit`) right
+after cloning, before the pickers, and `InstallSkills` again under the lock. The flag, not
+`--ref <sha>`, is the way to pin: a SHA as the ref would be recorded, and `update` would never
+see a newer commit. A value that is not 7 to 64 hex characters (`core.IsCommitSHA`) is a usage
+error before any clone, and core reports it as a plain error rather than a mismatch, since no
+inspection could ever match it and a GUI would re-inspect in a loop.
 
 ### The whole batch is checked before anything is written
 
@@ -88,7 +97,7 @@ base's drive (`source.JoinPath` in `internal/source/source.go`), where `filepath
 ## Integration
 
 `internal/core/install_test.go` pins the typed errors, the Yes/Force split, the inspected and
-expected commit, relative-path resolution and the absolute local source in `skills-lock.json`;
+expected commit (and a malformed one), relative-path resolution and the absolute local source in `skills-lock.json`;
 `internal/core/resolve_windows_test.go` and `internal/source/joinpath_windows_test.go` the
 Windows joins. The printed CLI behaviour is pinned by `cmd/install_test.go`,
 `cmd/install_source_test.go`, `cmd/integration_test.go` and `cmd/import_test.go`;
