@@ -64,8 +64,12 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		// Verify the runtime prerequisites before any command runs.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			flagsParsed = true
 			if err := checkJSONFlags(cmd); err != nil {
 				return err
+			}
+			if flagJSON {
+				quietGit()
 			}
 			if cmd.Annotations[annotationSkipGitCheck] == "true" {
 				return nil

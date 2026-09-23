@@ -30,13 +30,47 @@ var (
 	flagEvents bool
 )
 
+// flagsParsed is set once cobra has parsed the command line without error
+// (in the root's PersistentPreRunE). From then on flagJSON and flagEvents are
+// the truth; before it, only the raw arguments can tell (see jsonMode).
+var flagsParsed bool
+
 // Execute runs the root command through fang. In JSON mode an error is
 // written to stdout as the protocol's error envelope instead of fang's styled
 // message on stderr; the returned error still makes the process exit non-zero.
 func Execute(ctx context.Context) error {
+	if jsonMode() {
+		if err := refuseTerminalOnly(os.Args[1:]); err != nil {
+			_ = jsonOut().Fail(err)
+			return err
+		}
+	}
 	return fang.Execute(ctx, rootCmd,
 		fang.WithVersion(version),
 		fang.WithErrorHandler(handleError))
+}
+
+// refuseTerminalOnly refuses, in JSON mode, the invocations cobra answers
+// itself before any hook runs, with terminal output on stdout and exit 0:
+// --help/-h anywhere before "--", and no subcommand at all (bare `skillm
+// --json`, `skillm --version --json`). A command line cobra cannot resolve is
+// left to cobra, which reports it as a usage error.
+func refuseTerminalOnly(args []string) error {
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if a == "-h" || a == "--help" || strings.HasPrefix(a, "--help=") {
+			return &protocol.Error{Code: protocol.CodeJSONUnsupported, Message: "--help has no JSON mode"}
+		}
+	}
+	if c, _, err := rootCmd.Find(args); err == nil && c == rootCmd {
+		return &protocol.Error{
+			Code:    protocol.CodeJSONUnsupported,
+			Message: "`" + rootCmd.Name() + "` has no JSON mode; name a command",
+		}
+	}
+	return nil
 }
 
 // handleError is fang's error handler: the error envelope in JSON mode, fang's
@@ -56,7 +90,8 @@ func handleError(w io.Writer, styles fang.Styles, err error) {
 // that has no JSON mode.
 func checkJSONFlags(c *cobra.Command) error {
 	if flagEvents && !flagJSON {
-		return &protocol.Error{Code: protocol.CodeUsage, Message: "--events requires --json"}
+		// Not starting with the flag: fang capitalizes an error's first letter.
+		return &protocol.Error{Code: protocol.CodeUsage, Message: "the --events flag requires --json"}
 	}
 	if flagJSON && c.Annotations[annotationJSON] != "true" {
 		return &protocol.Error{
@@ -67,30 +102,53 @@ func checkJSONFlags(c *cobra.Command) error {
 	return nil
 }
 
-// jsonMode reports whether this run writes the JSON protocol. It also looks at
-// the raw arguments, so an error cobra hit before it parsed --json (an
-// unknown flag in front of it, say) is still reported as JSON.
+// jsonMode reports whether this run writes the JSON protocol: the parsed
+// --json once cobra has parsed the command line, the raw arguments before
+// that, so an error cobra hit before it parsed --json (an unknown flag in
+// front of it, say) is still reported as JSON.
 func jsonMode() bool {
-	return flagJSON || argFlag(os.Args[1:], "json")
+	return protocolFlag(flagJSON, "json")
 }
 
-// argFlag reports whether args set the boolean flag --name (as "--name" or
-// "--name=<true>") before any "--".
+// protocolFlag is a global boolean flag's value: the parsed one after a
+// successful parse, else what the raw arguments say.
+func protocolFlag(parsed bool, name string) bool {
+	if flagsParsed {
+		return parsed
+	}
+	return argFlag(os.Args[1:], name)
+}
+
+// argFlag reports the value the raw args give the boolean flag --name, as
+// pflag would: the last "--name" (true) or "--name=<bool>" before any "--"
+// wins, and a value that is not a bool is ignored.
 func argFlag(args []string, name string) bool {
+	val := false
 	for _, a := range args {
 		if a == "--" {
-			return false
+			break
 		}
 		if a == "--"+name {
-			return true
-		}
-		if v, ok := strings.CutPrefix(a, "--"+name+"="); ok {
-			if b, err := strconv.ParseBool(v); err == nil && b {
-				return true
+			val = true
+		} else if v, ok := strings.CutPrefix(a, "--"+name+"="); ok {
+			if b, err := strconv.ParseBool(v); err == nil {
+				val = b
 			}
 		}
 	}
-	return false
+	return val
+}
+
+// quietGit makes every git child of a JSON-mode run non-interactive, since a
+// JSON run never prompts: git asks for no credentials on the terminal
+// (GIT_TERMINAL_PROMPT=0), and ssh runs in BatchMode (no password or host-key
+// questions) unless the user set their own GIT_SSH_COMMAND or GIT_SSH.
+// Git children inherit this process's environment.
+func quietGit() {
+	_ = os.Setenv("GIT_TERMINAL_PROMPT", "0")
+	if os.Getenv("GIT_SSH_COMMAND") == "" && os.Getenv("GIT_SSH") == "" {
+		_ = os.Setenv("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+	}
 }
 
 var (
@@ -103,7 +161,7 @@ var (
 // command ends by calling its Result; handleError calls Fail.
 func jsonOut() *protocol.Writer {
 	jsonOnce.Do(func() {
-		jsonWriter = protocol.NewWriter(os.Stdout, flagEvents || argFlag(os.Args[1:], "events"))
+		jsonWriter = protocol.NewWriter(os.Stdout, protocolFlag(flagEvents, "events"))
 	})
 	return jsonWriter
 }

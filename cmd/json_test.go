@@ -3,11 +3,15 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/protocol"
@@ -26,19 +30,28 @@ type jsonEnvelope struct {
 	Error         *protocol.Error    `json:"error"`
 }
 
+// promptEnv are the environment variables that decide whether git or ssh may
+// prompt. runJSON drops them from the inherited environment: JSON mode must
+// keep git quiet by itself, not because the test harness did.
+var promptEnv = []string{"GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_SSH_COMMAND", "GIT_SSH"}
+
 // runJSON runs the binary in dir with extra environment entries and returns
 // stdout, stderr and whether it exited 0.
 func (e env) runJSON(t *testing.T, dir string, extraEnv []string, args ...string) (stdout, stderr string, ok bool) {
 	t.Helper()
 	cmd := exec.Command(e.bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); !slices.Contains(promptEnv, name) {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env,
 		"HOME="+e.userDir,
 		"USERPROFILE="+e.userDir,
 		"SKILLM_HOME="+e.home,
 		"GIT_CONFIG_GLOBAL="+filepath.Join(e.userDir, ".gitconfig"),
 		"GIT_CONFIG_SYSTEM="+os.DevNull,
-		"GIT_TERMINAL_PROMPT=0",
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	var out, errOut bytes.Buffer
@@ -128,6 +141,13 @@ func TestJSONErrors(t *testing.T) {
 		{"unknown flag after --json", nil, []string{"list", "--json", "--bogus"}, protocol.CodeUsage},
 		{"unknown flag before --json", nil, []string{"list", "--bogus", "--json"}, protocol.CodeUsage},
 		{"extra argument", nil, []string{"check", "extra", "--json"}, protocol.CodeUsage},
+		// cobra answers these itself, before any hook, with terminal output.
+		{"--help", nil, []string{"list", "--json", "--help"}, protocol.CodeJSONUnsupported},
+		{"-h first", nil, []string{"list", "-h", "--json"}, protocol.CodeJSONUnsupported},
+		{"--version", nil, []string{"--version", "--json"}, protocol.CodeJSONUnsupported},
+		{"--version last", nil, []string{"--json", "--version"}, protocol.CodeJSONUnsupported},
+		{"no command", nil, []string{"--json"}, protocol.CodeJSONUnsupported},
+		{"help command", nil, []string{"help", "--json"}, protocol.CodeJSONUnsupported},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,6 +169,125 @@ func TestJSONErrors(t *testing.T) {
 	stdout, stderr, ok := e.runJSON(t, e.userDir, nil, "list", "--events")
 	if ok || stdout != "" || !strings.Contains(stderr, "requires --json") {
 		t.Fatalf("list --events: ok=%v stdout=%q stderr=%q", ok, stdout, stderr)
+	}
+
+	// The last value of a repeated flag wins, as pflag parses it: this run is
+	// in terminal mode, so its error (a Home under a file) goes to stderr.
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, ok = e.runJSON(t, e.userDir, nil, "list", "--json", "--json=false", "--home", filepath.Join(file, "home"))
+	if ok || stdout != "" || stderr == "" {
+		t.Fatalf("list --json --json=false: ok=%v stdout=%q stderr=%q, want a terminal error", ok, stdout, stderr)
+	}
+	// --events then --events=false: a single document, not an NDJSON stream.
+	stdout, _, ok = e.runJSON(t, e.userDir, nil, "version", "--json", "--events", "--events=false")
+	if !ok {
+		t.Fatalf("version --json --events --events=false failed: %q", stdout)
+	}
+	decodeDoc(t, stdout)
+}
+
+func TestArgFlag(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"list", "--json"}, true},
+		{[]string{"list", "--json=true"}, true},
+		{[]string{"list", "--json", "--json=false"}, false},
+		{[]string{"list", "--json=false", "--json"}, true},
+		{[]string{"list", "--json", "--json=bogus"}, true},
+		{[]string{"list", "--", "--json"}, false},
+		{[]string{"list", "--json", "--", "--json=false"}, true},
+		{[]string{"list", "--jsonx"}, false},
+	}
+	for _, tc := range cases {
+		if got := argFlag(tc.args, "json"); got != tc.want {
+			t.Errorf("argFlag(%q) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+// TestQuietGit: JSON mode turns off git's terminal prompt and runs ssh in
+// BatchMode, but keeps a user's own ssh command.
+func TestQuietGit(t *testing.T) {
+	for _, k := range []string{"GIT_TERMINAL_PROMPT", "GIT_SSH_COMMAND", "GIT_SSH"} {
+		t.Setenv(k, "")
+	}
+	quietGit()
+	if os.Getenv("GIT_TERMINAL_PROMPT") != "0" || os.Getenv("GIT_SSH_COMMAND") != "ssh -o BatchMode=yes" {
+		t.Fatalf("quietGit: GIT_TERMINAL_PROMPT=%q GIT_SSH_COMMAND=%q",
+			os.Getenv("GIT_TERMINAL_PROMPT"), os.Getenv("GIT_SSH_COMMAND"))
+	}
+
+	t.Setenv("GIT_SSH_COMMAND", "my-ssh -i key")
+	quietGit()
+	if got := os.Getenv("GIT_SSH_COMMAND"); got != "my-ssh -i key" {
+		t.Fatalf("quietGit replaced the user's GIT_SSH_COMMAND with %q", got)
+	}
+
+	t.Setenv("GIT_SSH_COMMAND", "")
+	t.Setenv("GIT_SSH", "/usr/local/bin/my-ssh")
+	quietGit()
+	if got := os.Getenv("GIT_SSH_COMMAND"); got != "" {
+		t.Fatalf("quietGit set GIT_SSH_COMMAND=%q over the user's GIT_SSH", got)
+	}
+}
+
+// TestJSONCheckNeverPrompts: `check --json` against an HTTP remote that now
+// asks for credentials reports the skill as an error and never waits on a
+// terminal prompt — with none of the prompt-related variables in its
+// environment (runJSON drops them), so JSON mode alone must stop the prompt.
+func TestJSONCheckNeverPrompts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	execPath, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Skipf("git --exec-path: %v", err)
+	}
+	backend := filepath.Join(strings.TrimSpace(string(execPath)), "git-http-backend")
+	if _, err := os.Stat(backend); err != nil {
+		t.Skipf("no git-http-backend: %v", err)
+	}
+
+	repo, _ := initSkillRepo(t)
+	var needAuth atomic.Bool
+	gitHTTP := &cgi.Handler{
+		Path: backend,
+		Env: []string{
+			"GIT_PROJECT_ROOT=" + filepath.Dir(repo),
+			"GIT_HTTP_EXPORT_ALL=1",
+			"GIT_CONFIG_GLOBAL=" + os.DevNull,
+			"GIT_CONFIG_SYSTEM=" + os.DevNull,
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if needAuth.Load() {
+			w.Header().Set("WWW-Authenticate", `Basic realm="skills"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		gitHTTP.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
+	e.run(t, "install", srv.URL+"/"+filepath.Base(repo), "alpha", "--global")
+	needAuth.Store(true)
+
+	stdout, stderr, ok := e.runJSON(t, e.userDir, nil, "check", "--json")
+	if !ok || stderr != "" {
+		t.Fatalf("check --json: ok=%v stderr=%q stdout=%q", ok, stderr, stdout)
+	}
+	var check protocol.CheckData
+	decodeData(t, decodeDoc(t, stdout), &check)
+	if len(check.Skills) != 1 || check.Skills[0].Status != "error" ||
+		!strings.Contains(check.Skills[0].Error, "terminal prompts disabled") {
+		t.Fatalf("check = %+v, want alpha in error with terminal prompts disabled", check)
 	}
 }
 
