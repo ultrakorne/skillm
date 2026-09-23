@@ -18,6 +18,10 @@
 #   FAKE_SKILLM_FAIL_ON   a command that answers a failure fixture instead
 #                         (update: error_update_failed.json, refresh:
 #                         error_home_locked.json)
+#   FAKE_SKILLM_FAIL_WHILE  if set, FAKE_SKILLM_FAIL_ON applies only while
+#                         this file exists
+#   FAKE_SKILLM_CONFIG_OFF  if set and this file exists, `config get`
+#                         answers with refresh.enabled false
 set -u
 fx=${FAKE_SKILLM_FIXTURES:?}
 [ -n "${FAKE_SKILLM_ARGS:-}" ] && printf '%s\n' "$@" >"$FAKE_SKILLM_ARGS"
@@ -48,6 +52,9 @@ wait_for_interrupt() {
 }
 
 mode=${FAKE_SKILLM_MODE:-}
+if [ -n "${FAKE_SKILLM_FAIL_WHILE:-}" ] && [ ! -e "$FAKE_SKILLM_FAIL_WHILE" ]; then
+	FAKE_SKILLM_FAIL_ON=
+fi
 if [ -n "${FAKE_SKILLM_HANG_ON:-}" ] && [ "$1" = "$FAKE_SKILLM_HANG_ON" ]; then
 	if [ $events = yes ]; then mode=stream_hang; else mode=hang; fi
 fi
@@ -140,8 +147,11 @@ update)
 	fi
 	;;
 config)
-	# `config set refresh.enabled false` answers the fixture with it off.
+	# `config set refresh.enabled false`, and `config get` under
+	# FAKE_SKILLM_CONFIG_OFF, answer the fixture with it off.
 	if [ "${2:-}" = set ] && [ "${3:-}" = refresh.enabled ] && [ "${4:-}" = false ]; then
+		sed 's/"enabled": true/"enabled": false/' "$fx/config.json"
+	elif [ "${2:-}" = get ] && [ -n "${FAKE_SKILLM_CONFIG_OFF:-}" ] && [ -e "$FAKE_SKILLM_CONFIG_OFF" ]; then
 		sed 's/"enabled": true/"enabled": false/' "$fx/config.json"
 	else
 		cat "$fx/config.json"

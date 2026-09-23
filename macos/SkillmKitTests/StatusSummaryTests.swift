@@ -60,19 +60,70 @@ final class StatusSummaryTests: XCTestCase {
     func testUpdateResult() throws {
         let data = try fixture("update.json", as: UpdateData.self)
         let r = StatusSummary.updateResult(data)
-        XCTAssertEqual(r.text, "Updated 2 skills, some installs were not updated")
+        XCTAssertEqual(
+            r.text,
+            "Updated 2 skills, repaired 1 skill, removed 2 missing installs, imported 1 skill, "
+                + "some installs were not updated, 1 skill not checked for drift")
         XCTAssertFalse(r.isError)
 
-        let nothing = UpdateData(skills: [], imported: [], updated: 0, synced: true)
+        let nothing = UpdateData(skills: [], imported: [], updated: 0, synced: false)
         XCTAssertEqual(StatusSummary.updateResult(nothing).text, "All skills are up to date")
 
         var failed = data
-        failed.skills[1].outcome = .failed
-        failed.skills[0].warnings = []
+        failed.skills = [data.skills[1]]
+        failed.skills[0].outcome = .failed
+        failed.imported = []
         failed.updated = 0
+        failed.synced = false
         let f = StatusSummary.updateResult(failed)
         XCTAssertEqual(f.text, "1 skill failed")
         XCTAssertTrue(f.isError)
+    }
+
+    /// A run that re-synced, dropped or imported did work, as the CLI says.
+    func testUpdateResultCountsWorkWithoutNewRevisions() throws {
+        let data = try fixture("update.json", as: UpdateData.self)
+        func only(_ ids: Set<String>, imported: Bool = false) -> UpdateData {
+            var d = data
+            d.skills = data.skills.filter { ids.contains($0.id) }
+            d.skills = d.skills.map { var s = $0; s.advanced = false; return s }
+            d.imported = imported ? data.imported : []
+            d.updated = 0
+            return d
+        }
+        XCTAssertEqual(StatusSummary.updateResult(only(["omega"])).text, "Repaired 1 skill")
+        XCTAssertEqual(StatusSummary.updateResult(only(["gamma"])).text, "Removed 2 missing installs")
+        XCTAssertEqual(StatusSummary.updateResult(only(["beta"], imported: true)).text, "Imported 1 skill")
+        XCTAssertEqual(StatusSummary.updateResult(only(["beta"])).text, "Repaired installed copies")
+        var quiet = only(["beta"])
+        quiet.synced = false
+        XCTAssertEqual(StatusSummary.updateResult(quiet).text, "All skills are up to date")
+        XCTAssertEqual(
+            StatusSummary.updateResult(only(["beta", "delta"])).text,
+            "Repaired installed copies, 1 skill not checked for drift")
+    }
+
+    func testUpdateResultNamesActionableWarnings() throws {
+        var data = try fixture("update.json", as: UpdateData.self)
+        data.skills = [data.skills[1]]
+        data.imported = []
+        data.updated = 0
+        data.synced = false
+        let warnings = [
+            Warning(code: "source_missing", message: "omega is a local skill whose source … is gone", skillId: "omega"),
+            Warning(code: "status_not_saved", message: "could not update status.json", skillId: nil),
+            // Repeats a skill's own warnings: not named twice.
+            Warning(code: "lockfile_not_updated", message: "skills-lock.json not updated", skillId: "alpha"),
+        ]
+        let r = StatusSummary.updateResult(data, warnings: warnings)
+        XCTAssertEqual(
+            r.text, "All skills are up to date, the source of omega is gone, the update status was not saved")
+        XCTAssertFalse(r.isError)
+
+        let two = [warnings[0], Warning(code: "source_missing", message: "", skillId: "tau")]
+        XCTAssertEqual(
+            StatusSummary.updateResult(data, warnings: two).text,
+            "All skills are up to date, the sources of 2 local skills are gone")
     }
 
     func testUpdateProgressFromEvents() throws {

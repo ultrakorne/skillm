@@ -30,15 +30,27 @@ public final class AppModel {
         case savingSettings
     }
 
-    /// A one-line outcome the menu shows until the next command the user
-    /// starts: what an update did, or why a command failed.
+    /// A one-line outcome the menu shows: what an update did, or why a
+    /// command failed. A notice from a command the user started stays until
+    /// the next one; one from the app's own reads and ticks goes away with
+    /// the next of those that succeeds.
     public struct Notice: Equatable, Sendable {
+        /// Who started the command the notice is about.
+        public enum Origin: Equatable, Sendable {
+            /// A menu command.
+            case user
+            /// The launch reads or a scheduled refresh.
+            case background
+        }
+
         public var text: String
         public var isError: Bool
+        public var origin: Origin
 
-        public init(text: String, isError: Bool) {
+        public init(text: String, isError: Bool, origin: Origin = .user) {
             self.text = text
             self.isError = isError
+            self.origin = origin
         }
     }
 
@@ -46,7 +58,8 @@ public final class AppModel {
     /// The Refresh cache as `status`/`refresh` last reported it; nil until
     /// it was read once.
     public private(set) var status: StatusData?
-    /// The refresh settings from config.toml; nil until read.
+    /// The refresh settings from config.toml; nil until read. Read again
+    /// on every scheduled tick, so a `config set` in a terminal shows.
     public private(set) var settings: RefreshSettings?
     public private(set) var activity: Activity = .idle
     /// The running command was cancelled and skillm is finishing its
@@ -89,8 +102,8 @@ public final class AppModel {
     // MARK: - Launch
 
     /// Finds the bundled skillm, refuses one with an unknown API version,
-    /// checks for git, reads the cached status and the settings, and starts
-    /// the scheduled refresh (whose first tick runs now).
+    /// checks for git, reads the cached status, and starts the scheduled
+    /// refresh (whose first tick, which reads the settings, runs now).
     public func start() async {
         guard case .starting = cli, client == nil else { return }
         do {
@@ -107,7 +120,6 @@ public final class AppModel {
             return
         }
         await readStatus()
-        await readSettings()
         guard !isShuttingDown else { return }
         let scheduler = RefreshScheduler(timing: timing, notificationCenter: wakeCenter) { [weak self] in
             self?.scheduledRefresh()
@@ -134,18 +146,29 @@ public final class AppModel {
         }
     }
 
-    /// The scheduler's tick: `refresh --if-due`, which checks only when
-    /// skillm says a check is due and otherwise answers the cache as it is.
+    /// The scheduler's tick: `config get` (the settings may have changed in
+    /// a terminal), then `refresh --if-due`, which checks only when skillm
+    /// says a check is due and otherwise answers the cache as it is. A tick
+    /// that succeeds clears the notice an earlier background failure left.
     @discardableResult
     public func scheduledRefresh() -> Task<Void, Never>? {
         perform(.refreshing(scheduled: true), clearsNotice: false) { model, client in
+            var failure: Notice?
             do {
+                let config: ConfigData = try await client.run(["config", "get"])
+                model.settings = config.refresh
                 let data: RefreshData = try await client.run(["refresh", "--if-due"])
                 model.status = data.status
             } catch is CancellationError {
-                // Only an app quit cancels a scheduled refresh.
+                // A quit, or the Stop item.
+                if !model.isShuttingDown { failure = Notice(text: "Check stopped", isError: false) }
             } catch {
-                model.notice = Self.failure(error)
+                failure = Self.failure(error, origin: .background)
+            }
+            if let failure {
+                model.notice = failure
+            } else {
+                model.clearBackgroundNotice()
             }
         }
     }
@@ -164,8 +187,8 @@ public final class AppModel {
                             progress.apply(event)
                             model.activity = .updating(progress)
                         }
-                    case .result(let data, _):
-                        let summary = StatusSummary.updateResult(data)
+                    case .result(let data, let warnings):
+                        let summary = StatusSummary.updateResult(data, warnings: warnings)
                         model.notice = Notice(text: summary.text, isError: summary.isError)
                     }
                 }
@@ -174,6 +197,7 @@ public final class AppModel {
             } catch {
                 model.notice = Self.failure(error)
             }
+            // A failed re-read keeps the update's outcome on screen.
             await model.rereadStatus()
         }
     }
@@ -249,13 +273,15 @@ public final class AppModel {
         return task
     }
 
-    /// `status`: the cache as skillm reads it, offline.
-    private func readStatus() async {
+    /// `status`: the cache as skillm reads it, offline. Its failure is a
+    /// background notice, shown unless `keepsNotice` and a notice is up.
+    private func readStatus(keepsNotice: Bool = false) async {
         guard let client else { return }
         do {
             status = try await client.run(["status"])
+            clearBackgroundNotice()
         } catch {
-            notice = Self.failure(error)
+            if !keepsNotice || notice == nil { notice = Self.failure(error, origin: .background) }
         }
     }
 
@@ -263,30 +289,23 @@ public final class AppModel {
     /// command was cancelled (skillm has exited by then).
     private func rereadStatus() async {
         guard !isShuttingDown else { return }
-        await Task { @MainActor in await self.readStatus() }.value
+        await Task { @MainActor in await self.readStatus(keepsNotice: true) }.value
     }
 
-    /// `config get`: every setting.
-    private func readSettings() async {
-        guard let client else { return }
-        do {
-            let data: ConfigData = try await client.run(["config", "get"])
-            settings = data.refresh
-        } catch {
-            notice = Self.failure(error)
-        }
+    private func clearBackgroundNotice() {
+        if notice?.origin == .background { notice = nil }
     }
 
     /// The notice for a failed command.
-    static func failure(_ error: any Error) -> Notice {
+    static func failure(_ error: any Error, origin: Notice.Origin = .user) -> Notice {
         if case .command(let e, let warnings) = error as? SkillmError, e.code == .updateFailed {
             let ids = warnings.filter { $0.code == ErrorCode.updateFailed.rawValue || $0.code == ErrorCode.updateSkipped.rawValue }
                 .compactMap(\.skillId)
             if !ids.isEmpty {
-                return Notice(text: "\(e.message): \(ids.joined(separator: ", "))", isError: true)
+                return Notice(text: "\(e.message): \(ids.joined(separator: ", "))", isError: true, origin: origin)
             }
         }
         let localized = error as? LocalizedError
-        return Notice(text: localized?.errorDescription ?? error.localizedDescription, isError: true)
+        return Notice(text: localized?.errorDescription ?? error.localizedDescription, isError: true, origin: origin)
     }
 }

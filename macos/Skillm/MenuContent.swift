@@ -22,9 +22,7 @@ struct MenuContent: View {
             }
             Divider()
         }
-        Button("Quit skillm") {
-            NSApplication.shared.terminate(nil)
-        }
+        Button("Quit skillm") { AppDelegate.quit() }
         .keyboardShortcut("q")
     }
 

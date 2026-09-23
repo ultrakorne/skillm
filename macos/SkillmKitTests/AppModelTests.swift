@@ -123,9 +123,59 @@ final class AppModelTests: XCTestCase {
     func testScheduledRefreshFailureIsShown() async throws {
         let m = await started(["FAKE_SKILLM_FAIL_ON": "refresh"])
         XCTAssertEqual(m.notice?.isError, true)
+        XCTAssertEqual(m.notice?.origin, .background)
         XCTAssertTrue(m.notice?.text.hasPrefix("another skillm operation") == true, "\(String(describing: m.notice))")
         // The status read at launch stays.
         XCTAssertEqual(m.status?.cache.selfStatus?.latest, "0.5.0")
+    }
+
+    func testScheduledRefreshFailureClearsOnTheNextSuccessfulTick() async throws {
+        let failing = scratch.appending(path: "failing")
+        FileManager.default.createFile(atPath: failing.path, contents: nil)
+        let m = await started(["FAKE_SKILLM_FAIL_ON": "refresh", "FAKE_SKILLM_FAIL_WHILE": failing.path])
+        XCTAssertEqual(m.notice?.isError, true)
+
+        try FileManager.default.removeItem(at: failing)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake tick") { commands().filter { $0 == "refresh --if-due --json" }.count == 2 }
+        await m.waitUntilIdle()
+        XCTAssertNil(m.notice)
+    }
+
+    func testTickKeepsTheNoticeOfAUserCommand() async throws {
+        let m = await started()
+        await m.updateAll()?.value
+        let notice = m.notice
+        XCTAssertNotNil(notice)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake tick") { commands().filter { $0 == "refresh --if-due --json" }.count == 2 }
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.notice, notice)
+    }
+
+    func testTickRereadsTheSettings() async throws {
+        let off = scratch.appending(path: "off")
+        let m = await started(["FAKE_SKILLM_CONFIG_OFF": off.path])
+        XCTAssertEqual(m.settings?.enabled, true)
+
+        // `skillm config set refresh.enabled false` in a terminal.
+        FileManager.default.createFile(atPath: off.path, contents: nil)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake tick") { commands().filter { $0 == "refresh --if-due --json" }.count == 2 }
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.settings?.enabled, false)
+        XCTAssertEqual(Array(commands().suffix(2)), ["config get --json", "refresh --if-due --json"])
+    }
+
+    func testStoppingAScheduledRefreshSaysSo() async throws {
+        let m = model(["FAKE_SKILLM_HANG_ON": "refresh"])
+        await m.start()
+        try await eventually("the launch tick") { commands().last == "refresh --if-due --json" }
+        // Let the fake reach its traps.
+        try await Task.sleep(for: .milliseconds(300))
+        m.cancel()
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.notice, .init(text: "Check stopped", isError: false))
     }
 
     // MARK: - Update
@@ -139,6 +189,7 @@ final class AppModelTests: XCTestCase {
         await task?.value
         XCTAssertEqual(Array(commands().suffix(2)), ["update --json --events", "status --json"])
         XCTAssertEqual(m.notice, .init(text: "Updated 1 skill, some installs were not updated", isError: false))
+        XCTAssertEqual(m.notice?.origin, .user)
         XCTAssertEqual(m.activity, .idle)
         // status.json has the self check's latest release, refresh.json not.
         XCTAssertEqual(m.status?.cache.selfStatus?.latest, "0.5.0")
@@ -196,7 +247,8 @@ final class AppModelTests: XCTestCase {
         await m.waitUntilIdle()
         // Turning it on asks for a scheduled refresh at once.
         XCTAssertEqual(
-            Array(commands().suffix(2)), ["config set refresh.enabled true --json", "refresh --if-due --json"])
+            Array(commands().suffix(3)),
+            ["config set refresh.enabled true --json", "config get --json", "refresh --if-due --json"])
         XCTAssertEqual(m.settings?.enabled, true)
     }
 }

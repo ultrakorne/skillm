@@ -52,20 +52,56 @@ public enum StatusSummary {
         return lines
     }
 
-    /// What a finished `update` did, for the menu's notice.
-    public static func updateResult(_ data: UpdateData) -> (text: String, isError: Bool) {
+    /// What a finished `update` did, for the menu's notice. "Up to date"
+    /// only when the run did nothing at all (as the CLI's "Everything is up
+    /// to date."): a re-synced copy, a dropped install or an imported skill
+    /// is work done. `warnings` are the result's envelope warnings; the
+    /// ones the user should act on are named.
+    public static func updateResult(_ data: UpdateData, warnings: [Warning] = []) -> (text: String, isError: Bool) {
         let failed = data.skills.filter { $0.outcome == .failed }.count
+        let repaired = data.skills.filter { $0.outcome == .synced }.count
+        // Every place an install vanished from (install_forgotten included).
+        let removed = data.skills.reduce(0) { $0 + $1.pruned.count }
+        let imported = data.imported.filter { $0.outcome == "imported" || $0.outcome == "adopted" }.count
         let partial = data.skills.contains { !$0.warnings.isEmpty }
-        if data.updated == 0, failed == 0, !partial {
-            return ("All skills are up to date", false)
-        }
+        let unchecked = data.skills.filter { $0.outcome == .driftCheckSkipped }.count
+
         var parts: [String] = []
-        if data.updated > 0 { parts.append("Updated " + count(data.updated, "skill", "skills")) }
+        if data.updated > 0 { parts.append("updated " + count(data.updated, "skill", "skills")) }
+        if repaired > 0 { parts.append("repaired " + count(repaired, "skill", "skills")) }
+        if removed > 0 { parts.append("removed " + count(removed, "missing install", "missing installs")) }
+        if imported > 0 { parts.append("imported " + count(imported, "skill", "skills")) }
+        if parts.isEmpty, data.synced { parts.append("repaired installed copies") }
+        let didWork = !parts.isEmpty
         if failed > 0 { parts.append(count(failed, "skill", "skills") + " failed") }
         if partial { parts.append("some installs were not updated") }
+        parts += actionableWarnings(warnings)
+        if unchecked > 0 { parts.append(count(unchecked, "skill", "skills") + " not checked for drift") }
+
+        if !didWork, failed == 0, !partial {
+            parts.insert("All skills are up to date", at: 0)
+        }
         var text = parts.joined(separator: ", ")
         text = text.prefix(1).uppercased() + text.dropFirst()
         return (text, failed > 0)
+    }
+
+    /// The envelope warnings of an update that the menu names: a local
+    /// skill whose source is gone (its copies were left as they were) and a
+    /// status cache that could not be brought in line. The others repeat a
+    /// row of `data` (a skill's `warnings`, its `pruned` places).
+    static func actionableWarnings(_ warnings: [Warning]) -> [String] {
+        var parts: [String] = []
+        let missing = warnings.filter { $0.code == "source_missing" }.compactMap(\.skillId)
+        if missing.count == 1 {
+            parts.append("the source of \(missing[0]) is gone")
+        } else if missing.count > 1 {
+            parts.append("the sources of \(missing.count) local skills are gone")
+        }
+        if warnings.contains(where: { $0.code == "status_not_saved" }) {
+            parts.append("the update status was not saved")
+        }
+        return parts
     }
 
     /// "at 10:00" today, else "on 22 Sep at 10:00" (never relative, so an

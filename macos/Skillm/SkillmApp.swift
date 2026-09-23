@@ -37,8 +37,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await model.start() }
     }
 
+    /// Quits the app. Every quit the app starts itself goes through here.
+    ///
+    /// `terminate` runs from the run loop, never from inside a main-queue
+    /// job (a MainActor `Task`, a `DispatchQueue.main` block, an XPC reply
+    /// on the main queue): when skillm is running, `applicationShouldTerminate`
+    /// replies later from a MainActor task, and GCD does not drain the main
+    /// queue re-entrantly, so a `terminate` called from a main-queue job
+    /// would wait forever for that reply.
+    static func quit() {
+        RunLoop.main.perform {
+            MainActor.assumeIsolated { NSApplication.shared.terminate(nil) }
+        }
+    }
+
     /// A quit while skillm runs interrupts it (as Ctrl-C does) and waits
     /// for it to exit, so it never dies halfway through a write.
+    ///
+    /// `.terminateLater` (never `.terminateCancel`, which would cancel a
+    /// logout or restart): the reply comes from a MainActor task once skillm
+    /// has exited. So `terminate` must not be called from a main-queue job;
+    /// use `AppDelegate.quit()`.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard model.isBusy else { return .terminateNow }
         Task {
