@@ -57,12 +57,23 @@ func TestCheckListGolden(t *testing.T) {
 		for _, p := range placeholders {
 			if real, err := filepath.EvalSymlinks(p.path); err == nil && real != p.path {
 				s = strings.ReplaceAll(s, real, p.name)
+				s = strings.ReplaceAll(s, urlPath(real), p.name)
 			}
 		}
 		for _, p := range placeholders {
 			s = strings.ReplaceAll(s, p.path, p.name)
+			// A git Source is recorded as the file:// URL git was given
+			// (fileURL, forward-slashed with a leading "/" before a Windows
+			// drive letter), never the raw native path, so on Windows the
+			// plain replace above never matches inside it. Matching the
+			// URL's own path spelling catches that case too; on POSIX
+			// urlPath(p.path) == p.path, so this is a harmless no-op there.
+			s = strings.ReplaceAll(s, urlPath(p.path), p.name)
 		}
-		return s
+		// Collapse any native separator left in a path that continued past a
+		// placeholder (e.g. a local skill's Source is `$LOCALSRC` plus a
+		// subdirectory) so the fixture's forward slashes match on Windows too.
+		return filepath.ToSlash(s)
 	}
 
 	empty := env{home: t.TempDir(), userDir: t.TempDir(), bin: bin}
@@ -101,6 +112,15 @@ func TestCheckListGolden(t *testing.T) {
 			}
 		})
 	}
+}
+
+// urlPath returns the path portion of fileURL(path): what a git file:// URL
+// looks like for path, minus the scheme. On Windows this is the
+// forward-slashed, leading-slash spelling (fileURL's own conversion) rather
+// than path's native backslashed form, which is what actually appears in a
+// git Source recorded from that URL. On POSIX it is path unchanged.
+func urlPath(path string) string {
+	return strings.TrimPrefix(fileURL(path), "file://")
 }
 
 // runSplit runs the binary in dir with the sandbox environment and returns its

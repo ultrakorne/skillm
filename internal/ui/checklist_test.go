@@ -177,3 +177,31 @@ func TestChecklistAbortOnlyWithRowsPending(t *testing.T) {
 		t.Fatal("quitting after every row resolved marked the view aborted")
 	}
 }
+
+// TestShouldAbort verifies every way the live view's goroutine can end maps
+// to whether the caller must cancel its outstanding work: a user abort, an
+// error from the renderer, and an unexpected final-model type all must, so
+// that a renderer that quits early (e.g. it fails to start on a TTY with no
+// controlling terminal) never leaves work running unobserved; only a clean,
+// unaborted finish must not.
+func TestShouldAbort(t *testing.T) {
+	tests := []struct {
+		name   string
+		fm     checklistModel
+		ok     bool
+		hadErr bool
+		abort  bool
+	}{
+		{"clean finish", checklistModel{}, true, false, false},
+		{"user aborted", checklistModel{aborted: true}, true, false, true},
+		{"renderer error", checklistModel{}, true, true, true},
+		{"wrong final model type", checklistModel{}, false, false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldAbort(tc.fm, tc.ok, tc.hadErr); got != tc.abort {
+				t.Fatalf("shouldAbort(ok=%v, hadErr=%v, aborted=%v) = %v, want %v", tc.ok, tc.hadErr, tc.fm.aborted, got, tc.abort)
+			}
+		})
+	}
+}

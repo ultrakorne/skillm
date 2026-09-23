@@ -96,15 +96,26 @@ func NewChecklist(ctx context.Context, labels []string, opts ChecklistOptions) *
 		defer close(c.exited)
 		finalModel, err := prog.Run()
 		fm, ok := finalModel.(checklistModel)
+		if shouldAbort(fm, ok, err != nil) && opts.OnAbort != nil {
+			opts.OnAbort()
+		}
 		if err != nil || !ok {
 			return
 		}
 		c.final = fm.results
-		if fm.aborted && opts.OnAbort != nil {
-			opts.OnAbort()
-		}
 	}()
 	return c
+}
+
+// shouldAbort reports whether the caller's outstanding work should be
+// cancelled given how the live view ended: the user aborted it (q/esc/
+// ctrl+c) before every row resolved, or the renderer itself quit early
+// (an error, or a final model of the wrong type) without ever getting the
+// chance to report an abort. Either way, rows may still be unresolved, so
+// the caller must stop waiting on them rather than run them to completion
+// unobserved.
+func shouldAbort(fm checklistModel, ok, hadErr bool) bool {
+	return hadErr || !ok || fm.aborted
 }
 
 // Done reports that row i finished with r. It is safe to call from several
