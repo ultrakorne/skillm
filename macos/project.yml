@@ -25,7 +25,12 @@ settings:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     MARKETING_VERSION: 0.0.0
-    CURRENT_PROJECT_VERSION: 1
+    # CFBundleVersion is what Sparkle compares with the appcast's
+    # sparkle:version (which generate_appcast copies from the released
+    # app's CFBundleVersion), so it follows the release's MARKETING_VERSION:
+    # a release that sets only MARKETING_VERSION is still newer than the
+    # last one.
+    CURRENT_PROJECT_VERSION: $(MARKETING_VERSION)
     DEAD_CODE_STRIPPING: YES
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
@@ -63,7 +68,10 @@ targets:
       configs:
         # A debug build never updates itself: that would replace the
         # developer's build with the latest release. To try Sparkle, pass
-        # SKILLM_UPDATE_FEED_URL=<url> to xcodebuild.
+        # xcodebuild SKILLM_UPDATE_FEED_URL=<appcast url>, SKILLM_VERSION=<an
+        # older release> (a "dev" CLI never reports a newer skillm, so
+        # Sparkle is never asked) and MARKETING_VERSION=<that release> (the
+        # appcast's version must be newer).
         Debug:
           SKILLM_UPDATE_FEED_URL: ""
     postBuildScripts:

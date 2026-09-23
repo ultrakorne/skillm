@@ -30,8 +30,10 @@ public struct UpdateFeed: Equatable, Sendable {
 @MainActor
 public protocol AppUpdater: AnyObject {
     /// Asks the feed for a newer app without showing anything. The answer
-    /// comes back through `AppUpgrade.found(version:)` or `notFound()`.
-    func probe()
+    /// comes back through `AppUpgrade.found(version:)` or `notFound()`, or
+    /// `probeFailed()` when the check failed. False when no check started
+    /// (the updater is busy with another one).
+    func probe() -> Bool
     /// Shows the update found and installs it when the user agrees; the app
     /// then quits (through `AppModel.postponeRelaunch`) and relaunches.
     func install()
@@ -40,10 +42,18 @@ public protocol AppUpdater: AnyObject {
 /// "Upgrade and restart": shown once the updater has found a newer app.
 ///
 /// The updater never checks on its own schedule. A Refresh that finds a
-/// newer skillm release (`status.self.available`) asks it once per check,
-/// so the Auto refresh setting covers both. The item waits for the updater's
-/// answer rather than showing on `self.available` alone: that says a GitHub
-/// release exists, not that its appcast (and a signed app) is there yet.
+/// newer skillm release (`status.self.available`), or whose own lookup of
+/// the latest release failed (`status.self.error`, for the bundled CLI),
+/// asks it once per check, so the Auto refresh setting covers both. The item
+/// waits for the updater's answer rather than showing on `self.available`
+/// alone: that says a GitHub release exists, not that its appcast (and a
+/// signed app) is there yet. A check that did not start or failed is asked
+/// again with the next status that arrives (the next tick at the latest).
+///
+/// "Skip This Version" in the updater's window keeps the item: the updater
+/// stops reminding, but the item still installs the skipped version (the
+/// user-started check finds it), and the menu's dot, which comes from the
+/// CLI's cache, stays until then.
 @MainActor
 @Observable
 public final class AppUpgrade {
@@ -70,16 +80,17 @@ public final class AppUpgrade {
     }
 
     /// A status arrived (every `status`/`refresh` answer). When it says a
-    /// newer skillm exists and the updater has not found it yet, the updater
-    /// is asked, once per check: a re-read of the same cache asks nothing.
+    /// newer skillm exists (or that the CLI could not look) and the updater
+    /// has not found an update yet, the updater is asked, once per check: a
+    /// re-read of the same cache asks nothing.
     public func statusChanged(_ status: StatusData?) {
         lastStatus = status
         guard let updater, version == nil,
-            let cache = status?.cache, cache.selfStatus?.available == true,
+            let cache = status?.cache, let me = cache.selfStatus,
+            me.available || (me.error != nil && me.method == .bundled),
             let checkedAt = cache.checkedAt, checkedAt != probedCheck
         else { return }
-        probedCheck = checkedAt
-        updater.probe()
+        if updater.probe() { probedCheck = checkedAt }
     }
 
     /// The updater found a newer app.
@@ -87,9 +98,15 @@ public final class AppUpgrade {
         self.version = version
     }
 
-    /// The updater found none, or the user skipped the one it found.
+    /// The updater found none.
     public func notFound() {
         version = nil
+    }
+
+    /// The updater's check failed (offline, no appcast yet): the next
+    /// status that arrives asks it again, even for the same check.
+    public func probeFailed() {
+        probedCheck = nil
     }
 
     /// The "Upgrade and restart" item.

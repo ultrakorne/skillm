@@ -34,6 +34,10 @@ final class BundledCLITests: XCTestCase {
         withFeed["SUFeedURL"] = "https://example.com/appcast.xml"
         XCTAssertNotNil(UpdateFeed(info: withFeed), "SUPublicEDKey: \(String(describing: info["SUPublicEDKey"]))")
         XCTAssertEqual(info["SUEnableAutomaticChecks"] as? Bool, false)
+        // Sparkle compares CFBundleVersion with the appcast's version.
+        XCTAssertEqual(
+            info["CFBundleVersion"] as? String, info["CFBundleShortVersionString"] as? String,
+            "CFBundleVersion does not follow the release version")
         if info["SUFeedURL"] as? String == "" {
             XCTAssertNil(UpdateFeed(info: info), "a debug build updates itself")
         }

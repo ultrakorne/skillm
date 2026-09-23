@@ -325,4 +325,21 @@ final class AppModelTests: XCTestCase {
         try await eventually("the relaunch") { relaunched }
         XCTAssertNil(m.updateAll(), "a command started after the relaunch began")
     }
+
+    func testAnUpdateThatFailsAfterThePostponedRelaunchResumesTheModel() async throws {
+        let m = await started()
+        var relaunched = false
+        XCTAssertTrue(m.postponeRelaunch { relaunched = true })
+        try await eventually("the relaunch") { relaunched }
+        XCTAssertNil(m.refresh())
+
+        m.resumeAfterAbortedUpdate()
+        XCTAssertEqual(m.notice?.isError, true)
+        // The schedule's first tick runs at once; the Refresh item works.
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.notice?.isError, true, "a tick cleared why nothing was installed")
+        let refresh = try XCTUnwrap(m.refresh(), "no command runs after the update failed")
+        await refresh.value
+        XCTAssertNil(m.notice)
+    }
 }

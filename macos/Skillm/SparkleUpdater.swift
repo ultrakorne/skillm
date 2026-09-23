@@ -14,6 +14,9 @@ import Sparkle
 final class SparkleUpdater: NSObject, AppUpdater, SPUUpdaterDelegate {
     private let model: AppModel
     private var controller: SPUStandardUpdaterController?
+    /// The relaunch was postponed, so the model is shut down until the app
+    /// quits, or until Sparkle gives up on the update.
+    private var relaunchPending = false
 
     nonisolated private static let log = Logger(subsystem: "games.starberry.skillm", category: "updates")
 
@@ -42,9 +45,10 @@ final class SparkleUpdater: NSObject, AppUpdater, SPUUpdaterDelegate {
 
     // MARK: - AppUpdater
 
-    func probe() {
-        guard let updater = controller?.updater, updater.canCheckForUpdates else { return }
+    func probe() -> Bool {
+        guard let updater = controller?.updater, updater.canCheckForUpdates else { return false }
         updater.checkForUpdateInformation()
+        return true
     }
 
     func install() {
@@ -65,19 +69,40 @@ final class SparkleUpdater: NSObject, AppUpdater, SPUUpdaterDelegate {
         MainActor.assumeIsolated { model.upgrade.notFound() }
     }
 
-    nonisolated func updater(
-        _ updater: SPUUpdater, userDidMake choice: SPUUserUpdateChoice,
-        forUpdate updateItem: SUAppcastItem, state: SPUUserUpdateState
-    ) {
-        // "Skip This Version": Sparkle will not offer it again, so neither
-        // does the menu.
-        guard choice == .skip else { return }
-        MainActor.assumeIsolated { model.upgrade.notFound() }
-    }
+    // "Skip This Version" is left alone: the item stays, and its
+    // user-started check still finds the skipped version (see AppUpgrade).
 
     nonisolated func updater(_ updater: SPUUpdater, didAbortWithError error: any Error) {
+        let error = error as NSError
         let message = error.localizedDescription
+        if Self.isQuiet(error) {
+            // Nothing new, or the user cancelled: not a failure.
+            Self.log.debug("Sparkle ended: \(message, privacy: .public)")
+            return
+        }
         Self.log.error("Sparkle aborted: \(message, privacy: .public)")
+        MainActor.assumeIsolated { model.upgrade.probeFailed() }
+    }
+
+    /// Sparkle's session ended. One that ends with an error after the
+    /// relaunch was postponed leaves the app running with its model shut
+    /// down: start it again.
+    nonisolated func updater(
+        _ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: (any Error)?
+    ) {
+        MainActor.assumeIsolated {
+            guard relaunchPending, error != nil else { return }
+            relaunchPending = false
+            model.resumeAfterAbortedUpdate()
+        }
+    }
+
+    /// Codes Sparkle reports through the abort callback that are not
+    /// failures: no update found, and an install the user cancelled.
+    nonisolated private static func isQuiet(_ error: NSError) -> Bool {
+        error.domain == SUSparkleErrorDomain
+            && (error.code == Int(SUError.noUpdateError.rawValue)
+                || error.code == Int(SUError.installationCanceledError.rawValue))
     }
 
     /// Sparkle is about to quit the app and relaunch the new one: skillm
@@ -89,7 +114,8 @@ final class SparkleUpdater: NSObject, AppUpdater, SPUUpdaterDelegate {
     ) -> Bool {
         nonisolated(unsafe) let proceed = installHandler
         return MainActor.assumeIsolated {
-            model.postponeRelaunch { proceed() }
+            relaunchPending = true
+            return model.postponeRelaunch { proceed() }
         }
     }
 }

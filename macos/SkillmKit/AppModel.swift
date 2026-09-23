@@ -154,6 +154,12 @@ public final class AppModel {
         }
         await readStatus()
         guard !isShuttingDown else { return }
+        startSchedule()
+    }
+
+    /// Starts the scheduled refresh; its first tick runs now.
+    private func startSchedule() {
+        guard scheduler == nil else { return }
         let scheduler = RefreshScheduler(timing: timing, notificationCenter: wakeCenter) { [weak self] in
             self?.scheduledRefresh()
         }
@@ -313,13 +319,26 @@ public final class AppModel {
     /// relaunch it. Always postpones: stops the schedule and interrupts the
     /// running commands, as a quit does, then calls `relaunch` once every
     /// skillm has exited. No command starts after this, so the updater's
-    /// own quit never meets a running one (see `AppDelegate.quit()`).
+    /// own quit never meets a running one (see `AppDelegate.quit()`),
+    /// unless the update fails and `resumeAfterAbortedUpdate()` follows.
     public func postponeRelaunch(_ relaunch: @escaping @MainActor () -> Void) -> Bool {
         Task { @MainActor in
             await self.shutdown()
             relaunch()
         }
         return true
+    }
+
+    /// The updater gave up after `postponeRelaunch` stopped everything (the
+    /// update failed or was cancelled) and the app goes on running: commands
+    /// can run again, the schedule restarts, and the menu says why nothing
+    /// was installed. Does nothing unless the model was shut down.
+    public func resumeAfterAbortedUpdate() {
+        guard isShuttingDown else { return }
+        isShuttingDown = false
+        isStopping = false
+        notice = Notice(text: "The update could not be installed", isError: true)
+        if client != nil { startSchedule() }
     }
 
     /// Returns when no command is running (including one a finished command

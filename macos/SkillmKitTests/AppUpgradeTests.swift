@@ -7,7 +7,12 @@ import XCTest
 final class FakeUpdater: AppUpdater {
     var probes = 0
     var installs = 0
-    func probe() { probes += 1 }
+    /// False: the updater is busy and starts no check.
+    var starts = true
+    func probe() -> Bool {
+        probes += 1
+        return starts
+    }
     func install() { installs += 1 }
 }
 
@@ -98,9 +103,46 @@ final class AppUpgradeTests: XCTestCase {
 
         upgrade.upgrade()
         XCTAssertEqual(updater.installs, 1)
+        // Skip This Version changes nothing: the item still installs it.
+        XCTAssertTrue(upgrade.isAvailable)
+    }
 
-        // Skip This Version.
-        upgrade.notFound()
-        XCTAssertFalse(upgrade.isAvailable)
+    func testACheckThatDidNotStartOrFailedIsAskedAgain() throws {
+        let upgrade = AppUpgrade()
+        let updater = FakeUpdater()
+        upgrade.attach(updater)
+        let newer = try status()
+
+        // Busy: no check started, so the same cache asks again.
+        updater.starts = false
+        upgrade.statusChanged(newer)
+        updater.starts = true
+        upgrade.statusChanged(newer)
+        XCTAssertEqual(updater.probes, 2)
+        upgrade.statusChanged(newer)
+        XCTAssertEqual(updater.probes, 2, "a check that started is not asked again")
+
+        // Offline, or no appcast yet.
+        upgrade.probeFailed()
+        upgrade.statusChanged(newer)
+        XCTAssertEqual(updater.probes, 3)
+    }
+
+    func testAFailedReleaseLookupAsksTheUpdaterForTheBundledCLIOnly() throws {
+        let upgrade = AppUpgrade()
+        let updater = FakeUpdater()
+        upgrade.attach(updater)
+        var failed = try status()
+        failed.cache.selfStatus?.available = false
+        failed.cache.selfStatus?.latest = nil
+        failed.cache.selfStatus?.error = "GitHub rate limit"
+
+        failed.cache.selfStatus?.method = .binary
+        upgrade.statusChanged(failed)
+        XCTAssertEqual(updater.probes, 0, "a CLI outside the app")
+
+        failed.cache.selfStatus?.method = .bundled
+        upgrade.statusChanged(failed)
+        XCTAssertEqual(updater.probes, 1)
     }
 }
