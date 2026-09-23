@@ -2,13 +2,24 @@
 
 ## Architecture
 
-Each command in `cmd/` is a cobra command that orchestrates the `internal/` packages directly.
-A command that changes anything resolves Home, takes the Home lock, loads Config and the
-Registry, fetches any content it needs into a temp dir outside Home, writes Canonical copies,
-agent Links and Lockfile entries, saves the Registry (and Config, when `agent` toggles Enabled
-flags or a first run seeds the defaults) and releases the lock on return. `list` and `check`
-load the same files with no lock; `upgrade` never touches Home. Presentation, prompts and
-progress live in `internal/ui` and are called from `cmd/` only.
+Each command in `cmd/` is a cobra command. `install`, `update`, `uninstall`, `import` and
+`agent` still orchestrate the `internal/` packages directly: a command that changes anything
+resolves Home, takes the Home lock, loads Config and the Registry, fetches any content it needs
+into a temp dir outside Home, writes Canonical copies, agent Links and Lockfile entries, saves
+the Registry (and Config, when `agent` toggles Enabled flags or a first run seeds the defaults)
+and releases the lock on return. `upgrade` never touches Home.
+
+`check` and `list` instead call the presentation-free `internal/core` package. `core.Check` and
+`core.List` take a `core.Options{Home, Cwd, Force, Yes}` (built by `coreOptions` in
+`cmd/reporter.go`), load Config and the Registry with no lock, and return a typed result; core
+reports progress by calling a `Reporter`'s `Event` (`internal/core/events.go`), and `cmd`'s
+`termReporter` turns those Events into the terminal checklist (`internal/ui/checklist.go`) and
+the `ui` print helpers. `update`'s per-skill loop still lives in `cmd/update.go`, but now drives
+its work through `runChecklist` (`cmd/reporter.go`), which fans work out over `core.FanOut` and
+renders it through the same `ui.Checklist`. Prompts and every other presentation concern stay in
+`cmd`; `internal/core` calls neither `internal/ui` nor cobra/bubbletea/huh/lipgloss, and never
+reads `os.Getwd`/`os.Stdout`/`os.Stderr`/`os.Stdin` — `internal/core/arch_test.go` enforces both
+by inspecting `go list -deps` and core's own source.
 
 Home holds three files: `config.toml` (Config), `state.toml` (Registry) and `.lock`. Both TOML
 files are replaced whole on every save through one atomic-write primitive; the lock file holds
@@ -31,9 +42,18 @@ nothing but the current holder's description.
 | `internal/config/config.go` | Load and save `config.toml` (Agent definitions, Enabled flags) |
 | `internal/state/state.go` | Load and save `state.toml` (the Registry) |
 | `internal/linker/linker.go` | Creates, removes and discovers skillm-owned agent Links |
-| `internal/gitx/gitx.go` | Treeless git fetches and per-skill Revision lookup via the system `git` |
+| `internal/gitx/gitx.go` | Treeless git fetches and per-skill Revision lookup via the system `git`; a missing subtree returns a typed `*gitx.NotFoundError` |
 | `internal/lockfile/lockfile.go` | Reads and writes the vercel-compatible Lockfile |
 | `cmd/lock_test.go` | Asserts every mutating command waits for a held Home lock |
+| `internal/core/check.go`, `internal/core/list.go`, `internal/core/scan.go` | `core.Check` (per-skill upstream status) and `core.List` (installs read live from disk), the operations behind `check`/`list` |
+| `internal/core/events.go` | The `Reporter`/`Event` model every core operation reports progress through |
+| `internal/core/errors.go` | Typed errors (`ForeignFilesError`, `ErrNeedsConfirm`) core returns in place of prompting |
+| `internal/core/options.go` | `Options{Home, Cwd, Force, Yes}`, the parameters every core operation takes instead of a cwd read or a cmd flag global |
+| `internal/core/pool.go` | `FanOut`, the bounded concurrent fan-out core work runs under (moved from `internal/ui`) |
+| `internal/core/arch_test.go` | Fails the build if `internal/core` imports a presentation/CLI package or reads a process global |
+| `cmd/reporter.go` | `coreOptions`, `termReporter` (core Events → the checklist and `ui` prints) and `runChecklist` (`update`'s fan-out bridge) |
+| `internal/ui/checklist.go` | `Checklist`: renders one row per label for work the caller runs, resolved via `Done`/`Wait` |
+| `cmd/golden_test.go`, `cmd/testdata/golden/*.txt` | Pins `check`/`list` plain-mode output byte-for-byte across every status kind |
 
 ## Noteworthy
 
@@ -65,3 +85,17 @@ Writing a Canonical copy stages the full copy in a uniquely named hidden sibling
 leaves the old one intact, and a brief window without the directory remains between remove
 and rename. Each write first sweeps stages a killed run left for that skill; this is safe only
 because the caller holds the Home lock, so no live run owns them.
+
+### `check`'s "untracked" and "error" are distinct in `core`, identical on screen
+
+`core.Check` gives an upstream lookup that fails outright its own `error` status, kept apart
+from `untracked` (a `*gitx.NotFoundError`: the repo was read but the skill's subdir is gone).
+`cmd` still renders both as "untracked" so `check`'s output stays byte-identical to before the
+split — only a caller reading the structured `Status` sees the two apart.
+
+### A checklist's `OnAbort` fires on any abnormal end, not just a user quit
+
+Because core, not the checklist, now owns the work, `ChecklistOptions.OnAbort` must cancel it
+when the live view ends any way other than every row resolving — a user quit, a renderer error,
+or a final model of the wrong type — or the caller's workers would run to completion unobserved
+while the checklist silently dropped further `Done` calls.
