@@ -1,7 +1,6 @@
 package core
 
 import (
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -119,7 +118,7 @@ func installsOf(home string, e state.SkillEntry, agents []agentdir.Agent, roots 
 	}
 
 	recorded := make(map[string]bool)
-	for _, dir := range uniqueAbs(e.VendoredAt) {
+	for _, dir := range uniqueAbs(e.VendoredAt, cwd) {
 		recorded[dir] = true
 	}
 	for _, dir := range localScanDirs(append(append([]string{}, roots...), e.VendoredAt...), cwd) {
@@ -154,13 +153,4 @@ func sortedNames(names []string) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-// absOr returns p made absolute, or p itself when that fails.
-func absOr(p string) string {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return p
-	}
-	return abs
 }

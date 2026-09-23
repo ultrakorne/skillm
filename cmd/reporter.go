@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -62,15 +63,36 @@ func (r *termReporter) Event(ev core.Event) {
 
 // printLog prints an EventLog through the ui helper for its level.
 func printLog(ev core.Event) {
+	text := ev.Text + flagAdvice[ev.Code]
 	switch ev.Level {
 	case core.LevelSuccess:
-		ui.Successf("%s", ev.Text)
+		ui.Successf("%s", text)
 	case core.LevelWarn:
-		ui.Warnf("%s", ev.Text)
+		ui.Warnf("%s", text)
 	case core.LevelError:
-		ui.Errorf("%s", ev.Text)
+		ui.Errorf("%s", text)
 	default:
-		fmt.Fprintln(os.Stdout, ev.Text)
+		fmt.Fprintln(os.Stdout, text)
+	}
+}
+
+// flagAdvice is the CLI's suffix for the event codes a flag can resolve.
+// Core's Text never names a flag; the terminal adds which one to pass.
+var flagAdvice = map[string]string{
+	core.CodeLinkRefused:    " (pass --force to take it over)",
+	core.CodeInstallBlocked: " (pass --force)",
+}
+
+// dropCodes forwards every Event to rep except those whose Code is listed.
+type dropCodes struct {
+	rep   core.Reporter
+	codes []string
+}
+
+// Event implements core.Reporter.
+func (d dropCodes) Event(ev core.Event) {
+	if !slices.Contains(d.codes, ev.Code) {
+		d.rep.Event(ev)
 	}
 }
 

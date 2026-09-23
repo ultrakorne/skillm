@@ -57,23 +57,24 @@ func nonAliasedAt(agents []agentdir.Agent, base string) []agentdir.Agent {
 	return out
 }
 
-// localScanDirs returns the absolute local directories to inspect for links:
-// cwd (when non-empty) plus every root, de-duplicated and sorted. cwd is
+// localScanDirs returns the local directories to inspect for links: cwd
+// (when non-empty) plus every root, de-duplicated and sorted. cwd is
 // included so links in the current folder — or made before roots were
 // tracked — are still found.
 func localScanDirs(roots []string, cwd string) []string {
 	if cwd != "" {
 		roots = append([]string{cwd}, roots...)
 	}
-	return uniqueAbs(roots)
+	return uniqueAbs(roots, cwd)
 }
 
-// uniqueAbs returns roots as absolute, de-duplicated, sorted paths.
-func uniqueAbs(roots []string) []string {
+// uniqueAbs returns roots cleaned, de-duplicated and sorted. Recorded roots
+// are absolute; a relative one is resolved against base (see ResolvePath).
+func uniqueAbs(roots []string, base string) []string {
 	seen := make(map[string]bool)
 	var out []string
 	for _, r := range roots {
-		abs := absOr(r)
+		abs := ResolvePath(r, base)
 		if !seen[abs] {
 			seen[abs] = true
 			out = append(out, abs)

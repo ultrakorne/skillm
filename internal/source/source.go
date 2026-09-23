@@ -59,6 +59,13 @@ func (k Kind) String() string {
 // relative path, so an existing local directory of that name keeps winning, as
 // it did before shorthands were understood.
 func Classify(arg string) (Kind, error) {
+	return ClassifyAt(arg, "")
+}
+
+// ClassifyAt is Classify with a relative local path looked up under dir
+// instead of the process's working directory. An empty dir, or an absolute
+// arg, behaves exactly like Classify.
+func ClassifyAt(arg, dir string) (Kind, error) {
 	trimmed := strings.TrimSpace(arg)
 	if trimmed == "" {
 		return 0, fmt.Errorf("empty source: provide a git URL, a GitHub owner/repo, or a local path")
@@ -68,7 +75,11 @@ func Classify(arg string) (Kind, error) {
 		return Git, nil
 	}
 
-	info, err := os.Stat(trimmed)
+	path := trimmed
+	if dir != "" && !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	info, err := os.Stat(path)
 	switch {
 	case err == nil && info.IsDir():
 		return Local, nil

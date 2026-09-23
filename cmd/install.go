@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,7 +15,6 @@ import (
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -94,19 +91,20 @@ func newInstallCmd() *cobra.Command {
 }
 
 func runInstall(cmd *cobra.Command, args []string, global, local, all bool) error {
-	home, err := store.Home(flagHome)
+	ctx := cmd.Context()
+	opts, err := coreOptions(false)
 	if err != nil {
 		return err
 	}
 	// Hold Home's lock from load to save so a concurrent skillm process cannot
 	// interleave its writes with ours.
-	unlock, err := lockHome(cmd.Context(), home, "skillm install")
+	unlock, err := lockHome(ctx, opts.Home, "skillm install")
 	if err != nil {
 		return err
 	}
 	defer unlock()
 
-	cfg, err := config.Load(home)
+	cfg, err := config.Load(opts.Home)
 	if err != nil {
 		return err
 	}
@@ -116,10 +114,10 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 	// resolve a scope that could not link anywhere.
 	agents := cfg.EnabledAgents()
 	if len(agents) == 0 {
-		return fmt.Errorf("no enabled agents in %s; run `skillm agent` to enable at least one", config.Path(home))
+		return fmt.Errorf("no enabled agents in %s; run `skillm agent` to enable at least one", config.Path(opts.Home))
 	}
 
-	st, err := state.Load(home)
+	st, err := state.Load(opts.Home)
 	if err != nil {
 		return err
 	}
@@ -128,23 +126,34 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 	if err != nil {
 		return fmt.Errorf("determine current directory: %w", err)
 	}
+	opts.Cwd = cwd
 
-	// Resolve which skills to install and where each one's content comes from.
-	// The first argument decides the mode and a Source cannot be mixed with
-	// registered ids: a Source-shaped first arg (a git URL or an explicitly
-	// path-shaped path) triggers source mode — fetch straight into a staging dir
-	// — while a bare name (or no arg) is a registered id whose content is copied
-	// from an existing canonical copy or re-fetched. Neither mode writes the
-	// registry: installVendored records each entry once its install lands.
-	var items []stagedSkill
-	var cleanup func()
+	// Resolve which skills to install. The first argument decides the mode and
+	// a Source cannot be mixed with registered ids: a Source-shaped first arg (a
+	// git URL or an explicitly path-shaped path) triggers source mode — inspect
+	// the Source, then pick from its skills — while a bare name (or no arg) is
+	// a registered id. core.InstallSkills then does the install either way.
+	var req core.InstallRequest
 	if len(args) > 0 && source.LooksLikeSource(args[0]) {
-		items, cleanup, err = fetchToStage(cmd, home, args[0], fetchOpts{
-			As:         installFlagAs,
-			Ref:        installFlagRef,
-			All:        all,
-			SelectArgs: args[1:],
-		})
+		insp, err := core.Inspect(ctx, opts, args[0], installFlagRef)
+		if err != nil {
+			return err
+		}
+		defer insp.Close()
+		ids, err := selectFound(insp, args[1:], all)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			ui.Warnf("nothing selected; no skills installed")
+			return nil
+		}
+		// Report a bad selection (a different-source collision, --as on several
+		// skills) before asking where to install.
+		if err := core.ValidateSourceSelection(opts, insp, ids, installFlagAs); err != nil {
+			return installError(err)
+		}
+		req = core.InstallRequest{Inspection: insp, IDs: ids, As: installFlagAs}
 	} else {
 		// --as/--ref only make sense when fetching a source.
 		if installFlagAs != "" {
@@ -153,144 +162,67 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		if installFlagRef != "" {
 			return errors.New("the --ref flag only applies when installing from a git source")
 		}
-		items, cleanup, err = resolveIDItems(cmd, home, st, agents, cwd, args, all)
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	if err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		return nil // the selection step already reported why (nothing registered / nothing picked)
+		ids, err := selectInstallIDs(opts.Home, st, agents, cwd, args, all)
+		if err != nil || len(ids) == 0 {
+			return err // on none, the selection step already reported why
+		}
+		req = core.InstallRequest{IDs: ids}
 	}
 
 	// One scope applies to every selected skill. Resolved after selection so an
 	// interactive run asks "which skills" before "where".
-	scope, base, err := resolveInstallTarget(global, local, cwd)
-	if err != nil {
+	if req.Scope, req.Base, err = resolveInstallTarget(global, local, cwd); err != nil {
 		return err
 	}
 
-	// An enabled agent that defines no location for this scope is skipped with a
-	// notice; it is only an error when none of the enabled agents has one.
-	supported, skipped := splitByScope(agents, scope)
-	for _, a := range skipped {
-		ui.Warnf("skipped %s: no %s location", a.Name, scope)
-	}
-	// At local scope, an agent whose local folder *is* its global folder at base
-	// (the canonical case: running from home) has no real local scope here. Drop
-	// such agents so we never write a "local" link that silently means global,
-	// nor record base as a tracked local root.
-	if scope == agentdir.Local {
-		real, aliased := splitLocalAliased(supported, base)
-		for _, a := range aliased {
-			ui.Warnf("skipped %s: local scope here resolves to its global skill folder", a.Name)
-		}
-		if len(real) == 0 && len(aliased) > 0 {
-			return fmt.Errorf("local scope resolves to the global skill folder here (%s); run from a project directory or use --global", base)
-		}
-		supported = real
-	}
-	if len(supported) == 0 {
-		return fmt.Errorf("no enabled agent has a %s location; define one in %s", scope, config.Path(home))
-	}
-
-	return installVendored(home, st, items, supported, scope, base, scopeLabel(scope, base, cwd))
-}
-
-// installVendored materializes each selected skill's install at (scope, base):
-// the canonical copy in the scope's .agents/skills store (written from the
-// skill's staged/fetched content), a link for every other supported agent, and
-// — at Local scope — a skills-lock.json entry. Each skill's registry entry is
-// upserted once its copy lands (recording Source/Path/Ref/Revision and the
-// vendored root at Local or the Global flag at Global) so update/uninstall/list
-// can find it later — an entry exists only for a skill that is installed
-// somewhere. Foreign files at the canonical slot are not clobbered silently:
-// skillm asks once for the whole batch on a TTY (or refuses on a non-TTY)
-// unless --force/--yes was given. A legacy skillm symlink at the slot is
-// converted to a copy without asking.
-func installVendored(home string, st *state.State, items []stagedSkill, agents []agentdir.Agent, scope agentdir.Scope, base, label string) error {
-	force := flagForce || flagYes
-	// forceLinks gates deleting foreign entries at agent link paths. Only
-	// --force sets it: --yes answers prompts, and no prompt asks about agent
-	// link paths, and an interactive "yes" below (which only lists
-	// canonical-slot conflicts) must not widen it either.
-	forceLinks := flagForce
-
-	// Pre-scan every canonical slot for foreign entries that would be
-	// overwritten, so the question (or the refusal) covers the whole batch once.
-	recorded := make(map[string]bool, len(items))
-	var conflicts []string
-	for _, it := range items {
-		id := it.entry.ID
-		if scope == agentdir.Local {
-			recorded[id] = slices.Contains(st.VendoredRoots(id), base)
-		} else {
-			recorded[id] = st.IsGlobal(id)
-		}
-		if c := core.VendorConflict(home, id, scope, base, recorded[id]); c != "" {
-			conflicts = append(conflicts, c)
-		}
-	}
-	if len(conflicts) > 0 && !force {
-		if !ui.IsTTY() {
-			return fmt.Errorf("refusing to overwrite files skillm did not create:\n  %s\npass --force to overwrite them", strings.Join(conflicts, "\n  "))
-		}
-		ok, err := ui.Confirm(confirmVendorOverwritePrompt(conflicts))
-		if err != nil {
-			return err
-		}
-		force = ok // declined: leave foreign entries untouched, install the rest
-	}
-
-	stateDirty := false
-	installedAny := false
-	var runErr error
-	for _, it := range items {
-		id := it.entry.ID
-		action, err := core.VendorOne(termLog, home, id, it.dir, agents, scope, base, recorded[id], force, forceLinks, label)
-		if err != nil {
-			runErr = err
-			break
-		}
-		if action == core.VendorBlocked {
-			ui.Warnf("skipped %s: installing here would overwrite files skillm did not create (pass --force)", id)
-			continue
-		}
-		ui.Successf("%s %s in %s (%s)", action.Label(), id, core.CanonicalDisplay(scope), label)
-		installedAny = true
-
-		// Record the entry now that its copy landed. Upsert first (Source/Path/
-		// Ref/Revision, preserving any install markers merged in earlier), then
-		// add this scope's marker.
-		st.Upsert(it.entry)
-		stateDirty = true
-		if scope == agentdir.Local {
-			st.AddVendoredRoot(id, base)
-			if entry, ok := st.Get(id); ok {
-				_ = core.UpsertLockEntry(termLog, entry, base)
-			}
-		} else {
-			st.SetGlobal(id, true)
-		}
-	}
-
-	// Remember the project directory so `list`, `update`, and `uninstall` can
-	// find this install from anywhere. Done even on a partial failure, so a
-	// copy that did land is found.
-	if scope == agentdir.Local && installedAny && st.AddLocalRoot(base) {
-		stateDirty = true
-	}
-	if stateDirty {
-		if serr := state.Save(home, st); serr != nil {
-			ui.Warnf("installed, but could not record the install for `skillm list`/`update`: %v", serr)
-		}
-	}
-	if scope == agentdir.Local && installedAny {
+	res, err := installConfirmingOverwrite(ctx, opts, req)
+	if req.Scope == agentdir.Local && res.InstalledAny() {
 		ui.Hintf("commit %s and %s to share these skills with your team", agentdir.CanonicalLocalRel, "skills-lock.json")
 	}
-	return runErr
+	return installError(err)
+}
+
+// installConfirmingOverwrite runs core.InstallSkills. When it stops at files
+// skillm did not create, it asks once for the whole batch on a TTY — "yes"
+// retries with Yes (which, unlike --force, never takes over agent link paths:
+// the question only listed the canonical slots), "no" retries skipping those
+// skills — or refuses on a non-TTY. --force/--yes never get here.
+func installConfirmingOverwrite(ctx context.Context, opts core.Options, req core.InstallRequest) (core.InstallResult, error) {
+	res, err := core.InstallSkills(ctx, opts, termLog, req)
+	var foreign *core.ForeignFilesError
+	if !errors.As(err, &foreign) {
+		return res, err
+	}
+	if !ui.IsTTY() {
+		return res, fmt.Errorf("refusing to overwrite files skillm did not create:\n  %s\npass --force to overwrite them", strings.Join(foreign.Paths, "\n  "))
+	}
+	ok, err := ui.Confirm(confirmVendorOverwritePrompt(foreign.Paths))
+	if err != nil {
+		return res, err
+	}
+	if ok {
+		opts.Yes = true
+	} else {
+		req.SkipForeign = true // leave foreign entries untouched, install the rest
+	}
+	// The skipped-agent notices were printed before the question.
+	return core.InstallSkills(ctx, opts, dropCodes{rep: termLog, codes: []string{core.CodeAgentSkipped}}, req)
+}
+
+// installError adds the CLI's flag advice to the install errors a flag
+// resolves; core's own text never names a flag.
+func installError(err error) error {
+	var collision *core.SourceCollisionError
+	var aliased *core.LocalScopeAliasedError
+	switch {
+	case errors.As(err, &collision):
+		return fmt.Errorf("%w; pass `--as <name>` to install this one under a different id", err)
+	case errors.Is(err, core.ErrAsMultiple):
+		return errors.New("--as overrides a single Skill ID but more than one skill was selected; pick one skill_id or drop --as")
+	case errors.As(err, &aliased):
+		return fmt.Errorf("%w; run from a project directory or use --global", err)
+	}
+	return err
 }
 
 // confirmVendorOverwritePrompt builds the one-shot confirmation shown before
@@ -298,77 +230,6 @@ func installVendored(home string, st *state.State, items []stagedSkill, agents [
 func confirmVendorOverwritePrompt(paths []string) string {
 	return fmt.Sprintf("These paths exist and were not created by skillm:\n  %s\nOverwrite them with installed copies?",
 		strings.Join(paths, "\n  "))
-}
-
-// resolveIDItems resolves the id-mode selection into installable items: it picks
-// which registered skills to act on (selectInstallIDs), then for each resolves
-// where its content comes from (idModeSource) — an existing global canonical
-// copy, a local-path skill's source directory, or a fresh re-fetch. It returns
-// the items (entry + content dir) and a cleanup func the caller must defer to
-// remove any re-fetch temp dirs (always non-nil). An empty result with a nil
-// error means the selection step already reported why.
-func resolveIDItems(cmd *cobra.Command, home string, st *state.State, agents []agentdir.Agent, cwd string, args []string, all bool) ([]stagedSkill, func(), error) {
-	cleanup := func() {}
-	ids, err := selectInstallIDs(home, st, agents, cwd, args, all)
-	if err != nil || len(ids) == 0 {
-		return nil, cleanup, err
-	}
-
-	var cleanups []func()
-	cleanup = func() {
-		for _, c := range cleanups {
-			c()
-		}
-	}
-	items := make([]stagedSkill, 0, len(ids))
-	for _, id := range ids {
-		entry, ok := st.Get(id)
-		if !ok {
-			// selectInstallIDs validated membership, so this should not happen.
-			cleanup()
-			return nil, func() {}, fmt.Errorf("skill %q is not registered", id)
-		}
-		dir, clean, err := idModeSource(cmd.Context(), home, &entry)
-		if clean != nil {
-			cleanups = append(cleanups, clean)
-		}
-		if err != nil {
-			cleanup()
-			return nil, func() {}, err
-		}
-		items = append(items, stagedSkill{entry: entry, dir: dir})
-	}
-	return items, cleanup, nil
-}
-
-// idModeSource resolves the directory whose content is skill e's, for an
-// install-by-id (adding a scope/project to an already-registered skill). In
-// order: (1) the canonical global copy when the skill is installed globally and
-// that copy exists (no network); (2) a local-path skill's recorded source
-// directory when it still exists; (3) otherwise a fresh re-fetch from
-// e.Source@e.Ref (git), which materializes the content and may advance e's
-// recorded Revision. It returns the content dir and a cleanup func (nil when no
-// temp was created). e is mutated in place when a re-fetch advances the revision.
-func idModeSource(ctx context.Context, home string, e *state.SkillEntry) (string, func(), error) {
-	if e.Global && core.CopyExists(home, e.ID, agentdir.Global, "") {
-		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), nil, nil
-	}
-	if e.Kind == state.KindLocal {
-		if dirExists(e.Source) {
-			return e.Source, nil, nil
-		}
-		return "", nil, fmt.Errorf("local skill %q has no global copy and its source %s is gone; reinstall it from a source", e.ID, e.Source)
-	}
-	// Git skill with no reusable global copy: re-fetch from the pinned source.
-	dir, rev, clean, err := core.RefetchSkill(ctx, *e)
-	if err != nil {
-		return "", nil, fmt.Errorf("re-fetch %q from %s: %w", e.ID, e.Source, err)
-	}
-	if rev != e.Revision {
-		e.Revision = rev
-		e.InstalledAt = time.Now().UTC()
-	}
-	return dir, clean, nil
 }
 
 // selectInstallIDs resolves which registered skills `install` should act on:
@@ -477,39 +338,9 @@ func registeredIDs(st *state.State) []string {
 	return ids
 }
 
-// splitByScope partitions agents into those that define a skill folder at scope
-// (supported) and those that do not (skipped). Callers link only the supported
-// ones and warn about the rest; an agent may legitimately have no folder at a
-// given scope (e.g. a global-only agent installed locally).
-func splitByScope(agents []agentdir.Agent, scope agentdir.Scope) (supported, skipped []agentdir.Agent) {
-	for _, a := range agents {
-		if a.Supports(scope) {
-			supported = append(supported, a)
-		} else {
-			skipped = append(skipped, a)
-		}
-	}
-	return supported, skipped
-}
-
-// splitLocalAliased partitions agents by whether each has a *usable* local
-// skill folder at base. An agent's local scope is real when its local folder
-// resolves to a different directory than its global folder; it is aliased when
-// the two coincide (see agentdir.LocalAliasesGlobal), the canonical case being
-// base == home, where e.g. <base>/.claude/skills *is* ~/.claude/skills. Callers
-// pass agents already known to support a local folder; an agent without a
-// global folder cannot alias and falls into real. This is how every local
-// scan/write site avoids treating the global folder as if it were local.
-func splitLocalAliased(agents []agentdir.Agent, base string) (real, aliased []agentdir.Agent) {
-	for _, a := range agents {
-		if agentdir.LocalAliasesGlobal(a, base) {
-			aliased = append(aliased, a)
-		} else {
-			real = append(real, a)
-		}
-	}
-	return real, aliased
-}
+// splitLocalAliased partitions agents by whether each has a usable local
+// skill folder at base (see core.SplitLocalAliased).
+var splitLocalAliased = core.SplitLocalAliased
 
 // resolveInstallTarget maps the --global/--local flags to a Scope and the base
 // directory a local install is rooted at. When no scope flag is given it runs
@@ -544,12 +375,6 @@ func resolveInstallTarget(global, local bool, cwd string) (scope agentdir.Scope,
 	}
 }
 
-// scopeLabel renders the scope for per-agent report lines. Global and a Local
-// link rooted at cwd keep their bare names; a Local link rooted elsewhere (the
-// custom-path choice) also shows the directory so the output is unambiguous.
-func scopeLabel(scope agentdir.Scope, base, cwd string) string {
-	if scope == agentdir.Global || base == "" || base == cwd {
-		return scope.String()
-	}
-	return fmt.Sprintf("%s: %s", scope, base)
-}
+// scopeLabel renders the scope for per-agent report lines (see
+// core.ScopeLabel).
+var scopeLabel = core.ScopeLabel

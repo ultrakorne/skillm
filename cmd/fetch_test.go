@@ -3,20 +3,19 @@ package cmd
 import (
 	"testing"
 
-	"github.com/ultrakorne/skillm/internal/skill"
-	"github.com/ultrakorne/skillm/internal/source"
+	"github.com/ultrakorne/skillm/internal/core"
 )
 
 func TestSelectFound(t *testing.T) {
-	mk := func(id string) source.Found {
-		return source.Found{Id: id, Dir: "/tmp/" + id, Skill: &skill.Skill{ID: id, Name: id}}
+	mk := func(id string) core.InspectedSkill {
+		return core.InspectedSkill{ID: id, Name: id, Path: "/tmp/" + id}
 	}
-	multi := []source.Found{mk("alpha"), mk("beta"), mk("gamma")}
-	single := []source.Found{mk("solo")}
+	multi := []core.InspectedSkill{mk("alpha"), mk("beta"), mk("gamma")}
+	single := []core.InspectedSkill{mk("solo")}
 
 	cases := []struct {
 		name       string
-		found      []source.Found
+		found      []core.InspectedSkill
 		selectArgs []string
 		all        bool
 		wantIDs    []string
@@ -33,17 +32,16 @@ func TestSelectFound(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := selectFound(tc.found, tc.selectArgs, tc.all)
+			gotIDs, err := selectFound(&core.Inspection{Skills: tc.found}, tc.selectArgs, tc.all)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("expected error, got %v", ids(got))
+					t.Fatalf("expected error, got %v", gotIDs)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			gotIDs := ids(got)
 			if len(gotIDs) != len(tc.wantIDs) {
 				t.Fatalf("ids = %v, want %v", gotIDs, tc.wantIDs)
 			}
@@ -54,12 +52,4 @@ func TestSelectFound(t *testing.T) {
 			}
 		})
 	}
-}
-
-func ids(found []source.Found) []string {
-	out := make([]string, 0, len(found))
-	for _, f := range found {
-		out = append(out, f.Id)
-	}
-	return out
 }

@@ -175,10 +175,10 @@ func VendorOne(rep Reporter, home, id, srcDir string, agents []agentdir.Agent, s
 // copy of id at (scope, base) for every supplied agent, reporting refusals
 // instead of failing — a foreign file at one agent's link path must not block
 // the others. With force, such a foreign entry is replaced by the link
-// instead (taking the skill over); without it, the refusal (code
-// link_refused) points at --force. Any other link error (an I/O failure that
-// force cannot fix) is reported as link_failed. It reports whether any link
-// was created or replaced.
+// instead (taking the skill over); without it, the refusal is reported with
+// code link_refused, which a caller may answer by retrying with force. Any
+// other link error (an I/O failure that force cannot fix) is reported as
+// link_failed. It reports whether any link was created or replaced.
 func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool) (linked bool) {
 	rep = nopIfNil(rep)
 	link := linker.Link
@@ -189,7 +189,7 @@ func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, sc
 		res, err := link(home, id, []agentdir.Agent{a}, scope, base)
 		if err != nil {
 			if errors.Is(err, linker.ErrNotManaged) {
-				rep.Event(logEvent(LevelWarn, id, CodeLinkRefused, err.Error()+" (pass --force to take it over)"))
+				rep.Event(logEvent(LevelWarn, id, CodeLinkRefused, err.Error()))
 			} else {
 				rep.Event(logEvent(LevelWarn, id, CodeLinkFailed, err.Error()))
 			}

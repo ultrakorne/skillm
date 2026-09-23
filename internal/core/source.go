@@ -2,14 +2,12 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ultrakorne/skillm/internal/gitx"
-	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
 )
 
@@ -24,12 +22,18 @@ type SrcIdentity struct {
 	Kind   string // state.KindGit / state.KindLocal
 	Source string // git URL, or local source directory
 	Path   string // git subpath within the repo ("" for local / repo root)
+	// Base is the directory a relative local path is resolved against. Current
+	// installs record absolute paths, but a legacy entry may hold one relative
+	// to wherever it was installed from. With Base empty, relative paths are
+	// compared as written.
+	Base string
 }
 
 // Matches reports whether registry entry e was sourced from the same place as
 // this fetch: for git the same repo and subpath (the remote compared leniently,
 // so a spelling difference is not a different source); for local the same source
-// directory (compared by absolute, cleaned path so ./foo and /abs/foo agree).
+// directory (compared by cleaned path, a relative one resolved against Base, so
+// ./foo and /abs/foo agree).
 func (s SrcIdentity) Matches(e state.SkillEntry) bool {
 	if e.Kind != s.Kind {
 		return false
@@ -42,7 +46,7 @@ func (s SrcIdentity) Matches(e state.SkillEntry) bool {
 		// before that still hold whatever was typed, so normalize both sides.
 		return NormalizeRemote(e.Source) == NormalizeRemote(s.Source) && e.Path == s.Path
 	case state.KindLocal:
-		return sameLocalPath(e.Source, s.Source)
+		return ResolvePath(e.Source, s.Base) == ResolvePath(s.Source, s.Base)
 	default:
 		return false
 	}
@@ -56,10 +60,11 @@ func CanonicalRemote(u string) string {
 	return strings.TrimRight(u, "/")
 }
 
-// RegistryCollision reports an error only when id is already registered from a
-// source OTHER than ident — a same-id-different-source clash the user resolves
-// with --as. A same-source id is fine (its freshly fetched content is installed
-// and its revision refreshed) and an unregistered id is fresh.
+// RegistryCollision reports a *SourceCollisionError only when id is already
+// registered from a source OTHER than ident — a same-id-different-source clash
+// the user resolves by installing under another id. A same-source id is fine
+// (its freshly fetched content is installed and its revision refreshed) and an
+// unregistered id is fresh.
 func RegistryCollision(st *state.State, id string, ident SrcIdentity) error {
 	e, ok := st.Get(id)
 	if !ok {
@@ -68,7 +73,7 @@ func RegistryCollision(st *state.State, id string, ident SrcIdentity) error {
 	if ident.Matches(e) {
 		return nil
 	}
-	return differentSourceErr(id)
+	return &SourceCollisionError{ID: id}
 }
 
 // MergeEntry produces the entry to record for a chosen skill. For a genuinely
@@ -100,20 +105,22 @@ func MergeEntry(st *state.State, id string, fresh state.SkillEntry) state.SkillE
 	return existing
 }
 
-// ChosenID returns the Skill ID to use for a discovered skill: its own id, or
-// the --as override when one was given (validated single by CheckAsSingle).
-func ChosenID(fnd source.Found, as string) string {
+// ChosenID returns the Skill ID to install a discovered skill under: its own
+// id, or the As override when one was given (validated single by
+// CheckAsSingle).
+func ChosenID(id, as string) string {
 	if as != "" {
 		return as
 	}
-	return fnd.Id
+	return id
 }
 
-// CheckAsSingle enforces that --as is only used when exactly one skill was
-// selected, since it renames a single skill.
-func CheckAsSingle(as string, chosen []source.Found) error {
-	if as != "" && len(chosen) > 1 {
-		return errors.New("--as overrides a single Skill ID but more than one skill was selected; pick one skill_id or drop --as")
+// CheckAsSingle enforces that an As override is only used when exactly one
+// skill was selected, since it renames a single skill. It returns ErrAsMultiple
+// otherwise.
+func CheckAsSingle(as string, selected int) error {
+	if as != "" && selected > 1 {
+		return ErrAsMultiple
 	}
 	return nil
 }
@@ -129,24 +136,13 @@ func RepoRelSubpath(repoDir, dir string) string {
 	return filepath.ToSlash(rel)
 }
 
-// differentSourceErr is the install-source-mode collision: the id is already
-// registered from a different Source, so installing this one under the same id
-// would be wrong. The user renames this one with --as.
-func differentSourceErr(id string) error {
-	return fmt.Errorf("skill %q is already installed from a different source; pass `--as <name>` to install this one under a different id", id)
-}
-
-// sameLocalPath reports whether two local source paths refer to the same
-// directory, comparing absolute, cleaned forms so "./foo" and "/abs/foo" agree.
-func sameLocalPath(a, b string) bool {
-	return absClean(a) == absClean(b)
-}
-
-// absClean returns p as an absolute, cleaned path, falling back to a plain clean
-// when the working directory cannot be resolved.
-func absClean(p string) string {
-	if abs, err := filepath.Abs(p); err == nil {
-		return abs
+// ResolvePath returns p cleaned, and joined onto base first when p is
+// relative and base is set. It is how core makes a path absolute without
+// reading the process's working directory: callers pass Options.Cwd as base.
+// A relative p with no base stays relative.
+func ResolvePath(p, base string) string {
+	if base != "" && !filepath.IsAbs(p) {
+		return filepath.Join(base, p)
 	}
 	return filepath.Clean(p)
 }

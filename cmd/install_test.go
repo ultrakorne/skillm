@@ -7,7 +7,6 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
-	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
 )
 
@@ -128,61 +127,5 @@ func linkInto(t *testing.T, home string, a agentdir.Agent, scope agentdir.Scope,
 	}
 	if err := os.Symlink(target, filepath.Join(folder, id)); err != nil {
 		t.Fatalf("symlink: %v", err)
-	}
-}
-
-// localTestSetup builds a temp Home plus a source directory holding skill
-// "demo"'s content, and returns the home, a fresh project base distinct from
-// HOME (so each agent's local folder is real, not aliased to its global one),
-// the source dir core.VendorOne copies from, and the default agents (claude+agents).
-func localTestSetup(t *testing.T) (home, base, src string, agents []agentdir.Agent) {
-	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir())
-
-	home = t.TempDir()
-	if err := store.EnsureHome(home); err != nil {
-		t.Fatalf("EnsureHome: %v", err)
-	}
-	src = t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "SKILL.md"), []byte("demo body\n"), 0o644); err != nil {
-		t.Fatalf("write src SKILL.md: %v", err)
-	}
-	return home, t.TempDir(), src, config.Default().AllAgents()
-}
-
-func claudeLink(base string) string { return filepath.Join(base, ".claude", "skills", "demo") }
-
-// TestInstallYesDoesNotTakeOverAgentLinks: --yes only answers prompts, so an
-// install with --yes (but not --force) must leave a hand-made skill at an
-// agent's link path alone; only --force takes it over.
-func TestInstallYesDoesNotTakeOverAgentLinks(t *testing.T) {
-	home, base, src, agents := localTestSetup(t)
-	if err := os.MkdirAll(claudeLink(base), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	notes := filepath.Join(claudeLink(base), "NOTES.md")
-	if err := os.WriteFile(notes, []byte("mine\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	items := []stagedSkill{{entry: state.SkillEntry{ID: "demo", Kind: state.KindLocal, Source: src}, dir: src}}
-
-	oldYes, oldForce := flagYes, flagForce
-	t.Cleanup(func() { flagYes, flagForce = oldYes, oldForce })
-
-	flagYes, flagForce = true, false
-	if err := installVendored(home, &state.State{}, items, agents, agentdir.Local, base, "local"); err != nil {
-		t.Fatalf("installVendored --yes: %v", err)
-	}
-	if _, err := os.Stat(notes); err != nil {
-		t.Fatalf("--yes must not take over the agent link path: %v", err)
-	}
-
-	flagYes, flagForce = false, true
-	if err := installVendored(home, &state.State{}, items, agents, agentdir.Local, base, "local"); err != nil {
-		t.Fatalf("installVendored --force: %v", err)
-	}
-	if fi, err := os.Lstat(claudeLink(base)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("--force must take over the agent link path (err=%v)", err)
 	}
 }

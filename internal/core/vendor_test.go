@@ -311,7 +311,8 @@ func TestVendorOneReportsLinks(t *testing.T) {
 		t.Fatalf("linked event = %+v", ev)
 	}
 
-	// A foreign file at claude's link path is refused with a pointer to --force.
+	// A foreign file at claude's link path is refused (code link_refused);
+	// the "(pass --force …)" advice is the CLI's to add.
 	if _, err := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
 		t.Fatalf("VendorRemove: %v", err)
 	}
@@ -323,7 +324,7 @@ func TestVendorOneReportsLinks(t *testing.T) {
 		t.Fatalf("VendorOne: %v", err)
 	}
 	refused := eventsWith(rep, CodeLinkRefused)
-	if len(refused) != 1 || refused[0].Level != LevelWarn || !strings.HasSuffix(refused[0].Text, "(pass --force to take it over)") {
+	if len(refused) != 1 || refused[0].Level != LevelWarn || strings.Contains(refused[0].Text, "--force") {
 		t.Fatalf("refused events = %+v", rep.events)
 	}
 }

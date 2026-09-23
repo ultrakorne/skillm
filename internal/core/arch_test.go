@@ -45,11 +45,12 @@ func TestCoreStaysPresentationFree(t *testing.T) {
 }
 
 // forbiddenRefs are the process-global inputs and outputs core must take as
-// parameters instead: the working directory and the standard streams.
-var forbiddenRefs = []string{"os.Getwd", "os.Stdout", "os.Stderr", "os.Stdin"}
+// parameters instead: the working directory (read directly, or implicitly by
+// filepath.Abs — use ResolvePath with Options.Cwd) and the standard streams.
+var forbiddenRefs = []string{"os.Getwd", "filepath.Abs", "os.Stdout", "os.Stderr", "os.Stdin"}
 
 // TestCoreReadsNoProcessGlobals fails when a non-test core source file
-// mentions os.Getwd or a standard stream.
+// mentions os.Getwd, filepath.Abs or a standard stream.
 func TestCoreReadsNoProcessGlobals(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {

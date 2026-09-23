@@ -177,6 +177,18 @@ func DefaultRef(ctx context.Context, repoDir string) (string, error) {
 	return "", fmt.Errorf("gitx: could not determine default branch for %s", repoDir)
 }
 
+// HeadCommit returns the full SHA of the commit checked out in repoDir.
+func HeadCommit(ctx context.Context, repoDir string) (string, error) {
+	if repoDir == "" {
+		return "", errors.New("gitx: repoDir is empty")
+	}
+	out, err := runGit(ctx, repoDir, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("gitx: resolve HEAD commit: %w", err)
+	}
+	return out, nil
+}
+
 // SubtreeSHA returns the git tree object SHA of subpath within the repository
 // at repoDir, resolved at ref. This is a skill's Revision: it changes only when
 // the content of that specific subdirectory changes, so a commit touching a
