@@ -310,12 +310,6 @@ func validateRegistered(st *state.State, ids []string) ([]string, error) {
 	return ids, nil
 }
 
-// dirExists reports whether p is an existing directory.
-func dirExists(p string) bool {
-	fi, err := os.Stat(p)
-	return err == nil && fi.IsDir()
-}
-
 // installedMark returns a short annotation for the interactive install picker
 // describing where a skill is already installed: " (installed: global)",
 // " (installed: local)", or both. "Installed" here means installed at the

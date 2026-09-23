@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/store"
 )
 
@@ -40,9 +41,10 @@ func holdHomeLock(t *testing.T, hold time.Duration) time.Time {
 // Every command that saves config or state takes Home's lock before loading
 // anything: while another process holds it, the command waits. Each command
 // here runs against an empty Home, so it does no real work once it gets the
-// lock — its result does not matter, only that it waited. install is the
-// exception it inspects and prompts before taking the lock
-// for the write phase, so it is given a skill to install.
+// lock — its result does not matter, only that it waited. install and import
+// are the exceptions: they fetch (and install prompts) before taking the lock
+// for the write phase, and skip it when there is nothing to write, so install
+// is given a skill to install and import a lockfile entry to consider.
 func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 	cmds := map[string]func(t *testing.T) error{
 		"install": func(t *testing.T) error {
@@ -62,8 +64,17 @@ func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 		},
 		"update":    func(*testing.T) error { return runUpdate(context.Background(), "", "", false) },
 		"uninstall": func(*testing.T) error { return runUninstall(context.Background(), nil, true) },
-		"import":    func(t *testing.T) error { return runImport(context.Background(), t.TempDir()) },
-		"agent":     func(*testing.T) error { return runAgent(context.Background()) },
+		"import": func(t *testing.T) error {
+			dir := t.TempDir()
+			lf := &lockfile.File{Version: 1, Skills: map[string]*lockfile.Entry{
+				"local": {Source: "../somewhere", SourceType: lockfile.SourceLocal, ComputedHash: "x"},
+			}}
+			if err := lockfile.Save(dir, lf); err != nil {
+				t.Fatal(err)
+			}
+			return runImport(context.Background(), dir)
+		},
+		"agent": func(*testing.T) error { return runAgent(context.Background()) },
 	}
 	const hold = 300 * time.Millisecond
 	for name, run := range cmds {

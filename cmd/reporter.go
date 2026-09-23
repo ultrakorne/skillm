@@ -32,7 +32,7 @@ func coreOptions(withCwd bool) (core.Options, error) {
 
 // termReporter renders core Events on the terminal: an EventBatch opens a
 // ui.Checklist with one row per item, an EventItemDone resolves its row, and
-// an EventLog prints through the ui helpers. Call Wait once the operation has
+// an EventLog ends any open checklist and prints through the ui helpers. Call Wait once the operation has
 // returned, to let the checklist settle (or, off a TTY, print its rows).
 type termReporter struct {
 	ctx  context.Context
@@ -57,6 +57,10 @@ func (r *termReporter) Event(ev core.Event) {
 			r.cl.Done(ev.Index, ui.Result{Level: uiLevel(ev.Level), Text: ev.Text})
 		}
 	case core.EventLog:
+		// A log after a batch ends its checklist first, so the line is not
+		// drawn over the live view. Core reports a batch's logs only once
+		// its last item is done.
+		r.Wait()
 		printLog(ev)
 	}
 }
@@ -129,19 +133,4 @@ func uiLevel(l core.Level) ui.Level {
 	default:
 		return ui.LevelSuccess
 	}
-}
-
-// runChecklist runs work for every label through core.FanOut and renders one
-// checklist row per label (with a progress bar when bar is set), returning
-// the Results in label order. It serves update, whose per-skill loop still
-// lives in cmd, until that loop moves into core. Quitting the live view
-// cancels the context work runs under.
-func runChecklist(ctx context.Context, labels []string, bar bool, work func(ctx context.Context, i int) ui.Result) []ui.Result {
-	wctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	cl := ui.NewChecklist(ctx, labels, ui.ChecklistOptions{Bar: bar, OnAbort: cancel})
-	core.FanOut(wctx, len(labels), func(i int) {
-		cl.Done(i, work(wctx, i))
-	})
-	return cl.Wait()
 }
