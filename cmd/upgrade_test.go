@@ -23,7 +23,8 @@ func TestRunUpgradeRefusesSourceBuild(t *testing.T) {
 // TestUpgradeSkipsGitCheck guards the annotation wiring: upgrade replaces
 // skillm's own binary and must run on a machine without git, unlike every
 // command that fetches or syncs skills. version is the other exception: a GUI
-// runs `version --json` before it can report that git is missing.
+// runs `version --json` before it can report that git is missing, and status
+// only reads the refresh cache.
 func TestUpgradeSkipsGitCheck(t *testing.T) {
 	c := newUpgradeCmd()
 	if c.Annotations[annotationSkipGitCheck] != "true" {
@@ -32,7 +33,7 @@ func TestUpgradeSkipsGitCheck(t *testing.T) {
 
 	// The rest of the command tree must not: they all need git at runtime.
 	for _, sub := range Root().Commands() {
-		if sub.Name() == "upgrade" || sub.Name() == "version" {
+		if sub.Name() == "upgrade" || sub.Name() == "version" || sub.Name() == "status" {
 			continue
 		}
 		if sub.Annotations[annotationSkipGitCheck] == "true" {

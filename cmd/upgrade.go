@@ -9,6 +9,7 @@ import (
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/selfupdate"
+	"github.com/ultrakorne/skillm/internal/status"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -76,6 +77,7 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 	if err != nil {
 		return err
 	}
+	recordSelf(ctx, termLog, st)
 
 	if !st.Available {
 		ui.Successf("skillm %s is the latest release.", st.Current)
@@ -108,6 +110,7 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 	if err != nil {
 		return err
 	}
+	recordSelf(ctx, termLog, upgradedSelf(st, path))
 	ui.Successf("Upgraded skillm %s → %s (%s).", from, to, path)
 	return nil
 }
@@ -131,6 +134,7 @@ func runUpgradeJSON(ctx context.Context, current string, checkOnly bool) error {
 	if err != nil {
 		return err
 	}
+	recordSelf(ctx, out, st)
 	if checkOnly {
 		return out.Result(protocol.NewSelfStatusData(st))
 	}
@@ -140,6 +144,37 @@ func runUpgradeJSON(ctx context.Context, current string, checkOnly bool) error {
 			return err
 		}
 		data.Upgraded = true
+		recordSelf(ctx, out, upgradedSelf(st, data.Path))
 	}
 	return out.Result(data)
+}
+
+// recordSelf brings the refresh cache's self entry (status.json) in line
+// with what upgrade just found or installed, so a GUI's badge follows
+// without another refresh. It takes Home's lock only when there is a cache
+// to update, and a failure is only a warning: the upgrade itself is done.
+func recordSelf(ctx context.Context, rep core.Reporter, self core.SelfStatus) {
+	opts, err := coreOptions(false)
+	if err != nil {
+		return
+	}
+	if f, err := status.Load(opts.Home); err != nil || f == nil {
+		// Never refreshed (nothing to keep current), or unreadable (the
+		// next refresh rewrites it).
+		return
+	}
+	unlock, err := lockHome(ctx, opts.Home, "skillm upgrade")
+	if err != nil {
+		rep.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn, Code: core.CodeStatusNotSaved,
+			Text: fmt.Sprintf("could not update %s: %v", status.FileName, err)})
+		return
+	}
+	defer unlock()
+	core.RecordSelf(opts, rep, self)
+}
+
+// upgradedSelf is the self status after st's release was installed at path:
+// the running version is now the latest.
+func upgradedSelf(st core.SelfStatus, path string) core.SelfStatus {
+	return core.SelfStatus{Current: st.Latest, Latest: st.Latest, Method: st.Method, Executable: path}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/status"
 	"github.com/ultrakorne/skillm/internal/store"
 )
 
@@ -94,6 +95,8 @@ func TestGoldenFixtures(t *testing.T) {
 			Warnings: []error{errors.New("/Users/me/.claude/skills/beta: not a skillm link; left in place")}},
 	}}
 
+	cache := statusCache()
+
 	cases := []struct {
 		name  string
 		write func(w *Writer) error
@@ -101,7 +104,7 @@ func TestGoldenFixtures(t *testing.T) {
 		{"version.json", func(w *Writer) error {
 			return w.Result(VersionData{Version: "0.4.0", APIVersion: APIVersion,
 				Capabilities: []string{"agent ls", "agent set", "check", "config get", "config set", "events",
-					"import", "install", "list", "source inspect", "uninstall", "update", "upgrade", "version"}})
+					"import", "install", "list", "refresh", "source inspect", "status", "uninstall", "update", "upgrade", "version"}})
 		}},
 		{"list.json", func(w *Writer) error { return w.Result(NewListData(list)) }},
 		{"list_empty.json", func(w *Writer) error { return w.Result(NewListData(core.ListResult{})) }},
@@ -212,6 +215,22 @@ func TestGoldenFixtures(t *testing.T) {
 			return w.Fail(&config.InvalidValueError{Key: config.KeyRefreshIntervalHours, Value: "0",
 				Want: "a whole number of hours from 1 to 720"})
 		}},
+		{"status.json", func(w *Writer) error {
+			return w.Result(NewStatusData(core.StatusResult{Status: cache}))
+		}},
+		{"status_never.json", func(w *Writer) error {
+			return w.Result(NewStatusData(core.StatusResult{Status: status.New(), Stale: true}))
+		}},
+		{"refresh.json", func(w *Writer) error {
+			w.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn, Code: core.CodeSelfCheckFailed,
+				Text: "check for a newer skillm: dial tcp: no route to host"})
+			f := *cache
+			f.Self = &status.Self{Current: "0.4.0", Method: "bundled",
+				Executable: "/Applications/skillm.app/Contents/Helpers/skillm",
+				Error:      "check for a newer skillm: dial tcp: no route to host"}
+			f.Recount()
+			return w.Result(NewRefreshData(core.StatusResult{Status: &f, Refreshed: true}))
+		}},
 		{"check_events.ndjson", func(w *Writer) error {
 			w.Event(core.Event{Type: core.EventBatch, Items: []string{"alpha", "beta"}})
 			w.Event(core.Event{Type: core.EventItemStart, Index: 0, Skill: "alpha"})
@@ -242,6 +261,35 @@ func TestGoldenFixtures(t *testing.T) {
 			golden(t, tc.name, got)
 		})
 	}
+}
+
+// statusCache is the refresh cache the status fixtures show: a skill of
+// every status and a newer bundled skillm.
+func statusCache() *status.File {
+	f := status.New()
+	f.CheckedAt = time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	f.NextDueAt = f.CheckedAt.Add(24 * time.Hour)
+	f.Skills = []status.Skill{
+		{ID: "alpha", Status: status.SkillUpToDate, InstalledRev: "aaa1", UpstreamRev: "aaa1"},
+		{ID: "beta", Status: status.SkillUpdateAvailable, InstalledRev: "bbb1", UpstreamRev: "bbb2"},
+		{ID: "gamma", Status: status.SkillUntracked, InstalledRev: "ccc1", Error: `gitx: "gamma" not found at "main"`},
+		{ID: "delta", Status: status.SkillError, InstalledRev: "ddd1", Error: "git clone failed: repository not found"},
+		{ID: "omega", Status: status.SkillLocal},
+	}
+	f.Self = &status.Self{Current: "0.4.0", Latest: "0.5.0", Available: true, Method: "bundled",
+		Executable: "/Applications/skillm.app/Contents/Helpers/skillm"}
+	f.Recount()
+	return f
+}
+
+// TestStatusFileGolden pins <home>/status.json byte for byte as status.Save
+// writes it: GUIs that watch the file (Quickshell) decode it directly.
+func TestStatusFileGolden(t *testing.T) {
+	b, err := status.Marshal(statusCache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "status_file.json", b)
 }
 
 // golden compares got with testdata/name, or rewrites the file when
@@ -277,6 +325,13 @@ func TestFixturesDecode(t *testing.T) {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if filepath.Base(f) == "status_file.json" {
+			// The refresh cache itself, not an envelope.
+			if err := strictUnmarshal(b, &status.File{}); err != nil {
+				t.Errorf("%s: %v", f, err)
+			}
+			continue
 		}
 		var docs [][]byte
 		if filepath.Ext(f) == ".ndjson" {
@@ -352,6 +407,10 @@ func decodeStrict(file string, doc []byte, last bool) error {
 		return strictUnmarshal(env.Data, &AgentsSetData{})
 	case base == "config.json":
 		return strictUnmarshal(env.Data, &ConfigData{})
+	case base == "status.json" || base == "status_never.json":
+		return strictUnmarshal(env.Data, &StatusData{})
+	case base == "refresh.json":
+		return strictUnmarshal(env.Data, &RefreshData{})
 	}
 	return errors.New("fixture with no known data type")
 }

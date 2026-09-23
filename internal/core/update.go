@@ -310,6 +310,7 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 			return res, fmt.Errorf("save registry: %w", err)
 		}
 	}
+	recordUpdates(opts.Home, rep, st, skills)
 	if len(failures) > 0 {
 		return res, &UpdateFailedError{IDs: failedIDs, Failures: failures}
 	}

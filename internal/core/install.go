@@ -264,6 +264,8 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 		if serr := state.Save(home, st); serr != nil {
 			rep.Event(logEvent(LevelWarn, "", CodeStateNotSaved,
 				fmt.Sprintf("installed, but could not record the install for `skillm list`/`update`: %v", serr)))
+		} else {
+			recordInstalls(home, rep, st, res.Skills, req.Inspection != nil)
 		}
 	}
 	return res, runErr

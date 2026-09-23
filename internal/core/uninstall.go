@@ -208,6 +208,14 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 		}
 	}
 
+	// Whatever was removed (even when a later skill fails), the refresh
+	// cache stops reporting it.
+	defer func() {
+		if len(res.Skills) > 0 {
+			recordUninstalls(opts.Home, rep, st)
+		}
+	}()
+
 	// Clear links for EVERY defined agent (not just the enabled ones): a link
 	// made while an agent was enabled must not be left dangling just because it
 	// is disabled now.
