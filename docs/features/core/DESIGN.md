@@ -34,6 +34,8 @@ script running in the background) and must never corrupt Home or each other's in
   skill's Canonical copy is never half-written: a crash while copying leaves the old copy, and
   only a crash in the brief swap step leaves it missing. The next write to that skill clears
   any staging leftovers.
+- **Quitting a live `check` or `update`** — rows still running stay unresolved rather than
+  showing as failed, and the command returns within seconds even when a git server stalls.
 
 ## Decisions
 
