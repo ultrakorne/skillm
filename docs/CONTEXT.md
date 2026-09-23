@@ -296,6 +296,11 @@ speak the same **API version**; it is the only skillm the app runs. Its **Upgrad
 bundled: the app upgrades it together with itself, never `skillm upgrade`.
 _Avoid_: helper, embedded binary
 
+### Appcast
+The feed of app releases the macOS app's updater (Sparkle) reads, uploaded with every release.
+The updater installs only an app signed with the EdDSA key whose public half the running app
+carries, and offers "Upgrade and restart" once the appcast lists a newer app than the running one.
+
 ## Persistence
 
 ### Config

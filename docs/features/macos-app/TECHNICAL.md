@@ -16,17 +16,17 @@ command, its `operation`, and publishes it as `activity`; `RefreshScheduler` cal
 refresh, and `AppDelegate` owns the model, starts it after launch and holds a quit until it has
 shut down; the windows' reads run beside it ([windows.md](windows.md)). `StatusIcon` draws the
 status item, and `StatusSummary` and `UpdateProgress` word the menu: pure functions of decoded
-data the tests check without a process. Where the app looks for the CLI is [client.md](client.md).
+data the tests check without a process. `SparkleUpdater` updates the app ([updates.md](updates.md)).
 
 ## Where things live
 
 | File | Role |
 |------|------|
-| `macos/project.yml` | Targets, macOS 14 deployment, `LSUIElement`, hardened runtime without sandbox, team `6LH2JMGD3J`, `SKILLM_VERSION` |
+| `macos/project.yml` | Targets, macOS 14 deployment, `LSUIElement`, hardened runtime without sandbox, team `6LH2JMGD3J`, `SKILLM_VERSION`, Sparkle |
 | `macos/scripts/build-cli.sh` | The build phase: universal, version-stamped, signed CLI into `Contents/Helpers` |
 | `macos/Skillm/SkillmApp.swift` | The `MenuBarExtra`, window and `Settings` scenes, the status item's label, and the delegate |
 | `macos/Skillm/MenuContent.swift` | The menu: status lines, notice, activity, the commands, the windows, Stop, Quit |
-| `macos/SkillmKit/AppModel.swift` | App state and the one command: launch, status, refresh, update, settings, the windows' reads and changes, shutdown |
+| `macos/SkillmKit/AppModel.swift` | App state and the one command: launch, status, refresh, update, settings, the windows' reads and changes, shutdown, the updater's relaunch |
 | `macos/SkillmKit/RefreshScheduler.swift` | The launch, hourly and wake ticks |
 | `macos/SkillmKit/StatusIcon.swift` | The glyph, as a template, and the badged glyph with its red dot |
 | `macos/SkillmKit/StatusSummary.swift` | The status lines for the Refresh cache and the notice for an update's outcome |
@@ -86,5 +86,5 @@ row `error` or `untracked` is a problem line, never counted as current.
 
 ### The bundled CLI's version comes from a build setting
 
-`build-cli.sh` stamps `SKILLM_VERSION` as `.goreleaser.yaml` does. It defaults to `dev`, whose
-Upgrade method is dev (no self-update check), so a Release build left at `dev` warns.
+`build-cli.sh` stamps `SKILLM_VERSION` as `.goreleaser.yaml` does. A release sets it and
+`MARKETING_VERSION` (the bundle version follows it) from the tag; a Release build at `dev` warns.

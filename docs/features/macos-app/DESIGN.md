@@ -3,10 +3,9 @@
 ## Overview
 
 A native menu bar app for people who want skillm's update badge and commands without a
-terminal. It is a view, not a second implementation: every action runs the skillm command-line
-tool in JSON mode and shows what it answers, so the app and a future Linux widget share all
-behaviour through the one CLI. The app ships its own copy of that tool, the **Bundled CLI**, so
-the two always speak the same protocol version.
+terminal. It is a view, not a second implementation: every action runs its own copy of the CLI,
+the **Bundled CLI**, in JSON mode and shows what it answers, so all behaviour stays in the one CLI
+and the two always speak the same protocol version.
 
 ## Surface
 
@@ -17,7 +16,7 @@ the two always speak the same protocol version.
   to date", skills that could not be checked, a newer skillm, and "Last checked at 10:00"); a
   notice with the last command's outcome or failure; the running command ("Updating skills… 2 of
   5"); then **Refresh** (⌘R), **Auto refresh** ✓, **Update all skills** (⌘U), **Stop** while a
-  check or an update runs, the windows, and always **Quit skillm** (⌘Q).
+  check or an update runs, **Upgrade and restart**, the windows, and always **Quit skillm** (⌘Q).
 - **Windows** — **View skills…** (Update, Uninstall), **Add skill…** from a repository or folder,
   and **Settings…** (⌘,) with Start at login and the command-line tool ([windows.md](windows.md)).
 
@@ -37,6 +36,8 @@ the two always speak the same protocol version.
 - **Update all skills** — runs `update` with events, counts skills done in the menu, then says
   what the run did (updated, repaired, removed missing installs, imported, failed, sources gone)
   and re-reads the cache, so the dot clears without another check.
+- **Upgrade and restart** — shown once Sparkle, asked by a check that found a newer skillm, found
+  the new app; Sparkle installs it and relaunches once skillm has exited ([updates.md](updates.md)).
 - **Stop and Quit** — both interrupt skillm the way Ctrl-C does and wait for it to finish its
   current write and exit ("Stopping…" meanwhile), so the app never reads Home half-written or
   while skillm holds the Home lock ([FLOW.mermaid](FLOW.mermaid)).
@@ -46,7 +47,7 @@ the two always speak the same protocol version.
 - **A subprocess over the Bundled CLI** — the CLI is already the tested surface, and running it
   keeps Go free of cgo and the release pipeline unchanged ([JSON API](../json-api/DESIGN.md)).
 - **The CLI lives inside the bundle** — a CLI under the app's `Contents/` judges its Upgrade
-  method as bundled, so `skillm upgrade` refuses to swap it and the app upgrades both together.
+  method as bundled, so `skillm upgrade` refuses to swap it and Sparkle upgrades both together.
 - **An unknown API version is refused at launch** — one clear "reinstall" beats commands that
   fail one by one; unknown error codes, statuses and event types from a newer CLI still decode.
 - **Git is checked by the app too** — without the Command Line Tools, `/usr/bin/git` is only an
@@ -57,8 +58,7 @@ the two always speak the same protocol version.
   due meanwhile waits for the next tick instead of queueing behind it.
 - **The wake check waits 30 seconds** — the network is often not back at the wake itself, and a
   check whose every lookup failed is retried only an hour later.
-- **Check times are absolute** — "at 10:00", never "5 minutes ago", which an open menu would
-  leave stale.
+- **Check times are absolute** — "at 10:00": "5 minutes ago" would go stale in an open menu.
 - **Background failures clear themselves** — a failed launch read or scheduled check shows until
   the next one succeeds; the outcome of a command the user chose stays until they choose another.
 - **A cancel never cuts a write short** — the hard stop that follows only after a long grace is
@@ -66,5 +66,5 @@ the two always speak the same protocol version.
 - **No sandbox, hardened runtime; macOS 14, signed by the team** — skillm writes agents' folders,
   projects and Home and runs git, which the App Sandbox forbids; notarization needs the hardened
   runtime, the menu bar APIs need macOS 14, and the team signature lets colleagues' Macs run it.
-- **A debug build finds a locally built CLI** — so the app runs against a CLI built from the same
-  checkout without rebuilding the bundle; a release build only ever runs the Bundled CLI.
+- **A debug build finds a locally built CLI and never updates itself** — it runs a CLI built from
+  the same checkout; only a release build runs the Bundled CLI alone and asks Sparkle.
