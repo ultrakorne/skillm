@@ -6,6 +6,8 @@ import SwiftUI
 /// and the commands. Every action goes through `AppModel`.
 struct MenuContent: View {
     let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         switch model.cli {
@@ -43,7 +45,7 @@ struct MenuContent: View {
                 Text(notice.text)
             }
         }
-        if let activity = activityText {
+        if let activity = model.activity.text {
             Text(activity)
         }
         Divider()
@@ -64,23 +66,21 @@ struct MenuContent: View {
             Button(model.isStopping ? "Stopping…" : "Stop") { model.cancel() }
                 .disabled(model.isStopping)
         }
+        Divider()
+        Button("View skills…") { show(WindowID.skills) }
+        Button("Add skill…") { show(WindowID.addSkill) }
+        Button("Settings…") {
+            NSApp.activate()
+            openSettings()
+        }
+        .keyboardShortcut(",")
     }
 
-    /// The running command, in words.
-    private var activityText: String? {
-        switch model.activity {
-        case .idle, .savingSettings: nil
-        case .refreshing: "Checking for updates…"
-        case .updating(let progress): progress.text
-        }
+    /// Opens a window in front: a menu bar app is not active on its own.
+    private func show(_ id: String) {
+        NSApp.activate()
+        openWindow(id: id)
     }
 
-    /// Only a check or an update is worth stopping; a settings write is
-    /// instant.
-    private var canStop: Bool {
-        switch model.activity {
-        case .refreshing, .updating: true
-        case .idle, .savingSettings: false
-        }
-    }
+    private var canStop: Bool { model.activity.canStop }
 }

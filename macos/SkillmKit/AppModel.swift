@@ -5,9 +5,12 @@ import Observation
 /// The app's state. Views read it and call its methods; only the model
 /// talks to `SkillmClient`.
 ///
-/// One command runs at a time (`activity`). A scheduled refresh that comes
-/// due while another command runs is skipped: the next tick, or the next
-/// wake, runs it, and skillm decides whether a check is due anyway.
+/// One command that can change something runs at a time (`activity`). A
+/// scheduled refresh that comes due while another command runs is skipped:
+/// the next tick, or the next wake, runs it, and skillm decides whether a
+/// check is due anyway. Commands that only read (`list`, `agent ls`,
+/// `source inspect`) run beside it (`read`), so the windows can show what
+/// is installed while a check runs.
 @MainActor
 @Observable
 public final class AppModel {
@@ -26,7 +29,13 @@ public final class AppModel {
         case refreshing(scheduled: Bool)
         /// `update --events`, with the progress its events reported so far.
         case updating(UpdateProgress)
-        /// `config set`.
+        /// `update <id> --events`, from the Skills window.
+        case updatingSkill(String)
+        /// `install --events`, from the Add Skill window.
+        case installing(UpdateProgress)
+        /// `uninstall`, from the Skills window.
+        case uninstalling(String)
+        /// `config set` or `agent set`.
         case savingSettings
     }
 
@@ -61,19 +70,30 @@ public final class AppModel {
     /// The refresh settings from config.toml; nil until read. Read again
     /// on every scheduled tick, so a `config set` in a terminal shows.
     public private(set) var settings: RefreshSettings?
-    public private(set) var activity: Activity = .idle
+    public internal(set) var activity: Activity = .idle
     /// The running command was cancelled and skillm is finishing its
     /// current write (a cancelled call returns only once skillm has exited).
     public private(set) var isStopping = false
     public private(set) var notice: Notice?
+    /// Goes up after every command that may have changed what is installed
+    /// (install, uninstall, update, agent set), so an open Skills window
+    /// lists again.
+    public private(set) var installsVersion = 0
 
     /// Show the red dot: the cache's Badge (a skill update or a newer skillm).
     public var badge: Bool { status?.cache.badge ?? false }
-    /// A command is running.
+    /// A command that can change something is running: the items that
+    /// start one are greyed out.
     public var isBusy: Bool { activity != .idle }
+    /// Any skillm is running, a read included: a quit waits for it.
+    public var hasRunningCommands: Bool { operation != nil || !reads.isEmpty }
+    /// The skillm the app runs; nil until the launch checks passed.
+    public var cliExecutable: URL? { client?.executable }
 
     @ObservationIgnored private var client: SkillmClient?
     @ObservationIgnored private var operation: Task<Void, Never>?
+    /// The reads running beside `operation`.
+    @ObservationIgnored private var reads: [UUID: RunningRead] = [:]
     @ObservationIgnored private var scheduler: RefreshScheduler?
     @ObservationIgnored private var isShuttingDown = false
     @ObservationIgnored private let makeClient: @MainActor () throws -> SkillmClient
@@ -199,6 +219,7 @@ public final class AppModel {
             }
             // A failed re-read keeps the update's outcome on screen.
             await model.rereadStatus()
+            model.installsVersion += 1
         }
     }
 
@@ -206,21 +227,43 @@ public final class AppModel {
     /// on also runs a scheduled refresh, in case one is due already.
     @discardableResult
     public func setAutoRefresh(_ enabled: Bool) -> Task<Void, Never>? {
-        perform(
+        saveSetting("refresh.enabled", enabled ? "true" : "false", checksAfter: enabled)
+    }
+
+    /// The refresh interval in Settings: `config set refresh.interval_hours`.
+    /// A shorter interval applies at once, so a scheduled refresh follows.
+    @discardableResult
+    public func setRefreshInterval(hours: Int) -> Task<Void, Never>? {
+        saveSetting("refresh.interval_hours", String(hours), checksAfter: true)
+    }
+
+    /// `config set <key> <value>`; with `checksAfter`, a scheduled refresh
+    /// follows when auto refresh is on. A failure goes to `report`, or is
+    /// the menu's notice.
+    func saveSetting(
+        _ key: String, _ value: String, checksAfter: Bool, report: (@MainActor (Notice) -> Void)? = nil
+    ) -> Task<Void, Never>? {
+        var saved = false
+        return perform(
             .savingSettings, clearsNotice: false,
             { model, client in
                 do {
-                    let data: ConfigData = try await client.run([
-                        "config", "set", "refresh.enabled", enabled ? "true" : "false",
-                    ])
+                    let data: ConfigData = try await client.run(["config", "set", key, value])
                     model.settings = data.refresh
+                    saved = true
                 } catch {
-                    model.notice = Self.failure(error)
+                    if let report { report(Self.failure(error)) } else { model.notice = Self.failure(error) }
                 }
             },
             then: { model in
-                if enabled, model.settings?.enabled == true { model.scheduledRefresh() }
+                if saved, checksAfter, model.settings?.enabled == true { model.scheduledRefresh() }
             })
+    }
+
+    /// Reads the settings again (`config get`), for the Settings window.
+    public func reloadSettings() async throws {
+        let config: ConfigData = try await read(["config", "get"])
+        settings = config.refresh
     }
 
     /// Stops the running command. skillm finishes its current write first,
@@ -231,23 +274,75 @@ public final class AppModel {
         operation.cancel()
     }
 
-    /// Stops the schedule, interrupts the running command and returns once
-    /// skillm has exited, so a quit never cuts a write short.
+    /// Stops the schedule, interrupts the running commands and returns once
+    /// every skillm has exited, so a quit never cuts a write short.
     public func shutdown() async {
         isShuttingDown = true
         scheduler?.stop()
         scheduler = nil
+        let running = Array(reads.values)
+        for r in running { r.cancel() }
         if let operation {
             isStopping = true
             operation.cancel()
             await operation.value
         }
+        for r in running { await r.done.value }
     }
 
     /// Returns when no command is running (including one a finished command
     /// started after itself).
     public func waitUntilIdle() async {
         while let operation { await operation.value }
+    }
+
+    // MARK: - For the windows
+
+    /// The launch checks have not passed (or failed): nothing can run.
+    public struct NotReadyError: LocalizedError, Equatable {
+        public var errorDescription: String? { "skillm is not ready yet." }
+    }
+
+    /// Runs a command that only reads (`list`, `agent ls`, `source
+    /// inspect`, `config get`) beside the running one, and returns its data.
+    /// Cancelling the calling task interrupts skillm; a quit interrupts it
+    /// and waits for it too.
+    func read<T: Codable & Sendable>(_ args: [String], as type: T.Type = T.self) async throws -> T {
+        guard let client, !isShuttingDown else { throw NotReadyError() }
+        let task = Task.detached { try await client.run(args, as: type) }
+        let id = UUID()
+        reads[id] = RunningRead(cancel: { task.cancel() }, done: Task { _ = await task.result })
+        defer { reads[id] = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    /// Runs `work`, a command that changes what is installed, as the one
+    /// running command (nil when one runs already), then reads the status
+    /// again and bumps `installsVersion`. The window's own state reports
+    /// the outcome; the menu's notice is left alone.
+    func change(
+        _ activity: Activity,
+        _ work: @escaping @MainActor (SkillmClient) async -> Void,
+        then: (@MainActor () -> Void)? = nil
+    ) -> Task<Void, Never>? {
+        perform(
+            activity, clearsNotice: false,
+            { model, client in
+                await work(client)
+                await model.rereadStatus()
+                model.installsVersion += 1
+            },
+            then: { _ in then?() })
+    }
+
+    /// A read running beside the one command.
+    private struct RunningRead {
+        let cancel: @Sendable () -> Void
+        let done: Task<Void, Never>
     }
 
     // MARK: - Helpers
@@ -307,5 +402,28 @@ public final class AppModel {
         }
         let localized = error as? LocalizedError
         return Notice(text: localized?.errorDescription ?? error.localizedDescription, isError: true, origin: origin)
+    }
+}
+
+extension AppModel.Activity {
+    /// The running command, in words; nil when there is nothing to say.
+    public var text: String? {
+        switch self {
+        case .idle, .savingSettings: nil
+        case .refreshing: "Checking for updates…"
+        case .updating(let progress): progress.text
+        case .updatingSkill(let id): "Updating \(id)…"
+        case .installing(let progress): progress.text(doing: "Installing skills")
+        case .uninstalling(let id): "Uninstalling \(id)…"
+        }
+    }
+
+    /// Worth a Stop item: a check, an update or an install. A settings
+    /// write is instant, and an uninstall of one skill quick.
+    public var canStop: Bool {
+        switch self {
+        case .refreshing, .updating, .updatingSkill, .installing: true
+        case .idle, .savingSettings, .uninstalling: false
+        }
     }
 }

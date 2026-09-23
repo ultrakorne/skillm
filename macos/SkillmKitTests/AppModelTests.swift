@@ -234,6 +234,42 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(m.updateAll(), "a command started after shutdown")
     }
 
+    // MARK: - Reads
+
+    func testAReadRunsBesideTheCommandAndAQuitWaitsForIt() async throws {
+        let m = await started(["FAKE_SKILLM_HANG_ON": "list"])
+        let read = Task { try await m.read(["list"], as: ListData.self) }
+        try await eventually("the read") { commands().last == "list --json" }
+        // Let the fake reach its traps.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(m.hasRunningCommands)
+        XCTAssertFalse(m.isBusy, "a read greys out nothing")
+        XCTAssertNotNil(m.refresh(), "a command starts while a read runs")
+        await m.waitUntilIdle()
+
+        await m.shutdown()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "returned before skillm exited")
+        XCTAssertFalse(m.hasRunningCommands)
+        do {
+            _ = try await read.value
+            XCTFail("the read was not interrupted")
+        } catch is CancellationError {}
+    }
+
+    func testCancellingAReadInterruptsIt() async throws {
+        let m = await started(["FAKE_SKILLM_HANG_ON": "list"])
+        let read = Task { try await m.read(["list"], as: ListData.self) }
+        try await eventually("the read") { commands().last == "list --json" }
+        try await Task.sleep(for: .milliseconds(300))
+        read.cancel()
+        do {
+            _ = try await read.value
+            XCTFail("the read was not interrupted")
+        } catch is CancellationError {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path))
+        XCTAssertFalse(m.hasRunningCommands)
+    }
+
     // MARK: - Auto refresh
 
     func testAutoRefreshToggleWritesTheSetting() async throws {

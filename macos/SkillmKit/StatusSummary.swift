@@ -86,6 +86,34 @@ public enum StatusSummary {
         return (text, failed > 0)
     }
 
+    /// What `update <id>` did to that one skill, for the Skills window.
+    public static func skillUpdateResult(
+        _ id: String, _ data: UpdateData, warnings: [Warning] = []
+    ) -> (text: String, isError: Bool) {
+        guard let skill = data.skills.first(where: { $0.id == id }) else {
+            return ("\(id) is up to date", false)
+        }
+        var parts: [String]
+        var isError = false
+        switch skill.outcome {
+        case .updated: parts = ["Updated \(id)"]
+        case .upToDate: parts = ["\(id) is up to date"]
+        case .synced: parts = ["Repaired the copies of \(id)"]
+        case .pruned: parts = ["Removed the missing installs of \(id)"]
+        case .driftCheckSkipped: parts = ["\(id) was not checked for drift"]
+        case .failed:
+            parts = ["\(id) failed to update" + (skill.error.map { ": \($0)" } ?? "")]
+            isError = true
+        default: parts = ["\(id): \(skill.outcome.rawValue)"]
+        }
+        if skill.outcome != .pruned, !skill.pruned.isEmpty {
+            parts.append("removed " + count(skill.pruned.count, "missing install", "missing installs"))
+        }
+        if !skill.warnings.isEmpty { parts.append("some installs were not updated") }
+        parts += actionableWarnings(warnings)
+        return (parts.joined(separator: ", "), isError)
+    }
+
     /// The envelope warnings of an update that the menu names: a local
     /// skill whose source is gone (its copies were left as they were) and a
     /// status cache that could not be brought in line. The others repeat a

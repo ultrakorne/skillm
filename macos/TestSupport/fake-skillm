@@ -17,11 +17,18 @@
 #                         (stream_hang with --events); the others answer
 #   FAKE_SKILLM_FAIL_ON   a command that answers a failure fixture instead
 #                         (update: error_update_failed.json, refresh:
-#                         error_home_locked.json)
+#                         error_home_locked.json, uninstall:
+#                         error_needs_confirm.json, install: commit_mismatch,
+#                         config: error_invalid_value.json)
 #   FAKE_SKILLM_FAIL_WHILE  if set, FAKE_SKILLM_FAIL_ON applies only while
 #                         this file exists
 #   FAKE_SKILLM_CONFIG_OFF  if set and this file exists, `config get`
 #                         answers with refresh.enabled false
+#   FAKE_SKILLM_NO_FOREIGN  if set, install succeeds without an answer flag;
+#                         otherwise it answers foreign_files unless given
+#                         --yes, --force or --skip-foreign
+#   FAKE_SKILLM_NEEDS_FORCE  if set, uninstall answers needs_force unless
+#                         given --force
 set -u
 fx=${FAKE_SKILLM_FIXTURES:?}
 [ -n "${FAKE_SKILLM_ARGS:-}" ] && printf '%s\n' "$@" >"$FAKE_SKILLM_ARGS"
@@ -29,7 +36,15 @@ fx=${FAKE_SKILLM_FIXTURES:?}
 [ -n "${FAKE_SKILLM_PATH:-}" ] && printf '%s\n' "$PATH" >"$FAKE_SKILLM_PATH"
 
 events=no
-for a in "$@"; do [ "$a" = "--events" ] && events=yes; done
+answered=no
+forced=no
+for a in "$@"; do
+	case "$a" in
+	--events) events=yes ;;
+	--yes | --skip-foreign) answered=yes ;;
+	--force) answered=yes forced=yes ;;
+	esac
+done
 
 record() { [ -n "${FAKE_SKILLM_SIGNALS:-}" ] && echo "$1" >>"$FAKE_SKILLM_SIGNALS"; }
 exiting() { [ -n "${FAKE_SKILLM_EXITED:-}" ] && : >"$FAKE_SKILLM_EXITED"; }
@@ -61,6 +76,20 @@ fi
 
 # as_result FILE: an envelope fixture as the last line of an event stream.
 as_result() { tr -d '\n' <"$1" | sed 's/^{/{"type":"result",/'; echo; }
+
+# answer_error FILE: a failure fixture, as a document or as the last line
+# of an event stream; then exit 1.
+answer_error() {
+	if [ $events = yes ]; then as_result "$1"; else cat "$1"; fi
+	exit 1
+}
+
+# inline_error CODE MESSAGE: a failure envelope that has no fixture.
+inline_error() {
+	line=$(printf '{"schema_version":1,"data":null,"warnings":[],"error":{"code":"%s","message":"%s","retryable":false}}' "$1" "$2")
+	if [ $events = yes ]; then echo "$line" | sed 's/^{/{"type":"result",/'; else echo "$line"; fi
+	exit 1
+}
 
 case "$mode" in
 api99)
@@ -147,10 +176,13 @@ update)
 	fi
 	;;
 config)
+	[ "${FAKE_SKILLM_FAIL_ON:-}" = config ] && answer_error "$fx/error_invalid_value.json"
 	# `config set refresh.enabled false`, and `config get` under
 	# FAKE_SKILLM_CONFIG_OFF, answer the fixture with it off.
 	if [ "${2:-}" = set ] && [ "${3:-}" = refresh.enabled ] && [ "${4:-}" = false ]; then
 		sed 's/"enabled": true/"enabled": false/' "$fx/config.json"
+	elif [ "${2:-}" = set ] && [ "${3:-}" = refresh.interval_hours ]; then
+		sed "s/\"interval_hours\": 12/\"interval_hours\": ${4:-12}/" "$fx/config.json"
 	elif [ "${2:-}" = get ] && [ -n "${FAKE_SKILLM_CONFIG_OFF:-}" ] && [ -e "$FAKE_SKILLM_CONFIG_OFF" ]; then
 		sed 's/"enabled": true/"enabled": false/' "$fx/config.json"
 	else
@@ -158,8 +190,29 @@ config)
 	fi
 	;;
 install)
-	cat "$fx/error_foreign_files.json"
-	exit 1
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = install ]; then
+		inline_error commit_mismatch "the source moved since it was inspected"
+	elif [ $answered = no ] && [ -z "${FAKE_SKILLM_NO_FOREIGN:-}" ]; then
+		answer_error "$fx/error_foreign_files.json"
+	elif [ $events = yes ]; then
+		cat "$fx/install_events.ndjson"
+	else
+		cat "$fx/install.json"
+	fi
+	;;
+uninstall)
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = uninstall ]; then
+		answer_error "$fx/error_needs_confirm.json"
+	elif [ -n "${FAKE_SKILLM_NEEDS_FORCE:-}" ] && [ $forced = no ]; then
+		inline_error needs_force "beta: /Users/me/.claude/skills/beta is not a skillm link"
+	fi
+	cat "$fx/uninstall.json"
+	;;
+source)
+	cat "$fx/inspect.json"
+	;;
+agent)
+	if [ "${2:-}" = set ]; then cat "$fx/agents_set.json"; else cat "$fx/agents.json"; fi
 	;;
 *)
 	echo "fake-skillm: unexpected arguments: $*" >&2

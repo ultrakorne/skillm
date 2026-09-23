@@ -2,8 +2,9 @@ import AppKit
 import SkillmKit
 import SwiftUI
 
-/// The menu bar app: a status item whose menu is `MenuContent`. There is no
-/// Dock icon or main window (`LSUIElement`).
+/// The menu bar app: a status item whose menu is `MenuContent`, and the
+/// windows it opens (View skills, Add skill, Settings). There is no Dock
+/// icon or main window (`LSUIElement`).
 @main
 struct SkillmApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -15,7 +16,28 @@ struct SkillmApp: App {
             StatusLabel(model: appDelegate.model)
         }
         .menuBarExtraStyle(.menu)
+
+        Window("Skills", id: WindowID.skills) {
+            SkillsView(skills: appDelegate.skills)
+        }
+        .defaultSize(width: 820, height: 440)
+
+        Window("Add Skill", id: WindowID.addSkill) {
+            AddSkillView(add: appDelegate.addSkill)
+        }
+        .defaultSize(width: 520, height: 560)
+        .windowResizability(.contentMinSize)
+
+        Settings {
+            SettingsView(settings: appDelegate.settings)
+        }
     }
+}
+
+/// The ids of the windows the menu opens.
+enum WindowID {
+    static let skills = "skills"
+    static let addSkill = "add-skill"
 }
 
 /// The status item's image: the glyph, with a red dot when the Badge is on.
@@ -32,6 +54,10 @@ struct StatusLabel: View {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
+    /// The windows' state, kept while a window is closed.
+    private(set) lazy var skills = SkillsModel(app: model)
+    private(set) lazy var addSkill = AddSkillModel(app: model)
+    private(set) lazy var settings = SettingsModel(app: model)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Task { await model.start() }
@@ -59,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// has exited. So `terminate` must not be called from a main-queue job;
     /// use `AppDelegate.quit()`.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard model.isBusy else { return .terminateNow }
+        guard model.hasRunningCommands else { return .terminateNow }
         Task {
             await model.shutdown()
             sender.reply(toApplicationShouldTerminate: true)

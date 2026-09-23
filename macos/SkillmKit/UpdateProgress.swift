@@ -1,8 +1,8 @@
 import Foundation
 
-/// How far `update --events` has got, folded from its events: a `batch`
-/// names the skills it fetches, each `item_done` is one more done, and a
-/// `progress` event sets the counts outright.
+/// How far `update --events` (or `install --events`) has got, folded from
+/// its events: a `batch` names the skills it fetches, each `item_done` is one
+/// more done, and a `progress` event sets the counts outright.
 public struct UpdateProgress: Equatable, Sendable {
     /// The skill ids of the current batch; `items[i]` is item i.
     public private(set) var items: [String] = []
@@ -35,8 +35,12 @@ public struct UpdateProgress: Equatable, Sendable {
     }
 
     /// "Updating skills… 1 of 3", or without counts before the first batch.
-    public var text: String {
-        total > 0 ? "Updating skills… \(done) of \(total)" : "Updating skills…"
+    public var text: String { text(doing: "Updating skills") }
+
+    /// "<doing>… 1 of 3", or without counts before the first batch. The
+    /// events of `install --events` fold the same way.
+    public func text(doing: String) -> String {
+        total > 0 ? "\(doing)… \(done) of \(total)" : "\(doing)…"
     }
 
     private func id(of event: Event) -> String? {
