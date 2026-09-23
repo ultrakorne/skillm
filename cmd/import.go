@@ -32,8 +32,10 @@ func newImportCmd() *cobra.Command {
 			"node_modules, registry skills) are reported and skipped. `skillm update` also " +
 			"runs this adoption automatically across every tracked project, so a teammate's " +
 			"additions join your machine-wide updates.\n\n" +
-			"With --json, pass the project directory as an absolute path; a directory " +
-			"with no skills-lock.json reports 0 entries rather than failing.",
+			"A directory with no skills-lock.json imports nothing; one that does not " +
+			"exist is an error. With --json, pass the project directory as an absolute " +
+			"path; a directory with no skills-lock.json reports 0 entries rather than " +
+			"failing, and a missing one fails with code error naming it in path.",
 		Args:        cobra.MaximumNArgs(1),
 		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {

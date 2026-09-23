@@ -153,7 +153,12 @@ func TestGoldenFixtures(t *testing.T) {
 			return w.Fail(&core.UninstallScopeChangedError{Roots: []string{"/Users/me/src/app", "/Users/me/src/new"}})
 		}},
 		{"error_update_failed.json", func(w *Writer) error {
-			return w.Fail(&core.UpdateFailedError{Failures: []string{"alpha: git fetch failed"}})
+			w.Event(core.Event{Type: core.EventLog, Level: core.LevelError, Skill: "alpha",
+				Code: core.CodeUpdateFailed, Text: "alpha: git fetch failed"})
+			w.Event(core.Event{Type: core.EventLog, Level: core.LevelError, Skill: "beta",
+				Code: core.CodeUpdateFailed, Text: "beta: git fetch failed"})
+			return w.Fail(&core.UpdateFailedError{IDs: []string{"alpha", "beta"},
+				Failures: []string{"alpha: git fetch failed", "beta: git fetch failed"}})
 		}},
 		{"check_events.ndjson", func(w *Writer) error {
 			w.Event(core.Event{Type: core.EventBatch, Items: []string{"alpha", "beta"}})

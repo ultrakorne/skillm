@@ -71,3 +71,17 @@ type CommitMismatchError struct {
 func (e *CommitMismatchError) Error() string {
 	return fmt.Sprintf("the source is at commit %s, not the expected %s (it changed since it was inspected)", e.Got, e.Want)
 }
+
+// ProjectDirError means the project directory a command was pointed at is
+// missing or not a directory (Err says which), so a stale or mistyped path
+// is refused rather than treated as a project with nothing in it.
+type ProjectDirError struct {
+	Path string
+	Err  error
+}
+
+func (e *ProjectDirError) Error() string {
+	return fmt.Sprintf("project directory %s: %v", e.Path, e.Err)
+}
+
+func (e *ProjectDirError) Unwrap() error { return e.Err }

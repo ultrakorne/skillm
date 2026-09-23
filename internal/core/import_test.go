@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,23 @@ func TestImportNoLockfile(t *testing.T) {
 	res, err := Import(context.Background(), opts, nil, ".")
 	if err != nil || res.Entries != 0 || res.Root != opts.Cwd {
 		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+// TestImportMissingDir: a directory that does not exist (or is a file) is a
+// *ProjectDirError, not an empty project.
+func TestImportMissingDir(t *testing.T) {
+	opts := Options{Home: t.TempDir(), Cwd: t.TempDir()}
+	file := filepath.Join(opts.Cwd, "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{"gone", file} {
+		_, err := Import(context.Background(), opts, nil, dir)
+		var dirErr *ProjectDirError
+		if !errors.As(err, &dirErr) || dirErr.Path != ResolvePath(dir, opts.Cwd) {
+			t.Fatalf("Import(%s) err = %v, want a ProjectDirError", dir, err)
+		}
 	}
 }
 

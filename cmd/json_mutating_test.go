@@ -202,6 +202,17 @@ func TestJSONInstallUpdateUninstall(t *testing.T) {
 	if _, err := os.Stat(mine); err != nil {
 		t.Fatalf("a skipped skill's files must stay: %v", err)
 	}
+	// --yes and --force overwrite what --skip-foreign keeps, so neither
+	// combines with it.
+	for _, flag := range []string{"--yes", "--force"} {
+		perr := e.jsonFail(t, e.userDir, "install", url, "beta", "--project", other, "--json", "--skip-foreign", flag)
+		if perr.Code != protocol.CodeUsage {
+			t.Fatalf("--skip-foreign %s = %+v, want usage", flag, perr)
+		}
+		if _, err := os.Stat(mine); err != nil {
+			t.Fatalf("--skip-foreign %s removed the foreign files: %v", flag, err)
+		}
+	}
 	var overwritten protocol.InstallData
 	e.jsonOK(t, e.userDir, &overwritten, "install", url, "beta", "--project", other, "--json", "--yes")
 	if len(overwritten.Skills) != 1 || overwritten.Skills[0].Action != protocol.ActionOverwritten {
@@ -260,8 +271,15 @@ func TestJSONInstallUpdateUninstall(t *testing.T) {
 		!slices.Contains(un.Skills[0].RemovedCopies, "global") || !slices.Contains(un.Skills[0].RemovedCopies, project) {
 		t.Fatalf("uninstall = %+v", un)
 	}
-	if perr := e.jsonFail(t, e.userDir, "uninstall", "alpha", "--json", "--yes"); perr.Code != protocol.CodeNotInstalled {
-		t.Fatalf("uninstall of a removed skill = %+v", perr)
+	// A skill already gone is skipped with a warning, not an error, so an
+	// uninstall that stopped part-way is retried with the same ids.
+	stdout, stderr, ok = e.runJSON(t, e.userDir, nil, "uninstall", "alpha", "--json", "--yes")
+	if !ok || stderr != "" {
+		t.Fatalf("uninstall of a removed skill: ok=%v stderr=%q stdout=%q", ok, stderr, stdout)
+	}
+	if doc := decodeDoc(t, stdout); len(doc.Warnings) != 1 || doc.Warnings[0].Code != "not_installed" ||
+		doc.Warnings[0].SkillID != "alpha" || string(doc.Data) == "null" {
+		t.Fatalf("uninstall of a removed skill = %s, want a not_installed warning", stdout)
 	}
 	// --all with --yes and no confirmation list clears every project.
 	var rest protocol.UninstallData
@@ -276,8 +294,92 @@ func TestJSONInstallUpdateUninstall(t *testing.T) {
 	}
 }
 
+// TestJSONUninstallRetry: an uninstall stopped by needs_force after
+// removing some skills is retried with the same ids and --force; the ones
+// already removed are skipped with a warning.
+func TestJSONUninstallRetry(t *testing.T) {
+	needGit(t)
+	_, url := initSkillRepo(t)
+	project := t.TempDir()
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
+	e.jsonOK(t, e.userDir, &protocol.InstallData{}, "install", url, "alpha", "beta", "--project", project, "--json")
+
+	// Replace beta's agent link with a real directory skillm did not create.
+	link := filepath.Join(project, ".claude", "skills", "beta")
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("beta's claude link: %v", err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(link, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	perr := e.jsonFail(t, e.userDir, "uninstall", "alpha", "beta", "--json", "--yes")
+	if perr.Code != protocol.CodeNeedsForce || perr.SkillID != "beta" {
+		t.Fatalf("uninstall = %+v, want needs_force for beta", perr)
+	}
+	stdout, stderr, ok := e.runJSON(t, e.userDir, nil, "uninstall", "alpha", "beta", "--json", "--yes", "--force")
+	if !ok || stderr != "" {
+		t.Fatalf("uninstall --force retry: ok=%v stderr=%q stdout=%q", ok, stderr, stdout)
+	}
+	doc := decodeDoc(t, stdout)
+	var un protocol.UninstallData
+	decodeData(t, doc, &un)
+	if len(un.Skills) != 1 || un.Skills[0].ID != "beta" {
+		t.Fatalf("uninstall --force retry = %+v, want beta removed", un)
+	}
+	if !slices.ContainsFunc(doc.Warnings, func(w protocol.Warning) bool {
+		return w.Code == "not_installed" && w.SkillID == "alpha"
+	}) {
+		t.Fatalf("warnings = %+v, want alpha skipped as not_installed", doc.Warnings)
+	}
+	var ls protocol.ListData
+	e.jsonOK(t, e.userDir, &ls, "list", "--json")
+	if len(ls.Skills) != 0 {
+		t.Fatalf("list after the retry = %+v, want nothing installed", ls)
+	}
+}
+
+// TestJSONUpdateFailed: when skills fail to update, the update_failed error
+// names the one skill that failed, and every failed skill is a warning with
+// its skill_id.
+func TestJSONUpdateFailed(t *testing.T) {
+	needGit(t)
+	repo, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
+	e.jsonOK(t, e.userDir, &protocol.InstallData{}, "install", url, "alpha", "beta", "--global", "--json")
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, ok := e.runJSON(t, e.userDir, nil, "update", "--json")
+	if ok || stderr != "" {
+		t.Fatalf("update of a deleted source: ok=%v stderr=%q stdout=%q", ok, stderr, stdout)
+	}
+	doc := decodeDoc(t, stdout)
+	if doc.Error == nil || doc.Error.Code != protocol.CodeUpdateFailed || doc.Error.SkillID != "" {
+		t.Fatalf("update = %s, want update_failed with no single skill_id", stdout)
+	}
+	failed := map[string]bool{}
+	for _, w := range doc.Warnings {
+		if w.Code == "update_failed" {
+			failed[w.SkillID] = true
+		}
+	}
+	if !failed["alpha"] || !failed["beta"] {
+		t.Fatalf("warnings = %+v, want update_failed for alpha and beta", doc.Warnings)
+	}
+
+	if perr := e.jsonFail(t, e.userDir, "update", "alpha", "--json"); perr.Code != protocol.CodeUpdateFailed || perr.SkillID != "alpha" {
+		t.Fatalf("update alpha = %+v, want update_failed for alpha", perr)
+	}
+}
+
 // TestJSONImport: import --json adopts a project's lockfile into a fresh
-// Home, and a directory without one reports 0 entries.
+// Home, a directory without one reports 0 entries, and a missing directory
+// fails naming it.
 func TestJSONImport(t *testing.T) {
 	needGit(t)
 	_, url := initSkillRepo(t)
@@ -296,6 +398,10 @@ func TestJSONImport(t *testing.T) {
 	e.jsonOK(t, e.userDir, &none, "import", t.TempDir(), "--json")
 	if none.Entries != 0 || len(none.Skills) != 0 {
 		t.Fatalf("import of a directory with no lockfile = %+v", none)
+	}
+	missing := filepath.Join(t.TempDir(), "gone")
+	if perr := e.jsonFail(t, e.userDir, "import", missing, "--json"); perr.Code != protocol.CodeError || perr.Path != missing {
+		t.Fatalf("import of a missing directory = %+v, want error naming %s", perr, missing)
 	}
 }
 

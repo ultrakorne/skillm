@@ -40,9 +40,11 @@ func newUpdateCmd() *cobra.Command {
 			"copied in by hand or by another tool) is left alone (with a warning when its " +
 			"copy is re-synced); pass " +
 			"--force to replace it with skillm's link and take the skill over.\n\n" +
-			"With --json the result lists every skill's outcome; --events also streams " +
-			"one row per fetched skill as it happens. A skill that failed makes the run " +
-			"fail with code update_failed after the others were written.",
+			"With --json a successful run's result lists every skill's outcome; --events " +
+			"also streams one row per fetched skill as it happens. A skill that failed " +
+			"makes the run fail with code update_failed after the others were written: " +
+			"each failed skill is then a warning with its skill_id, and the outcomes of " +
+			"the others are only on the --events stream.",
 		Args:        cobra.MaximumNArgs(1),
 		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -84,7 +86,9 @@ func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 		return lockHome(ctx, home, "skillm update")
 	}
 
-	res, err := core.Update(wctx, opts, rep, core.UpdateRequest{ID: id})
+	// A failed fetch's row already shows its error; core's extra
+	// update_failed line is for callers that do not follow the rows.
+	res, err := core.Update(wctx, opts, dropCodes{rep: rep, codes: []string{core.CodeUpdateFailed}}, core.UpdateRequest{ID: id})
 	rep.Wait()
 	if cerr := ctx.Err(); cerr != nil {
 		return cerr

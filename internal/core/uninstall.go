@@ -24,6 +24,9 @@ const (
 	CodeRemoveFailed = "remove_failed"
 	// CodeUninstalled: the skill's Registry entry was dropped.
 	CodeUninstalled = "uninstalled"
+	// CodeNotInstalled: a skill asked for is not installed (any more), and
+	// UninstallRequest.SkipMissing skipped it.
+	CodeNotInstalled = "not_installed"
 )
 
 // UninstalledSkill is what Uninstall did for one skill.
@@ -55,6 +58,11 @@ type UninstallRequest struct {
 	// ConfirmedRoots are the project roots the confirmation named, as
 	// UninstallRoots returned them.
 	ConfirmedRoots []string
+	// SkipMissing skips the ids that are not installed (any more) with a
+	// warning instead of refusing the batch, so an uninstall that stopped
+	// part-way can be retried with the same ids: the ones it already removed
+	// are then skipped.
+	SkipMissing bool
 }
 
 // UninstallResult is Uninstall's outcome: one entry per uninstalled skill, in
@@ -159,8 +167,9 @@ func CheckInstalled(st *state.State, ids []string) error {
 // The caller holds Home's lock for the whole call and has already confirmed
 // the removal with the user; Uninstall re-reads config and the Registry. Before
 // anything is removed, an id that is not installed (any more) is a
-// *NotInstalledError, and with req.CheckRoots a project the confirmation did
-// not name is an *UninstallScopeChangedError. A removal failure is an
+// *NotInstalledError (with req.SkipMissing, a warning, and the id is
+// skipped), and with req.CheckRoots a project the confirmation did not name
+// is an *UninstallScopeChangedError. A removal failure is an
 // *UninstallBlockedError unless opts.Force is set. A cancelled ctx stops the
 // batch between skills with ctx's error; the skills already done are in the
 // result and saved. Options.Cwd labels the report lines and is scanned for
@@ -177,7 +186,17 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 		return res, err
 	}
 	ids := req.IDs
-	if err := CheckInstalled(st, ids); err != nil {
+	if req.SkipMissing {
+		present := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if _, ok := st.Get(id); !ok {
+				rep.Event(logEvent(LevelWarn, id, CodeNotInstalled, id+" is not installed; skipped"))
+				continue
+			}
+			present = append(present, id)
+		}
+		ids = present
+	} else if err := CheckInstalled(st, ids); err != nil {
 		return res, err
 	}
 	if req.CheckRoots {

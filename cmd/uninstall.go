@@ -42,7 +42,10 @@ func newUninstallCmd() *cobra.Command {
 			"--confirmed-root <dir> (or --confirmed-root= when it named none): if the " +
 			"skills now have committed copies in another project, nothing is removed " +
 			"and the uninstall fails with the new list (code needs_confirm in JSON). " +
-			"With --json it never prompts: pass skill ids (or --all) and --yes.",
+			"With --json it never prompts: pass skill ids (or --all) and --yes. An id " +
+			"that is not installed (any more) is skipped with a warning rather than " +
+			"failing the batch, so an uninstall that stopped part-way (needs_force, " +
+			"uninstall_failed, cancelled) can be retried with the same ids.",
 		Args:        cobra.ArbitraryArgs,
 		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -110,6 +113,7 @@ func runUninstall(ctx context.Context, args []string, all bool, confirmed core.U
 	// the question asked again with the new list.
 	req := confirmed
 	req.IDs = ids
+	req.SkipMissing = flagJSON
 	ask := !flagJSON && ui.IsTTY() && !opts.Yes && !opts.Force
 	roots := core.UninstallRoots(st, ids)
 	for {
@@ -143,7 +147,8 @@ func runUninstall(ctx context.Context, args []string, all bool, confirmed core.U
 // uninstallJSON is `uninstall --json --yes`: the uninstall with no question.
 // A changed set of projects fails with code needs_confirm and the new list; a
 // cancelled run fails with code cancelled, naming how many skills were
-// removed before it stopped.
+// removed before it stopped. The ids already gone are skipped with a warning
+// (req.SkipMissing), so every failure is retried with the same ids.
 func uninstallJSON(ctx context.Context, opts core.Options, req core.UninstallRequest) error {
 	out := jsonOut()
 	res, err := uninstallLocked(ctx, opts, out, req)
@@ -168,7 +173,8 @@ func uninstallLocked(ctx context.Context, opts core.Options, rep core.Reporter, 
 
 // selectUninstallIDs resolves which skills `uninstall` should act on. Explicit
 // ids must each be known to skillm (present in the registry); any unknown id
-// is an atomic error so a typo removes nothing. --all targets every
+// is an atomic error so a typo removes nothing (in JSON mode they are passed
+// through, and core skips the unknown ones with a warning). --all targets every
 // registered skill; with no arguments an interactive multiselect is shown (which
 // refuses on a non-TTY). It returns an empty slice and no error when there is
 // nothing to do, having already told the user why.
@@ -176,6 +182,12 @@ func selectUninstallIDs(st *state.State, args []string, all bool) ([]string, err
 	if len(args) > 0 {
 		if all {
 			return nil, errors.New("pass either skill ids or --all, not both")
+		}
+		// JSON mode skips the ids already gone (core warns about each), so
+		// a GUI can retry an uninstall that stopped part-way with the same
+		// ids.
+		if flagJSON {
+			return args, nil
 		}
 		if err := core.CheckInstalled(st, args); err != nil {
 			return nil, err

@@ -98,7 +98,7 @@ func newInstallCmd() *cobra.Command {
 	f.BoolVar(&installFlagAll, "all", false, "install every skill (in Home, or in a source catalog); no interactive picker")
 	f.StringVar(&installFlagAs, "as", "", "override the Skill ID when installing from a source (resolves a collision; single skill only)")
 	f.StringVar(&installFlagRef, "ref", "", "pin a branch, tag, or commit when installing from a git source")
-	f.BoolVar(&installFlagSkipForeign, "skip-foreign", false, "skip the skills whose copy would overwrite files skillm did not create, and install the rest")
+	f.BoolVar(&installFlagSkipForeign, "skip-foreign", false, "skip the skills whose copy would overwrite files skillm did not create, and install the rest (not with --yes or --force)")
 	c.MarkFlagsMutuallyExclusive("global", "local", "project")
 	return c
 }
@@ -106,6 +106,11 @@ func newInstallCmd() *cobra.Command {
 func runInstall(cmd *cobra.Command, args []string, global, local, all bool) error {
 	ctx := cmd.Context()
 	project := installFlagProject
+	// --yes and --force overwrite the files --skip-foreign would leave alone.
+	// They are persistent flags, so cobra's mutual exclusion cannot see them.
+	if installFlagSkipForeign && (flagYes || flagForce) {
+		return usageError("pass either --skip-foreign or --yes/--force, not both")
+	}
 	if flagJSON {
 		// JSON mode never prompts, so it needs everything a question would
 		// have asked for.

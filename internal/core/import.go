@@ -96,8 +96,9 @@ func (r ImportResult) ImportedAny() bool {
 //
 // The fetches run first, without Home's lock; the writes then run under it
 // (opts.Lock) against a fresh read of config, the Registry and the lockfile.
-// A lockfile with no entries is not an error: the result's Entries is 0 and
-// nothing is locked or written.
+// A lockfile with no entries (or none at all) is not an error: the result's
+// Entries is 0 and nothing is locked or written. A dir that is missing or not
+// a directory is a *ProjectDirError.
 func Import(ctx context.Context, opts Options, rep Reporter, dir string) (ImportResult, error) {
 	rep = nopIfNil(rep)
 	if !filepath.IsAbs(dir) && opts.Cwd == "" {
@@ -105,6 +106,13 @@ func Import(ctx context.Context, opts Options, rep Reporter, dir string) (Import
 	}
 	root := ResolvePath(dir, opts.Cwd)
 	res := ImportResult{Root: root}
+	// A missing lockfile is "nothing to import", but a missing directory is
+	// a stale or mistyped path, not an empty project.
+	if fi, err := os.Stat(root); err != nil {
+		return res, &ProjectDirError{Path: root, Err: err}
+	} else if !fi.IsDir() {
+		return res, &ProjectDirError{Path: root, Err: errors.New("not a directory")}
+	}
 	if err := store.EnsureHome(opts.Home); err != nil {
 		return res, err
 	}

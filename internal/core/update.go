@@ -28,6 +28,11 @@ const (
 	// fetched (reinstalled from another source, or moved to another Revision
 	// by another process), so the fetched content was not written.
 	CodeUpdateSkipped = "update_skipped"
+	// CodeUpdateFailed: a skill's fetch failed, so it was not updated. It is
+	// reported (as an error log event) when the writes start, besides the
+	// fetch's own ItemDone row, so a caller that does not follow the rows
+	// still learns which skills failed.
+	CodeUpdateFailed = "update_failed"
 )
 
 // UpdateOutcome is what Update did for one skill.
@@ -119,6 +124,8 @@ func (e *UnknownSkillError) Error() string {
 // UpdateFailedError means at least one skill failed to update. The others
 // were updated, and the Registry saved, before it was returned.
 type UpdateFailedError struct {
+	// IDs are the failed skills, in the order they were reported.
+	IDs []string
 	// Failures has one "<id>: <cause>" line per failed skill.
 	Failures []string
 }
@@ -150,8 +157,11 @@ func (e *UpdateFailedError) Error() string {
 // fails with "run update again" rather than being rolled back.
 //
 // Cancellation before the writes returns ctx's error with nothing written
-// (beyond what the adoption sweep already saved). One or more failed skills
-// is an *UpdateFailedError, returned after the others were written; an
+// (beyond what the adoption sweep already saved). Every failed skill is also
+// reported as a warn or error log event naming it (a failed fetch with code
+// CodeUpdateFailed, a skill changed meanwhile with CodeUpdateSkipped). One or
+// more failed skills is an *UpdateFailedError, returned after the others
+// were written; an
 // unknown req.ID is an *UnknownSkillError.
 func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) (UpdateResult, error) {
 	rep = serialized(rep)
@@ -208,7 +218,7 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 	}
 
 	// Judge every fetch against the skill's current entry.
-	var failures []string
+	var failures, failedIDs []string
 	dirty := false
 	updated := map[string]bool{}
 	staged := map[string]string{}
@@ -220,7 +230,9 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 		switch {
 		case f.err != nil && !f.driftSkipped:
 			us.Outcome, us.Err = OutcomeFailed, f.err
+			rep.Event(logEvent(LevelError, t.ID, CodeUpdateFailed, fmt.Sprintf("%s: %v", t.ID, f.err)))
 			failures = append(failures, fmt.Sprintf("%s: %v", t.ID, f.err))
+			failedIDs = append(failedIDs, t.ID)
 		case !ok:
 			// Uninstalled meanwhile: there is nothing left to update.
 			us.Outcome = OutcomeUpToDate
@@ -229,6 +241,7 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 			rep.Event(logEvent(LevelWarn, t.ID, CodeUpdateSkipped, fmt.Sprintf("skipped %s: %v", t.ID, err)))
 			us.Outcome, us.Err = OutcomeFailed, err
 			failures = append(failures, fmt.Sprintf("%s: %v", t.ID, err))
+			failedIDs = append(failedIDs, t.ID)
 		case f.err != nil:
 			us.Outcome, us.Err, us.Revision = OutcomeDriftCheckSkipped, f.err, e.Revision
 		case e.Revision != t.Revision && f.revision != e.Revision:
@@ -242,6 +255,7 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 			rep.Event(logEvent(LevelWarn, t.ID, CodeUpdateSkipped, fmt.Sprintf("skipped %s: %v", t.ID, err)))
 			us.Outcome, us.Err, us.Revision = OutcomeFailed, err, e.Revision
 			failures = append(failures, fmt.Sprintf("%s: %v", t.ID, err))
+			failedIDs = append(failedIDs, t.ID)
 		default:
 			// Staged for every successful fetch, advanced or not: an unchanged
 			// skill still needs its tree so drifted installs are repaired.
@@ -297,7 +311,7 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 		}
 	}
 	if len(failures) > 0 {
-		return res, &UpdateFailedError{Failures: failures}
+		return res, &UpdateFailedError{IDs: failedIDs, Failures: failures}
 	}
 	return res, nil
 }

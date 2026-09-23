@@ -55,7 +55,9 @@ const (
 	// there is one).
 	CodeNotInstalled = "not_installed"
 	// CodeUpdateFailed: at least one skill failed to update; the others
-	// were updated.
+	// were updated. SkillID names the skill when only one failed; every
+	// failed skill is also a warning (code update_failed or update_skipped)
+	// with its skill_id.
 	CodeUpdateFailed = "update_failed"
 	// CodeNoAgentEnabled: the change would leave no agent enabled.
 	CodeNoAgentEnabled = "no_agent_enabled"
@@ -92,6 +94,7 @@ func ErrorFrom(err error) *Error {
 		notInst   *core.NotInstalledError
 		updFailed *core.UpdateFailedError
 		badAgent  *core.UnknownAgentError
+		dirErr    *core.ProjectDirError
 	)
 	switch {
 	case errors.As(err, &pe):
@@ -132,6 +135,9 @@ func ErrorFrom(err error) *Error {
 		}
 	case errors.As(err, &updFailed):
 		out.Code = CodeUpdateFailed
+		if len(updFailed.IDs) == 1 {
+			out.SkillID = updFailed.IDs[0]
+		}
 	case errors.Is(err, core.ErrNoAgentEnabled):
 		out.Code = CodeNoAgentEnabled
 	case errors.As(err, &badAgent):
@@ -142,6 +148,8 @@ func ErrorFrom(err error) *Error {
 		out.Code = CodeSourceBuild
 	case errors.Is(err, core.ErrNoUpgrade):
 		out.Code = CodeNoUpgrade
+	case errors.As(err, &dirErr):
+		out.Path = dirErr.Path
 	}
 	return out
 }
