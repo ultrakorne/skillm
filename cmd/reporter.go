@@ -76,15 +76,27 @@ func printLog(ev core.Event) {
 	case core.LevelError:
 		ui.Errorf("%s", text)
 	default:
+		if hintCodes[ev.Code] {
+			ui.Hintf("%s", text)
+			return
+		}
 		fmt.Fprintln(os.Stdout, text)
 	}
 }
 
-// flagAdvice is the CLI's suffix for the event codes a flag can resolve.
-// Core's Text never names a flag; the terminal adds which one to pass.
+// flagAdvice is the CLI's suffix for the event codes a flag or another
+// command resolves. Core's Text never names a flag or a command; the
+// terminal adds which one to use.
 var flagAdvice = map[string]string{
-	core.CodeLinkRefused:    " (pass --force to take it over)",
-	core.CodeInstallBlocked: " (pass --force)",
+	core.CodeLinkRefused:       " (pass --force to take it over)",
+	core.CodeInstallBlocked:    " (pass --force)",
+	core.CodeAgentEnabledEmpty: " (run `skillm install`)",
+	core.CodeCopiesKept:        "; use `skillm uninstall` to remove skills entirely",
+}
+
+// hintCodes are the info codes the terminal prints as a dim tip.
+var hintCodes = map[string]bool{
+	core.CodeCopiesKept: true,
 }
 
 // dropCodes forwards every Event to rep except those whose Code is listed.

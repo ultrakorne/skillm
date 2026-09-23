@@ -2,19 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/ultrakorne/skillm/internal/agentdir"
-	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/core"
-	"github.com/ultrakorne/skillm/internal/linker"
-	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -47,31 +42,27 @@ func newAgentCmd() *cobra.Command {
 }
 
 func runAgent(ctx context.Context) error {
-	home, err := store.Home(flagHome)
+	opts, err := coreOptions(false)
 	if err != nil {
 		return err
 	}
-	// Hold Home's lock from load to save so a concurrent skillm process cannot
-	// interleave its writes with ours.
-	unlock, err := lockHome(ctx, home, "skillm agent")
+	// The picker and the confirmation run without Home's lock, so an open
+	// prompt never blocks another skillm process; core.SetAgents re-reads
+	// config.toml under the lock and applies the change to what it finds.
+	agents, err := core.Agents(opts)
 	if err != nil {
 		return err
 	}
-	defer unlock()
-
-	cfg, err := config.Load(home)
-	if err != nil {
-		return err
+	var all, before []string
+	for _, a := range agents {
+		all = append(all, a.Name)
+		if a.Enabled {
+			before = append(before, a.Name)
+		}
 	}
-
-	// Snapshot the enabled set BEFORE the toggle. The enable pass mirrors the
-	// links these agents currently hold, so we must capture them before any
-	// change is applied (config or disk).
-	beforeEnabled := cfg.EnabledAgents()
-	beforeNames := cfg.EnabledNames()
 
 	// The picker offers every defined agent, pre-checking those enabled now.
-	selection, err := ui.SelectAgents(cfg.AgentNames(), beforeNames)
+	selection, err := ui.SelectAgents(all, before)
 	if err != nil {
 		return err
 	}
@@ -80,43 +71,21 @@ func runAgent(ctx context.Context) error {
 	// every link, which is `uninstall`'s job (it also deletes the canonical
 	// copies), so we refuse here and point there. Nothing is written or unlinked.
 	if len(selection) == 0 {
-		return fmt.Errorf("at least one agent must stay enabled; to remove skills entirely use `skillm uninstall`")
+		return errNoAgentEnabled
 	}
 
-	// Partition the defined agents by how their enabled state is changing.
-	// Unchanged agents are never touched: `agent` toggles, it does not repair
-	// drift (use `skillm install` for that).
-	after := nameSet(selection)
-	before := nameSet(beforeNames)
-	var newlyEnabled, newlyDisabled []agentdir.Agent
-	for _, a := range cfg.AllAgents() {
-		switch {
-		case after[a.Name] && !before[a.Name]:
-			newlyEnabled = append(newlyEnabled, a)
-		case !after[a.Name] && before[a.Name]:
-			newlyDisabled = append(newlyDisabled, a)
-		}
-	}
-	if len(newlyEnabled) == 0 && len(newlyDisabled) == 0 {
+	// Only the agents whose state changes are touched: `agent` toggles, it
+	// does not repair drift (use `skillm install` for that).
+	enable, disable := agentDiff(before, selection)
+	if len(enable) == 0 && len(disable) == 0 {
 		ui.Successf("no changes (enabled agents: %s)", strings.Join(selection, ", "))
 		return nil
 	}
 
-	// Load everything the reconcile needs before writing anything, so a load
-	// failure aborts cleanly without a half-applied change.
-	st, err := state.Load(home)
-	if err != nil {
-		return err
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("determine current directory: %w", err)
-	}
-
 	// Confirm only when links will be removed (a disable is present); an
 	// enable-only change is additive and safe, so it applies without a prompt.
-	if len(newlyDisabled) > 0 && ui.IsTTY() && !flagYes && !flagForce {
-		ok, err := ui.Confirm(confirmAgentPrompt(newlyEnabled, newlyDisabled))
+	if len(disable) > 0 && ui.IsTTY() && !opts.Yes && !opts.Force {
+		ok, err := ui.Confirm(confirmAgentPrompt(enable, disable))
 		if err != nil {
 			return err
 		}
@@ -125,310 +94,64 @@ func runAgent(ctx context.Context) error {
 			return nil
 		}
 	}
+	return setAgents(ctx, enable, disable)
+}
 
-	// Persist the new enabled flags — the durable intent. Disk is then reconciled
-	// best-effort below: a blocked spot is skipped with a warning.
-	cfg.SetEnabled(selection)
-	if err := config.Save(home, cfg); err != nil {
+// errNoAgentEnabled is the CLI's wording of core.ErrNoAgentEnabled.
+var errNoAgentEnabled = errors.New("at least one agent must stay enabled; to remove skills entirely use `skillm uninstall`")
+
+// setAgents enables and disables the named agents under Home's lock and
+// reports the enabled set afterwards.
+func setAgents(ctx context.Context, enable, disable []string) error {
+	opts, err := coreOptions(true)
+	if err != nil {
 		return err
 	}
+	unlock, err := lockHome(ctx, opts.Home, "skillm agent")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
-	// Enable pass before disable pass, so a one-shot swap (disable A, enable B)
-	// lets B copy A's links while they are still on disk.
-	stateChanged := false
-	for _, a := range newlyEnabled {
-		if enableAgent(home, a, beforeEnabled, st, cwd) {
-			stateChanged = true
-		}
+	res, err := core.SetAgents(ctx, opts, termLog, enable, disable)
+	if errors.Is(err, core.ErrNoAgentEnabled) {
+		return errNoAgentEnabled
 	}
-	for _, a := range newlyDisabled {
-		disableAgent(home, a, st, cwd)
+	if err != nil {
+		return err
 	}
-
-	// A project that lost its last skillm link (and holds no recorded copy) is
-	// no longer worth tracking, and a recorded root whose copy vanished is no
-	// longer current. Scan across all defined agents so a root kept alive by a
-	// still-enabled agent survives.
-	if reconcileLocalRoots(home, cfg.AllAgents(), st) {
-		stateChanged = true
+	if len(res.Changes) == 0 {
+		ui.Successf("no changes (enabled agents: %s)", strings.Join(res.Enabled, ", "))
+		return nil
 	}
-	if reconcileVendoredRoots(home, st) {
-		stateChanged = true
-	}
-	if stateChanged {
-		if err := state.Save(home, st); err != nil {
-			return err
-		}
-	}
-
-	ui.Successf("enabled agents: %s", strings.Join(selection, ", "))
+	ui.Successf("enabled agents: %s", strings.Join(res.Enabled, ", "))
 	return nil
 }
 
-// enableAgent links one newly-enabled agent at every place the before-enabled
-// agents are currently linked: the global folder and every tracked local root
-// (plus the current directory). The footprint is read live from disk, so it
-// reflects exactly what the peer agents have. A spot blocked by a foreign file
-// or symlink is skipped with a warning instead of aborting the sweep. It returns
-// true when it changes the tracked local roots in state.
-func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, st *state.State, cwd string) bool {
-	one := []agentdir.Agent{a}
-	skills := map[string]bool{}
-	stateChanged := false
-	var places []string
-
-	linkAt := func(scope agentdir.Scope, base string) {
-		// At local scope, ignore the footprint of any before-enabled peer whose
-		// local folder aliases its global one at base (e.g. home): scanning it
-		// would read that peer's GLOBAL links as a phantom local footprint and
-		// mirror those global-only skills into the newly enabled agent. Global
-		// scope needs no such filter — a global folder is always real.
-		sources := beforeEnabled
-		if scope == agentdir.Local {
-			sources, _ = splitLocalAliased(beforeEnabled, base)
-		}
-		got := false
-		for _, id := range footprintIDs(home, sources, scope, base) {
-			// A link points at the scope's canonical copy; without one (a
-			// legacy install whose peers still hold old Home links) a new link
-			// would dangle — skip it.
-			if !core.CopyExists(home, id, scope, base) {
-				continue
-			}
-			res, err := linker.Link(home, id, one, scope, base)
-			if err != nil {
-				ui.Warnf("%v", err)
-			}
-			for _, ar := range res.Agents {
-				if ar.Action == linker.ActionCreated || ar.Action == linker.ActionAlreadyLinked {
-					skills[id] = true
-					got = true
-				}
-			}
-		}
-		if got {
-			places = append(places, scopeLabel(scope, base, cwd))
-			if scope == agentdir.Local && st.AddLocalRoot(base) {
-				stateChanged = true
-			}
+// agentDiff returns the agents in after but not in before (to enable) and
+// those in before but not in after (to disable), each in its input order.
+func agentDiff(before, after []string) (enable, disable []string) {
+	for _, n := range after {
+		if !slices.Contains(before, n) {
+			enable = append(enable, n)
 		}
 	}
-
-	if a.Supports(agentdir.Global) {
-		linkAt(agentdir.Global, cwd) // base is ignored for global scope
-	}
-	if a.Supports(agentdir.Local) {
-		for _, dir := range localScanDirs(st.LocalRoots, cwd) {
-			// Skip a dir where this agent's local folder is its global one (e.g.
-			// home): the global pass already mirrored those links, and recording
-			// the dir as a local root would be bogus.
-			if agentdir.LocalAliasesGlobal(a, dir) {
-				continue
-			}
-			linkAt(agentdir.Local, dir)
+	for _, n := range before {
+		if !slices.Contains(after, n) {
+			disable = append(disable, n)
 		}
 	}
-
-	// Link the recorded installs too — the Global install and every root where
-	// a skill's canonical copy exists — so the newly-enabled agent gets its
-	// link even where no peer holds one (a canonical-folder agent is served by
-	// the copy itself and needs nothing). A foreign entry at the agent's own
-	// link path is warned about, never clobbered.
-	linkRecorded := func(id string, scope agentdir.Scope, base string) {
-		if !core.CopyExists(home, id, scope, base) {
-			return // copy vanished; nothing to link to
-		}
-		res, lerr := linker.Link(home, id, one, scope, base)
-		if lerr != nil {
-			ui.Warnf("%v", lerr)
-		}
-		for _, ar := range res.Agents {
-			if ar.Action == linker.ActionCreated || ar.Action == linker.ActionAlreadyLinked {
-				skills[id] = true
-				places = append(places, scopeLabel(scope, base, cwd))
-			}
-		}
-	}
-	if a.Supports(agentdir.Global) && !agentdir.IsCanonicalGlobal(a) {
-		for _, e := range st.Skills {
-			if e.Global {
-				linkRecorded(e.ID, agentdir.Global, cwd)
-			}
-		}
-	}
-	if a.Supports(agentdir.Local) && !agentdir.IsCanonicalLocal(a) {
-		for _, e := range st.Skills {
-			for _, root := range e.VendoredAt {
-				if agentdir.LocalAliasesGlobal(a, root) {
-					continue
-				}
-				linkRecorded(e.ID, agentdir.Local, root)
-			}
-		}
-	}
-
-	if len(skills) == 0 {
-		ui.Successf("enabled %s — nothing to install yet (run `skillm install`)", a.Name)
-		return stateChanged
-	}
-	ui.Successf("enabled %s — installed %d skill%s (%s)", a.Name, len(skills), plural(len(skills)), strings.Join(dedupeStrings(places), ", "))
-	return stateChanged
-}
-
-// disableAgent removes every skillm-managed link one newly-disabled agent holds,
-// across the global folder and every tracked local root (plus the current
-// directory). It scans for the agent's own links and unlinks each; foreign files
-// and symlinks are never touched. A refusal is reported as a warning so one
-// obstruction never aborts the sweep. The canonical copies are left intact —
-// disabling an agent is not uninstalling a skill.
-func disableAgent(home string, a agentdir.Agent, st *state.State, cwd string) {
-	one := []agentdir.Agent{a}
-	skills := map[string]bool{}
-	var places []string
-
-	unlinkAt := func(scope agentdir.Scope, base string) {
-		infos, err := linker.ScanAll(home, one, scope, base)
-		if err != nil {
-			ui.Warnf("scan %s (%s): %v", a.Name, scopeLabel(scope, base, cwd), err)
-			return
-		}
-		got := false
-		for _, li := range infos {
-			res, err := linker.Unlink(home, li.ID, one, scope, base)
-			if err != nil {
-				ui.Warnf("%v", err)
-			}
-			for _, ar := range res.Agents {
-				if ar.Action == linker.ActionRemoved {
-					skills[li.ID] = true
-					got = true
-				}
-			}
-		}
-		if got {
-			places = append(places, scopeLabel(scope, base, cwd))
-		}
-	}
-
-	if a.Supports(agentdir.Global) {
-		unlinkAt(agentdir.Global, cwd)
-	}
-	if a.Supports(agentdir.Local) {
-		for _, dir := range localScanDirs(st.LocalRoots, cwd) {
-			// Skip a dir where this agent's local folder is its global one (e.g.
-			// home): the global pass already removed those links there.
-			if agentdir.LocalAliasesGlobal(a, dir) {
-				continue
-			}
-			unlinkAt(agentdir.Local, dir)
-		}
-	}
-
-	// The canonical .agents/skills copies are NOT deleted, even when the
-	// "agents" entry itself is disabled: they are the scope's skill store and
-	// the target of every other agent's link. Removing copies is
-	// `skillm uninstall`'s job.
-	if agentdir.IsCanonicalLocal(a) && anyVendoredRoot(st) {
-		ui.Hintf("committed copies in the projects' %s folders stay in place; use `skillm uninstall` to remove skills entirely", agentdir.CanonicalLocalRel)
-	}
-	if agentdir.IsCanonicalGlobal(a) && anyGlobalInstall(st) {
-		ui.Hintf("global copies in %s stay in place; use `skillm uninstall` to remove skills entirely", core.CanonicalDisplay(agentdir.Global))
-	}
-
-	if len(skills) == 0 {
-		ui.Successf("disabled %s — nothing to remove", a.Name)
-		return
-	}
-	ui.Successf("disabled %s — removed %d skill%s (%s)", a.Name, len(skills), plural(len(skills)), strings.Join(dedupeStrings(places), ", "))
-}
-
-// footprintIDs returns the sorted, de-duplicated skill ids that any of agents
-// has linked at (scope, base) — the set a newly-enabled agent mirrors. A scan
-// error yields no ids rather than failing the reconcile.
-func footprintIDs(home string, agents []agentdir.Agent, scope agentdir.Scope, base string) []string {
-	infos, err := linker.ScanAll(home, agents, scope, base)
-	if err != nil {
-		return nil
-	}
-	seen := make(map[string]bool, len(infos))
-	ids := make([]string, 0, len(infos))
-	for _, li := range infos {
-		if !seen[li.ID] {
-			seen[li.ID] = true
-			ids = append(ids, li.ID)
-		}
-	}
-	sort.Strings(ids)
-	return ids
+	return enable, disable
 }
 
 // confirmAgentPrompt builds the single confirmation shown before a reconcile
 // that removes links, naming the agents and reassuring that the skills'
 // canonical copies (global and the projects' committed ones) are untouched.
-func confirmAgentPrompt(newlyEnabled, newlyDisabled []agentdir.Agent) string {
-	dis := strings.Join(agentNames(newlyDisabled), ", ")
+func confirmAgentPrompt(newlyEnabled, newlyDisabled []string) string {
+	dis := strings.Join(newlyDisabled, ", ")
 	if len(newlyEnabled) == 0 {
 		return fmt.Sprintf("Disable %s? This removes its links from every scope and project; the skills stay installed (their canonical copies are untouched).", dis)
 	}
-	en := strings.Join(agentNames(newlyEnabled), ", ")
+	en := strings.Join(newlyEnabled, ", ")
 	return fmt.Sprintf("Enable %s and disable %s? Disabling removes links from every scope and project; the skills stay installed (their canonical copies are untouched).", en, dis)
-}
-
-// anyVendoredRoot reports whether any skill has a recorded Local install root.
-func anyVendoredRoot(st *state.State) bool {
-	for _, e := range st.Skills {
-		if len(e.VendoredAt) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// anyGlobalInstall reports whether any skill has a recorded Global install.
-func anyGlobalInstall(st *state.State) bool {
-	for _, e := range st.Skills {
-		if e.Global {
-			return true
-		}
-	}
-	return false
-}
-
-// agentNames returns the names of agents in slice order.
-func agentNames(agents []agentdir.Agent) []string {
-	names := make([]string, 0, len(agents))
-	for _, a := range agents {
-		names = append(names, a.Name)
-	}
-	return names
-}
-
-// nameSet returns the set of names for fast membership tests.
-func nameSet(names []string) map[string]bool {
-	s := make(map[string]bool, len(names))
-	for _, n := range names {
-		s[n] = true
-	}
-	return s
-}
-
-// plural returns "s" unless n is exactly 1, for simple count messages.
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
-}
-
-// dedupeStrings returns s with duplicates removed, preserving first-seen order.
-func dedupeStrings(s []string) []string {
-	seen := make(map[string]bool, len(s))
-	out := make([]string, 0, len(s))
-	for _, v := range s {
-		if !seen[v] {
-			seen[v] = true
-			out = append(out, v)
-		}
-	}
-	return out
 }

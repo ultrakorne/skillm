@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ultrakorne/skillm/internal/lockfile"
+	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
 )
 
@@ -41,10 +42,12 @@ func holdHomeLock(t *testing.T, hold time.Duration) time.Time {
 // Every command that saves config or state takes Home's lock before loading
 // anything: while another process holds it, the command waits. Each command
 // here runs against an empty Home, so it does no real work once it gets the
-// lock — its result does not matter, only that it waited. install and import
-// are the exceptions: they fetch (and install prompts) before taking the lock
-// for the write phase, and skip it when there is nothing to write, so install
-// is given a skill to install and import a lockfile entry to consider.
+// lock — its result does not matter, only that it waited. install, import,
+// uninstall and agent are the exceptions: they fetch or ask their questions
+// before taking the lock for the write phase, and skip it when there is
+// nothing to write, so install is given a skill to install, import a lockfile
+// entry to consider, uninstall a registered skill, and agent (past its
+// picker, which needs a terminal) an agent to disable.
 func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 	cmds := map[string]func(t *testing.T) error{
 		"install": func(t *testing.T) error {
@@ -62,8 +65,17 @@ func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 			}
 			return nil
 		},
-		"update":    func(*testing.T) error { return runUpdate(context.Background(), "", "", false) },
-		"uninstall": func(*testing.T) error { return runUninstall(context.Background(), nil, true) },
+		"update": func(*testing.T) error { return runUpdate(context.Background(), "", "", false) },
+		"uninstall": func(t *testing.T) error {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("USERPROFILE", t.TempDir())
+			st := &state.State{}
+			st.Upsert(state.SkillEntry{ID: "demo", Kind: state.KindLocal, Source: t.TempDir()})
+			if err := state.Save(os.Getenv("SKILLM_HOME"), st); err != nil {
+				t.Fatal(err)
+			}
+			return runUninstall(context.Background(), []string{"demo"}, false)
+		},
 		"import": func(t *testing.T) error {
 			dir := t.TempDir()
 			lf := &lockfile.File{Version: 1, Skills: map[string]*lockfile.Entry{
@@ -74,7 +86,11 @@ func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 			}
 			return runImport(context.Background(), dir)
 		},
-		"agent": func(*testing.T) error { return runAgent(context.Background()) },
+		"agent": func(t *testing.T) error {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("USERPROFILE", t.TempDir())
+			return setAgents(context.Background(), nil, []string{"claude"})
+		},
 	}
 	const hold = 300 * time.Millisecond
 	for name, run := range cmds {

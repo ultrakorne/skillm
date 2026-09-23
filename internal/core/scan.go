@@ -7,10 +7,8 @@ import (
 	"github.com/ultrakorne/skillm/internal/linker"
 )
 
-// Read-only disk scans behind List. cmd still holds its own copies of
-// scanLinkNames and localScanDirs for the commands that have not moved into
-// core yet; each copy goes away when its last caller moves (A4–A6 of
-// docs/plans/macos-menubar.md).
+// Read-only disk scans behind List, Uninstall and SetAgents. cmd still holds
+// its own copy of scanLinkNames for install's scope question.
 
 // servedAgents returns the names of the agents that skill id's install at
 // (scope, base) serves: agents whose folder at the scope IS the canonical
