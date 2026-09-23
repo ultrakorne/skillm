@@ -50,7 +50,9 @@ type Event struct {
 	Skill string
 	// Code is a stable machine code, e.g. "update_available".
 	Code string
-	// Text is the human sentence the CLI prints for the event.
+	// Text is the human sentence for the event. It is what the CLI prints,
+	// unless the operation says otherwise (Check's code "error" names the
+	// cause where the CLI keeps its historic "untracked" line).
 	Text string
 	// Items lists the skill ids of an EventBatch.
 	Items []string

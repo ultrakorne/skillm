@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -47,7 +48,7 @@ func runCheck(ctx context.Context) error {
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	rep := newTermReporter(ctx, ui.ChecklistOptions{OnAbort: cancel})
-	res, err := core.Check(wctx, opts, rep)
+	res, err := core.Check(wctx, opts, checkReporter{rep, sourceLabels(opts.Home)})
 	rep.Wait()
 	if cerr := ctx.Err(); cerr != nil {
 		return cerr
@@ -87,4 +88,35 @@ func runCheck(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// checkReporter renders core.Check's events on a termReporter, keeping the
+// CLI's historic wording: a skill whose upstream could not be read is shown
+// as untracked, as it always was, while core's event names the cause.
+type checkReporter struct {
+	*termReporter
+	// labels maps a skill id to its SourceLabel.
+	labels map[string]string
+}
+
+// Event implements core.Reporter.
+func (r checkReporter) Event(ev core.Event) {
+	if label, ok := r.labels[ev.Skill]; ok && ev.Type == core.EventItemDone && ev.Code == string(core.StatusError) {
+		ev.Text = core.UntrackedText(ev.Skill, label)
+	}
+	r.termReporter.Event(ev)
+}
+
+// sourceLabels maps every registered skill's id to its SourceLabel. A
+// registry that cannot be read yields none; core.Check reports that error.
+func sourceLabels(home string) map[string]string {
+	st, err := state.Load(home)
+	if err != nil {
+		return nil
+	}
+	labels := make(map[string]string, len(st.Skills))
+	for _, e := range st.Skills {
+		labels[e.ID] = core.SourceLabel(e.Kind, e.Source, e.Path)
+	}
+	return labels
 }

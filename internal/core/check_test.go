@@ -105,6 +105,50 @@ func TestCheckOne(t *testing.T) {
 	}
 }
 
+// TestInterrupted verifies a failed lookup on a cancelled ctx counts as
+// interrupted even when its error does not wrap ctx's, while a real answer
+// (a missing subdir) and a failure on a live ctx do not.
+func TestInterrupted(t *testing.T) {
+	live := context.Background()
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	plain := errors.New("gitx: could not determine default branch")
+	tests := []struct {
+		name string
+		ctx  context.Context
+		cs   CheckedSkill
+		want bool
+	}{
+		{"error after cancel, not wrapping ctx", done, CheckedSkill{Status: StatusError, Err: plain}, true},
+		{"error after cancel, wrapping ctx", done, CheckedSkill{Status: StatusError, Err: context.Canceled}, true},
+		{"untracked after cancel", done, CheckedSkill{Status: StatusUntracked, Err: &gitx.NotFoundError{}}, false},
+		{"up to date after cancel", done, CheckedSkill{Status: StatusUpToDate}, false},
+		{"error on a live ctx", live, CheckedSkill{Status: StatusError, Err: plain}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := interrupted(tc.ctx, tc.cs); got != tc.want {
+				t.Fatalf("interrupted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCheckEventError verifies a failed lookup's event names its cause
+// instead of calling the skill untracked.
+func TestCheckEventError(t *testing.T) {
+	e := state.SkillEntry{ID: "x", Kind: state.KindGit, Source: "https://example.com/r", Path: "x"}
+	ev := checkEvent(e, CheckedSkill{Status: StatusError, Err: errors.New("boom")})
+	want := "x: could not read upstream (https://example.com/r//x): boom"
+	if ev.Code != string(StatusError) || ev.Level != LevelError || ev.Text != want {
+		t.Fatalf("event = %+v, want code error with text %q", ev, want)
+	}
+	ev = checkEvent(e, CheckedSkill{Status: StatusUntracked, Err: &gitx.NotFoundError{}})
+	if ev.Text != UntrackedText("x", "https://example.com/r//x") {
+		t.Fatalf("untracked text = %q", ev.Text)
+	}
+}
+
 // recorder is a Reporter that keeps every Event.
 type recorder struct {
 	mu     sync.Mutex

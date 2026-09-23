@@ -78,7 +78,7 @@ func Check(ctx context.Context, opts Options, rep Reporter) (CheckResult, error)
 		e := st.Skills[i]
 		rep.Event(Event{Type: EventItemStart, Index: i, Skill: e.ID})
 		cs := checkOne(ctx, e)
-		if cerr := ctx.Err(); cerr != nil && errors.Is(cs.Err, cerr) {
+		if interrupted(ctx, cs) {
 			// Interrupted, not failed: leave the row unresolved.
 			return
 		}
@@ -88,6 +88,14 @@ func Check(ctx context.Context, opts Options, rep Reporter) (CheckResult, error)
 		rep.Event(ev)
 	})
 	return res, ctx.Err()
+}
+
+// interrupted reports whether cs is a lookup that failed because ctx was
+// cancelled. Once ctx is done any failed lookup counts, whether or not its
+// error wraps ctx's, so a cancellation never shows up as a failed row. A
+// missing subdir (StatusUntracked) is a real answer and still counts.
+func interrupted(ctx context.Context, cs CheckedSkill) bool {
+	return ctx.Err() != nil && cs.Status == StatusError
 }
 
 // checkOne determines skill e's upstream status.
@@ -113,8 +121,9 @@ func checkOne(ctx context.Context, e state.SkillEntry) CheckedSkill {
 }
 
 // checkEvent is the ItemDone event for skill e's check result. Its Text is the
-// line `skillm check` prints; a failed lookup keeps the CLI's historic
-// "untracked" wording whatever the cause, and the cause is in cs.Err.
+// line `skillm check` prints, except for a failed lookup (StatusError): its
+// Text names the cause, and cmd renders the CLI's historic "untracked" line
+// in its place.
 func checkEvent(e state.SkillEntry, cs CheckedSkill) Event {
 	ev := Event{Type: EventItemDone, Skill: e.ID, Code: string(cs.Status)}
 	switch cs.Status {
@@ -124,14 +133,23 @@ func checkEvent(e state.SkillEntry, cs CheckedSkill) Event {
 	case StatusUpdateAvailable:
 		ev.Level = LevelWarn
 		ev.Text = fmt.Sprintf("%s: update available (%s)", e.ID, SourceLabel(e.Kind, e.Source, e.Path))
-	case StatusUntracked, StatusError:
+	case StatusUntracked:
 		ev.Level = LevelError
-		ev.Text = fmt.Sprintf("%s: untracked — its subdir was not found upstream (%s)", e.ID, SourceLabel(e.Kind, e.Source, e.Path))
+		ev.Text = UntrackedText(e.ID, SourceLabel(e.Kind, e.Source, e.Path))
+	case StatusError:
+		ev.Level = LevelError
+		ev.Text = fmt.Sprintf("%s: could not read upstream (%s): %v", e.ID, SourceLabel(e.Kind, e.Source, e.Path), cs.Err)
 	default:
 		ev.Level = LevelSuccess
 		ev.Text = fmt.Sprintf("%s: up-to-date", e.ID)
 	}
 	return ev
+}
+
+// UntrackedText is the line `skillm check` prints for a skill whose subdir
+// is gone upstream, given its id and SourceLabel.
+func UntrackedText(id, label string) string {
+	return fmt.Sprintf("%s: untracked — its subdir was not found upstream (%s)", id, label)
 }
 
 // upstreamRevision treeless-clones e's source at its pinned ref into a

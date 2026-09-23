@@ -2,10 +2,14 @@ package gitx
 
 import (
 	"context"
+	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestLooksLikeSHA(t *testing.T) {
@@ -261,5 +265,71 @@ func TestTreelessCloneLocal(t *testing.T) {
 	}
 	if got != sha {
 		t.Errorf("cloned SHA HEAD = %q, want %q", got, sha)
+	}
+}
+
+// TestTreelessCloneCancelStalledHTTP verifies a cancelled clone returns
+// promptly even when the HTTP server never answers. Killing git leaves its
+// remote helper holding git's stderr pipe, which used to block runGit until
+// the server gave up.
+func TestTreelessCloneCancelStalledHTTP(t *testing.T) {
+	gitAvailable(t)
+	for _, k := range []string{"http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Accept connections and hold them open without ever replying.
+	var mu sync.Mutex
+	var conns []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	dest := filepath.Join(t.TempDir(), "clone")
+	start := time.Now()
+	err = TreelessClone(ctx, "http://"+ln.Addr().String()+"/r.git", "", dest)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("TreelessClone against a stalled server succeeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap the context's error", err)
+	}
+	if limit := 500*time.Millisecond + waitDelay + 3*time.Second; elapsed > limit {
+		t.Fatalf("cancelled clone took %v, want under %v", elapsed, limit)
+	}
+}
+
+// TestDefaultRefCancelled verifies a cancelled DefaultRef reports the
+// cancellation rather than an undeterminable branch.
+func TestDefaultRefCancelled(t *testing.T) {
+	dir := initRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := DefaultRef(ctx, dir); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DefaultRef on a cancelled ctx: err = %v, want context.Canceled", err)
 	}
 }
