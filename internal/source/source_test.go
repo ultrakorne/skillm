@@ -3,6 +3,7 @@ package source
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"testing"
 )
@@ -298,6 +299,142 @@ func TestDiscoverSkills_Many(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
+	}
+}
+
+// A repo that ships one skill per agent (as pbakaus/impeccable does) commits a
+// copy of the same skill under every agent folder; discovery must report it
+// once, from the conventional location, not once per copy.
+func TestDiscoverSkills_DedupesPerAgentCopies(t *testing.T) {
+	cases := []struct {
+		name    string
+		dirs    []string
+		wantDir string
+	}{
+		{
+			name: "agents folder wins over agent-specific copies",
+			dirs: []string{
+				".agents/skills/impeccable",
+				".claude/skills/impeccable",
+				".cursor/skills/impeccable",
+				"cursor-plugin/skills/impeccable",
+				"plugin/skills/impeccable",
+				"tests/ws/.claude/skills/impeccable",
+			},
+			wantDir: ".agents/skills/impeccable",
+		},
+		{
+			name: "top-level skills folder wins over agents folder",
+			dirs: []string{
+				".agents/skills/impeccable",
+				".claude/skills/impeccable",
+				"skills/impeccable",
+			},
+			wantDir: "skills/impeccable",
+		},
+		{
+			name: "shallowest wins without a conventional folder",
+			dirs: []string{
+				"a/b/impeccable",
+				"z/impeccable",
+			},
+			wantDir: "z/impeccable",
+		},
+		{
+			name: "nested skills folder wins over a shallower fixture",
+			dirs: []string{
+				"skills/writing/impeccable",
+				"test/impeccable",
+			},
+			wantDir: "skills/writing/impeccable",
+		},
+		{
+			name: "nested skills folder wins over an agent copy",
+			dirs: []string{
+				".claude/skills/impeccable",
+				"skills/writing/impeccable",
+			},
+			wantDir: "skills/writing/impeccable",
+		},
+		{
+			name: "curated skills folder wins over an agent copy",
+			dirs: []string{
+				".codex/skills/impeccable",
+				"skills/.curated/impeccable",
+			},
+			wantDir: "skills/.curated/impeccable",
+		},
+		{
+			name: "shallowest wins within the skills folder",
+			dirs: []string{
+				"skills/cat/impeccable",
+				"skills/impeccable",
+			},
+			wantDir: "skills/impeccable",
+		},
+		{
+			name: "walk order breaks a tie",
+			dirs: []string{
+				"plugin/skills/impeccable",
+				"cursor-plugin/skills/impeccable",
+			},
+			wantDir: "cursor-plugin/skills/impeccable",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, d := range tc.dirs {
+				writeSkill(t, filepath.Join(root, filepath.FromSlash(d)), "impeccable")
+			}
+			writeSkill(t, filepath.Join(root, "other"), "other")
+
+			found, err := DiscoverSkills(root)
+			if err != nil {
+				t.Fatalf("DiscoverSkills: %v", err)
+			}
+			if got, want := ids(found), []string{"impeccable", "other"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("ids = %v, want %v", got, want)
+			}
+			for _, f := range found {
+				if f.Id != "impeccable" {
+					continue
+				}
+				if f.Dir != filepath.Join(root, filepath.FromSlash(tc.wantDir)) {
+					t.Errorf("Dir = %q, want %q", f.Dir, tc.wantDir)
+				}
+				if len(f.Duplicates) != len(tc.dirs)-1 {
+					t.Errorf("Duplicates = %v, want the %d other copies", f.Duplicates, len(tc.dirs)-1)
+				}
+				for _, d := range f.Duplicates {
+					if d == f.Dir {
+						t.Errorf("Duplicates contains the kept Dir %q", d)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The kept copy of a skill stays where the skill's first copy was in walk
+// order, even when the copy that wins comes after another skill.
+func TestDiscoverSkills_DedupeKeepsWalkOrder(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, ".claude", "skills", "foo"), "foo")
+	writeSkill(t, filepath.Join(root, "aaa"), "aaa")
+	writeSkill(t, filepath.Join(root, "skills", "foo"), "foo")
+
+	found, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatalf("DiscoverSkills: %v", err)
+	}
+	var got []string
+	for _, f := range found {
+		rel, _ := filepath.Rel(root, f.Dir)
+		got = append(got, f.Id+"@"+filepath.ToSlash(rel))
+	}
+	if want := []string{"foo@skills/foo", "aaa@aaa"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("found = %v, want %v", got, want)
 	}
 }
 

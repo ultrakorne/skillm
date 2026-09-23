@@ -187,6 +187,7 @@ func fetchGitToStage(cmd *cobra.Command, home, url string, opts fetchOpts) (skil
 	if err := checkAsSingle(opts.As, chosen); err != nil {
 		return fail(err)
 	}
+	hintDuplicates(repoDir, chosen)
 
 	st, err := state.Load(home)
 	if err != nil {
@@ -266,6 +267,7 @@ func fetchLocalToStage(home, path string, opts fetchOpts) (skills []stagedSkill,
 	if err := checkAsSingle(opts.As, chosen); err != nil {
 		return nil, cleanup, err
 	}
+	hintDuplicates(path, chosen)
 
 	st, err := state.Load(home)
 	if err != nil {
@@ -450,6 +452,21 @@ func repoRelSubpath(repoDir, dir string) string {
 		return ""
 	}
 	return filepath.ToSlash(rel)
+}
+
+// hintDuplicates tells the user which copy was taken for every chosen skill the
+// source holds more than once (e.g. one copy per agent folder), so a dropped
+// copy is never silent.
+func hintDuplicates(root string, chosen []source.Found) {
+	for _, f := range chosen {
+		if n := len(f.Duplicates); n > 0 {
+			where := repoRelSubpath(root, f.Dir)
+			if where == "" {
+				where = "."
+			}
+			ui.Hintf("%s: found %d times in source; using %s", f.Id, n+1, where)
+		}
+	}
 }
 
 // foundIDs joins the discovered skill ids for use in error messages.
