@@ -41,12 +41,12 @@ func TestDue(t *testing.T) {
 		{"interval shortened since", checked(t0, t0.Add(day), "0.4.0"), t0.Add(2 * time.Hour), true, time.Hour, "0.4.0", true},
 		{"interval lengthened since", checked(t0, t0.Add(time.Hour), "0.4.0"), t0.Add(2 * time.Hour), true, day, "0.4.0", true},
 		{"clock went back", checked(t0, t0.Add(day), "0.4.0"), t0.Add(-time.Hour), true, day, "0.4.0", true},
-		{"skillm replaced since", checked(t0, t0.Add(day), "0.4.0"), t0.Add(time.Minute), true, day, "0.5.0", true},
+		{"written by another skillm", checked(t0, t0.Add(day), "0.4.0"), t0.Add(time.Minute), true, day, "0.5.0", false},
 		{"no next due recorded", checked(t0, time.Time{}, "0.4.0"), t0.Add(time.Hour), true, day, "0.4.0", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := Due(c.f, c.now, c.enabled, c.interval, c.current); got != c.want {
+			if got := Due(c.f, c.now, c.enabled, c.interval); got != c.want {
 				t.Fatalf("Due = %v, want %v", got, c.want)
 			}
 		})

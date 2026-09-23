@@ -283,13 +283,18 @@ func statusCache() *status.File {
 }
 
 // TestStatusFileGolden pins <home>/status.json byte for byte as status.Save
-// writes it: GUIs that watch the file (Quickshell) decode it directly.
+// writes it: GUIs that watch the file (Quickshell) decode it directly. The
+// fixture is the cache itself, not an envelope, so it lives in
+// testdata/cache/, outside the envelope fixtures TestFixturesDecode walks.
 func TestStatusFileGolden(t *testing.T) {
 	b, err := status.Marshal(statusCache())
 	if err != nil {
 		t.Fatal(err)
 	}
-	golden(t, "status_file.json", b)
+	golden(t, filepath.Join("cache", "status.json"), b)
+	if err := strictUnmarshal(b, &status.File{}); err != nil {
+		t.Fatalf("cache fixture: %v", err)
+	}
 }
 
 // golden compares got with testdata/name, or rewrites the file when
@@ -316,22 +321,22 @@ func golden(t *testing.T, name string, got []byte) {
 
 // TestFixturesDecode decodes every fixture back into the protocol types with
 // unknown fields refused, so a fixture can never drift from the Go structs.
+// Every file directly in testdata is an envelope (.json) or an event stream
+// ending in one (.ndjson); subdirectories hold other formats.
 func TestFixturesDecode(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("testdata", "*"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no fixtures: %v", err)
 	}
 	for _, f := range files {
+		if fi, err := os.Stat(f); err != nil {
+			t.Fatal(err)
+		} else if fi.IsDir() {
+			continue
+		}
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if filepath.Base(f) == "status_file.json" {
-			// The refresh cache itself, not an envelope.
-			if err := strictUnmarshal(b, &status.File{}); err != nil {
-				t.Errorf("%s: %v", f, err)
-			}
-			continue
 		}
 		var docs [][]byte
 		if filepath.Ext(f) == ".ndjson" {

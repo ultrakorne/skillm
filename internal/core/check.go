@@ -38,6 +38,10 @@ type CheckedSkill struct {
 	UpstreamRev  string
 	// Err is the lookup failure behind StatusUntracked or StatusError.
 	Err error
+	// entry is the Registry entry that was checked, so a caller merging the
+	// result later can tell whether the skill still tracks the same source
+	// (sameTracking).
+	entry state.SkillEntry
 }
 
 // CheckResult lists every registered skill in Registry order.
@@ -100,7 +104,7 @@ func interrupted(ctx context.Context, cs CheckedSkill) bool {
 
 // checkOne determines skill e's upstream status.
 func checkOne(ctx context.Context, e state.SkillEntry) CheckedSkill {
-	cs := CheckedSkill{ID: e.ID, Kind: e.Kind, InstalledRev: e.Revision}
+	cs := CheckedSkill{ID: e.ID, Kind: e.Kind, InstalledRev: e.Revision, entry: e}
 	if e.Kind != state.KindGit {
 		cs.Status = StatusLocal
 		return cs

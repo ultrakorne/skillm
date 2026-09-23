@@ -71,6 +71,9 @@ type InstalledSkill struct {
 	// Action is what happened at the canonical slot; VendorBlocked means the
 	// skill was skipped and nothing was written for it.
 	Action VendorAction
+	// refetched says an id-mode install fetched the content from the skill's
+	// source just now (it had no global copy), so it is up to date.
+	refetched bool
 }
 
 // InstallResult is InstallSkills' outcome, one entry per skill it reached.
@@ -98,6 +101,8 @@ type installItem struct {
 	insp *InspectedSkill
 	// dir is the staged content, set by stageItems.
 	dir string
+	// refetched says stageItems fetched an id-mode item from its source.
+	refetched bool
 }
 
 // InstallSkills installs skills at one Scope for every enabled agent: the
@@ -226,7 +231,7 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 			runErr = err
 			break
 		}
-		res.Skills = append(res.Skills, InstalledSkill{ID: id, Action: action})
+		res.Skills = append(res.Skills, InstalledSkill{ID: id, Action: action, refetched: it.refetched})
 		if action == VendorBlocked {
 			ev := logEvent(LevelWarn, id, CodeInstallBlocked,
 				fmt.Sprintf("skipped %s: installing here would overwrite files skillm did not create", id))
@@ -444,7 +449,7 @@ func stageItems(ctx context.Context, rep Reporter, home, cwd string, st *state.S
 			it.entry = MergeEntry(st, it.entry.ID, it.entry)
 			continue
 		}
-		dir, clean, err := idModeSource(ctx, home, cwd, &it.entry)
+		dir, refetched, clean, err := idModeSource(ctx, home, cwd, &it.entry)
 		if clean != nil {
 			cleanups = append(cleanups, clean)
 		}
@@ -452,7 +457,7 @@ func stageItems(ctx context.Context, rep Reporter, home, cwd string, st *state.S
 			rep.Event(itemDone(i, installFailed(it.entry.ID, err)))
 			return cleanup, err
 		}
-		it.dir = dir
+		it.dir, it.refetched = dir, refetched
 	}
 	return cleanup, nil
 }
@@ -463,27 +468,27 @@ func stageItems(ctx context.Context, rep Reporter, home, cwd string, st *state.S
 // and that copy exists (no network); (2) a local-path skill's recorded source
 // directory when it still exists; (3) otherwise a fresh re-fetch from
 // e.Source@e.Ref (git), which materializes the content and may advance e's
-// recorded Revision. It returns the content dir and a cleanup func (nil when
-// no temp was created). e is mutated in place when a re-fetch advances the
-// revision.
-func idModeSource(ctx context.Context, home, cwd string, e *state.SkillEntry) (string, func(), error) {
+// recorded Revision. It returns the content dir, whether it re-fetched, and a
+// cleanup func (nil when no temp was created). e is mutated in place when a
+// re-fetch advances the revision.
+func idModeSource(ctx context.Context, home, cwd string, e *state.SkillEntry) (string, bool, func(), error) {
 	if e.Global && CopyExists(home, e.ID, agentdir.Global, "") {
-		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), nil, nil
+		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), false, nil, nil
 	}
 	if e.Kind == state.KindLocal {
 		src, err := localSourceDir(*e, cwd)
-		return src, nil, err
+		return src, false, nil, err
 	}
 	// Git skill with no reusable global copy: re-fetch from the pinned source.
 	dir, rev, clean, err := RefetchSkill(ctx, *e)
 	if err != nil {
-		return "", nil, fmt.Errorf("re-fetch %q from %s: %w", e.ID, e.Source, err)
+		return "", false, nil, fmt.Errorf("re-fetch %q from %s: %w", e.ID, e.Source, err)
 	}
 	if rev != e.Revision {
 		e.Revision = rev
 		e.InstalledAt = time.Now().UTC()
 	}
-	return dir, clean, nil
+	return dir, true, clean, nil
 }
 
 // localSourceDir returns the recorded source directory of the local-path

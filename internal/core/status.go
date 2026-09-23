@@ -46,7 +46,8 @@ type StatusResult struct {
 	Status *status.File
 	// Stale reports that the cache is older than the refresh interval.
 	Stale bool
-	// Refreshed reports that Refresh ran a check and rewrote the cache.
+	// Refreshed reports that Refresh ran a check. The cache holds its
+	// outcome, or a newer refresh's that finished first.
 	Refreshed bool
 }
 
@@ -59,9 +60,11 @@ type StatusResult struct {
 // (opts.Lock), merged with a fresh read of the Registry, so a skill another
 // process changed meanwhile keeps the row that process recorded, a skill
 // uninstalled meanwhile is dropped, and one installed meanwhile keeps its
-// row. A failed Check (a broken Registry, a cancellation) writes nothing and
-// returns its error. The next refresh is due one interval after req.Now, or
-// status.RetryAfterFailure after it when every lookup failed.
+// row. When another refresh started later and saved first, its cache stays
+// (this one's lookups are older). A failed Check (a broken Registry, a
+// cancellation) writes nothing and returns its error. The next refresh is due
+// one interval after req.Now, or status.RetryAfterFailure after it when every
+// lookup failed.
 func Refresh(ctx context.Context, opts Options, rep Reporter, req RefreshRequest) (StatusResult, error) {
 	rep = nopIfNil(rep)
 	cfg, err := config.Load(opts.Home)
@@ -71,12 +74,16 @@ func Refresh(ctx context.Context, opts Options, rep Reporter, req RefreshRequest
 	interval := refreshInterval(cfg)
 	if req.IfDue {
 		prev := loadStatus(opts.Home, rep)
-		if !status.Due(prev, req.Now, cfg.RefreshEnabled(), interval, selfupdate.Display(req.Version)) {
+		if !status.Due(prev, req.Now, cfg.RefreshEnabled(), interval) {
 			return cachedStatus(prev, req.Version, req.Now, interval), nil
 		}
 	}
 
 	started := status.Stamp(req.Now)
+	// clock measures, on the monotonic clock, how long the lookups take, so
+	// a cache another refresh wrote meanwhile can be told from one dated in
+	// the future by a clock that went back.
+	clock := time.Now()
 	checked, err := Check(ctx, opts, rep)
 	if err != nil {
 		return StatusResult{}, err
@@ -101,6 +108,13 @@ func Refresh(ctx context.Context, opts Options, rep Reporter, req RefreshRequest
 	// An unreadable cache was reported above (with IfDue) or is simply
 	// replaced.
 	prev, _ := status.Load(opts.Home)
+	if newerRefresh(prev, started, time.Since(clock)) {
+		// Another refresh started after this one and finished first: its
+		// lookups are newer than this one's, so they stay.
+		res := cachedStatus(prev, req.Version, req.Now, interval)
+		res.Refreshed = true
+		return res, nil
+	}
 
 	f := status.New()
 	f.CheckedAt = started
@@ -192,18 +206,32 @@ func loadStatus(home string, rep Reporter) *status.File {
 	return f
 }
 
+// newerRefresh reports whether prev was written by a refresh that started
+// after one that started at started and has run for elapsed since: its
+// CheckedAt lies between the two. A CheckedAt beyond that (the clock went
+// back) is no newer refresh; it is replaced. CheckedAt is truncated to whole
+// seconds, hence the extra second.
+func newerRefresh(prev *status.File, started time.Time, elapsed time.Duration) bool {
+	if prev == nil || !prev.CheckedAt.After(started) {
+		return false
+	}
+	return !prev.CheckedAt.After(started.Add(elapsed + time.Second))
+}
+
 // refreshedRow is the cache row for Registry entry e after a refresh whose
 // Check found cs (ok false: e was not checked, e.g. it was installed
-// meanwhile). A row the Check judged against a Revision e no longer has
-// (another process changed the skill meanwhile) gives way to prev's row when
-// prev judged e's current Revision; failing that, it is kept only if the
-// Check's upstream Revision is e's (then it is up to date). keep is false
-// when there is nothing to say about e.
+// meanwhile). A row the Check judged for another install of e (another
+// process changed its Revision, or its Source, Path or Ref, meanwhile) gives
+// way to prev's row when prev judged e's current Revision; failing that, it
+// is kept only if the Check's upstream Revision is e's and e still tracks
+// what was checked (then it is up to date). keep is false when there is
+// nothing to say about e.
 func refreshedRow(e state.SkillEntry, cs CheckedSkill, ok bool, prev *status.File) (status.Skill, bool) {
 	if e.Kind != state.KindGit {
 		return status.Skill{ID: e.ID, Status: status.SkillLocal}, true
 	}
-	if ok && cs.Kind == state.KindGit && cs.InstalledRev == e.Revision {
+	tracked := ok && cs.Kind == state.KindGit && sameTracking(e, cs.entry)
+	if tracked && cs.InstalledRev == e.Revision {
 		return checkedRow(cs), true
 	}
 	if prev != nil {
@@ -211,7 +239,7 @@ func refreshedRow(e state.SkillEntry, cs CheckedSkill, ok bool, prev *status.Fil
 			return p, true
 		}
 	}
-	if ok && cs.UpstreamRev != "" && cs.UpstreamRev == e.Revision {
+	if tracked && cs.UpstreamRev != "" && cs.UpstreamRev == e.Revision {
 		return upToDateRow(e), true
 	}
 	return status.Skill{}, false
@@ -249,16 +277,21 @@ func selfRow(s SelfStatus, err error) *status.Self {
 	return row
 }
 
-// adjustSelf re-judges f's self entry for the running version when the cache
-// was written by another skillm (the app upgraded its bundle, say): the
-// latest release found then is compared with the running version, offline.
+// adjustSelf re-judges f's self entry for the running skillm when the cache
+// was written by another one (the app upgraded its bundle, or a terminal
+// install shares Home with the app's bundled CLI): the latest release found
+// then is compared with the running version, offline, and the method,
+// executable and eligibility are the running binary's.
 func adjustSelf(f *status.File, version string) {
-	cur := selfupdate.Display(version)
-	if f.Self == nil || f.Self.Current == cur {
+	if f.Self == nil {
 		return
 	}
+	cur := selfupdate.Display(version)
 	method, exe := SelfMethod(version)
 	s := f.Self
+	if s.Current == cur && s.Method == string(method) && s.Executable == exe {
+		return
+	}
 	s.Current, s.Method, s.Executable = cur, string(method), exe
 	s.Available = method != MethodDev && s.Latest != "" && selfupdate.IsNewer(s.Latest, version)
 	if method == MethodDev {
@@ -303,8 +336,9 @@ func retainRegistered(f *status.File, st *state.State) {
 // recordInstalls updates the cache rows of the skills an install just
 // landed. fresh says their content was fetched from upstream just now (an
 // install from a Source), so a git skill is up to date. Otherwise (id mode)
-// a skill whose Revision moved was re-fetched, so it is up to date too, and
-// one whose Revision did not move keeps its row.
+// a skill that was re-fetched from its source (refetched), or whose Revision
+// moved, is up to date too, and one copied from its global copy keeps its
+// row.
 func recordInstalls(home string, rep Reporter, st *state.State, skills []InstalledSkill, fresh bool) {
 	recordStatus(home, rep, func(f *status.File) {
 		for _, s := range skills {
@@ -319,7 +353,7 @@ func recordInstalls(home string, rep Reporter, st *state.State, skills []Install
 			switch {
 			case e.Kind != state.KindGit:
 				f.SetSkill(status.Skill{ID: e.ID, Status: status.SkillLocal})
-			case fresh || (had && prev.InstalledRev != e.Revision):
+			case fresh || s.refetched || (had && prev.InstalledRev != e.Revision):
 				f.SetSkill(upToDateRow(e))
 			}
 		}

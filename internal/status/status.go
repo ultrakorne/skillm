@@ -4,7 +4,7 @@
 // it for its badge: the macOS app through `skillm status --json`, a
 // Quickshell widget by watching the file itself. So the file's JSON form is a
 // contract like the protocol's (its golden fixture is
-// internal/protocol/testdata/status_file.json).
+// internal/protocol/testdata/cache/status.json).
 //
 // This package holds the file format, its atomic load and save, and the
 // policies every reader shares: the badge, when a refresh is due and when the
@@ -221,17 +221,16 @@ func (f *File) SetSkill(s Skill) {
 // now. It never is while refresh is disabled. Otherwise it is due when no
 // refresh ever ran (f is nil or never checked), at or after NextDueAt, at or
 // after CheckedAt plus the current interval (the interval may have been
-// shortened since), when CheckedAt is in the future (the clock went back), or
-// when the running skillm is not the one the cache describes (current, as
-// Self.Current shows it: it was upgraded or replaced since).
-func Due(f *File, now time.Time, enabled bool, interval time.Duration, current string) bool {
+// shortened since), or when CheckedAt is in the future (the clock went back).
+//
+// Which skillm wrote the cache does not matter: several binaries may share
+// one Home (the app's bundled CLI and a terminal install, at different
+// versions), and each reader re-judges the self entry for itself offline.
+func Due(f *File, now time.Time, enabled bool, interval time.Duration) bool {
 	if !enabled {
 		return false
 	}
 	if f == nil || f.CheckedAt.IsZero() {
-		return true
-	}
-	if f.Self != nil && current != "" && f.Self.Current != current {
 		return true
 	}
 	if now.Before(f.CheckedAt) {

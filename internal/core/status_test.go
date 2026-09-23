@@ -176,21 +176,44 @@ func TestRefreshCancelledWritesNothing(t *testing.T) {
 // TestRefreshedRow covers the merge with changes other processes made while
 // the lookups ran.
 func TestRefreshedRow(t *testing.T) {
-	e := state.SkillEntry{ID: "a", Kind: state.KindGit, Revision: "new"}
-	checkedOld := CheckedSkill{ID: "a", Kind: state.KindGit, Status: StatusUpdateAvailable, InstalledRev: "old", UpstreamRev: "up"}
+	e := state.SkillEntry{ID: "a", Kind: state.KindGit, Source: "https://example.com/r.git", Path: "a", Ref: "main", Revision: "new"}
+	// checkedAs is the Check result for e as it was when it had Revision rev.
+	checkedAs := func(rev, upstream string) CheckedSkill {
+		was := e
+		was.Revision = rev
+		return CheckedSkill{ID: "a", Kind: state.KindGit, Status: StatusUpdateAvailable, InstalledRev: rev, UpstreamRev: upstream, entry: was}
+	}
+	checkedOld := checkedAs("old", "up")
 	prev := status.New()
 	prev.Skills = []status.Skill{{ID: "a", Status: status.SkillUpToDate, InstalledRev: "new", UpstreamRev: "new"}}
 
 	// Checked against the current Revision: the check's row.
-	if row, ok := refreshedRow(e, CheckedSkill{ID: "a", Kind: state.KindGit, Status: StatusUpdateAvailable, InstalledRev: "new", UpstreamRev: "up"}, true, nil); !ok || row.Status != status.SkillUpdateAvailable {
+	if row, ok := refreshedRow(e, checkedAs("new", "up"), true, nil); !ok || row.Status != status.SkillUpdateAvailable {
 		t.Fatalf("current: %+v %v", row, ok)
+	}
+	// Reinstalled meanwhile from another ref whose tree is the same: the
+	// check judged the old branch, so the reinstall's row wins, or none.
+	other := e
+	other.Ref = "dev"
+	if row, ok := refreshedRow(other, checkedAs("new", "up"), true, prev); !ok || row.Status != status.SkillUpToDate {
+		t.Fatalf("ref changed meanwhile, recorded: %+v %v", row, ok)
+	}
+	if _, ok := refreshedRow(other, checkedAs("new", "up"), true, nil); ok {
+		t.Fatal("a check of another ref must not give the skill a row")
+	}
+	upOther := other
+	upOther.Revision = "up"
+	if _, ok := refreshedRow(upOther, checkedAs("new", "up"), true, nil); ok {
+		t.Fatal("another ref's upstream Revision must not make the skill up to date")
 	}
 	// Changed meanwhile: the row the updater recorded wins.
 	if row, ok := refreshedRow(e, checkedOld, true, prev); !ok || row.Status != status.SkillUpToDate {
 		t.Fatalf("changed meanwhile, recorded: %+v %v", row, ok)
 	}
 	// Changed meanwhile to the upstream Revision found: up to date.
-	if row, ok := refreshedRow(state.SkillEntry{ID: "a", Kind: state.KindGit, Revision: "up"}, checkedOld, true, nil); !ok || row.Status != status.SkillUpToDate {
+	moved := e
+	moved.Revision = "up"
+	if row, ok := refreshedRow(moved, checkedOld, true, nil); !ok || row.Status != status.SkillUpToDate {
 		t.Fatalf("changed to upstream: %+v %v", row, ok)
 	}
 	// Changed meanwhile to something else, nothing recorded: no row.
@@ -302,6 +325,15 @@ func TestRecordStatusAfterCommands(t *testing.T) {
 	if s, _ := loadCache(t, home).Skill("a"); s.Status != status.SkillUpdateAvailable {
 		t.Fatalf("copy without re-fetch must stay behind: %+v", s)
 	}
+	// An id-mode install that re-fetched from the source at the same
+	// Revision clears a failed lookup's row: the fetch just succeeded.
+	saveCache(t, home, nil, status.Skill{ID: "a", Status: status.SkillError, InstalledRev: "2", Error: "offline"})
+	recordInstalls(home, rec, st, []InstalledSkill{{ID: "a", Action: VendorWrote, refetched: true}}, false)
+	if f := loadCache(t, home); len(f.Errors) != 0 {
+		t.Fatalf("re-fetched a keeps its error: %+v", f)
+	} else if s, _ := f.Skill("a"); s.Status != status.SkillUpToDate || s.InstalledRev != "2" {
+		t.Fatalf("re-fetched a = %+v", s)
+	}
 }
 
 // TestRecordSelfAndReadStatus: an upgrade clears the self badge, and a cache
@@ -336,5 +368,85 @@ func TestRecordSelfAndReadStatus(t *testing.T) {
 	res, err = ReadStatus(Options{Home: t.TempDir()}, nil, "0.4.0", refreshT0)
 	if err != nil || !res.Stale || res.Status.Self != nil || res.Status.Skills == nil {
 		t.Fatalf("never refreshed: %+v stale=%v err=%v", res.Status, res.Stale, err)
+	}
+}
+
+// TestReadStatusSharedHome: the app's bundled CLI and a terminal install at
+// the same version share one Home; each reads the self entry as its own.
+func TestReadStatusSharedHome(t *testing.T) {
+	home := t.TempDir()
+	saveCache(t, home, &status.Self{Current: "0.4.0", Latest: "0.5.0", Available: true, Eligible: true, Method: "binary", Executable: plainExe})
+
+	stubSelf(t, bundledExe, "v0.5.0")
+	res, err := ReadStatus(Options{Home: home}, nil, "0.4.0", refreshT0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := res.Status.Self; s.Method != string(MethodBundled) || s.Executable != bundledExe || s.Eligible || !s.Available || !res.Status.Badge {
+		t.Fatalf("bundled reader: %+v", s)
+	}
+
+	stubSelf(t, plainExe, "v0.5.0")
+	saveCache(t, home, &status.Self{Current: "0.4.0", Latest: "0.5.0", Available: true, Method: "bundled", Executable: bundledExe})
+	res, _ = ReadStatus(Options{Home: home}, nil, "0.4.0", refreshT0)
+	if s := res.Status.Self; s.Method != string(MethodBinary) || s.Executable != plainExe || !s.Eligible {
+		t.Fatalf("terminal reader: %+v", s)
+	}
+}
+
+// TestRefreshSharedHomeNotDue: two skillm versions sharing one Home, each on
+// its own schedule, do not make each other's scheduled refresh due: only the
+// first one checks until the interval passes.
+func TestRefreshSharedHomeNotDue(t *testing.T) {
+	opts, _ := refreshFixture(t)
+	lookups, _ := stubSelf(t, plainExe, "v0.5.0")
+	for i, v := range []string{"0.4.0", "0.5.0", "0.4.0", "0.5.0"} {
+		res, err := Refresh(context.Background(), opts, nil, RefreshRequest{Version: v, Now: refreshT0.Add(time.Duration(i) * time.Minute), IfDue: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Refreshed != (i == 0) {
+			t.Fatalf("call %d (%s): refreshed = %v", i, v, res.Refreshed)
+		}
+		if res.Status.Self.Current != v {
+			t.Fatalf("call %d (%s): self judged for %s", i, v, res.Status.Self.Current)
+		}
+	}
+	if *lookups != 1 {
+		t.Fatalf("lookups = %d, want 1", *lookups)
+	}
+}
+
+// TestRefreshKeepsNewerCache: a refresh that finishes after one that started
+// later keeps the later one's cache; a cache dated in the future (the clock
+// went back) is replaced.
+func TestRefreshKeepsNewerCache(t *testing.T) {
+	opts, _ := refreshFixture(t)
+	stubSelf(t, plainExe, "v0.4.0")
+	newer := status.New()
+	newer.CheckedAt, newer.NextDueAt = refreshT0.Add(time.Second), refreshT0.Add(24*time.Hour+time.Second)
+	newer.Skills = []status.Skill{{ID: "fresh", Status: status.SkillUpdateAvailable, InstalledRev: "x", UpstreamRev: "y"}}
+	opts.Lock = func(ctx context.Context) (func(), error) {
+		// The other refresh saves while this one's lookups run.
+		if err := status.Save(opts.Home, newer); err != nil {
+			t.Fatal(err)
+		}
+		return func() {}, nil
+	}
+	res, err := Refresh(context.Background(), opts, nil, RefreshRequest{Version: "0.4.0", Now: refreshT0})
+	if err != nil || !res.Refreshed {
+		t.Fatalf("refreshed=%v err=%v", res.Refreshed, err)
+	}
+	f := loadCache(t, opts.Home)
+	if !f.CheckedAt.Equal(newer.CheckedAt) || f.Updates != 1 || !res.Status.CheckedAt.Equal(newer.CheckedAt) {
+		t.Fatalf("newer cache replaced: disk %+v result %+v", f, res.Status)
+	}
+
+	newer.CheckedAt = refreshT0.Add(48 * time.Hour)
+	if _, err := Refresh(context.Background(), opts, nil, RefreshRequest{Version: "0.4.0", Now: refreshT0}); err != nil {
+		t.Fatal(err)
+	}
+	if f := loadCache(t, opts.Home); !f.CheckedAt.Equal(refreshT0) || len(f.Skills) != 3 {
+		t.Fatalf("future-dated cache kept: %+v", f)
 	}
 }
