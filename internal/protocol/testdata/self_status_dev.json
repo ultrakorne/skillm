@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "data": {
+    "current": "dev",
+    "available": false,
+    "eligible": false,
+    "method": "dev",
+    "executable": "/Users/me/go/bin/skillm"
+  },
+  "warnings": [],
+  "error": null
+}

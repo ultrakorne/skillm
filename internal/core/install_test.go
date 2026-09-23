@@ -126,6 +126,61 @@ func TestInstallForeignFiles(t *testing.T) {
 	}
 }
 
+// TestInstallItemEvents: InstallSkills reports an EventBatch naming the
+// skills, then an ItemStart and an ItemDone per skill (code installed, or
+// install_blocked for a skill SkipForeign skipped), with the batch's indexes.
+func TestInstallItemEvents(t *testing.T) {
+	opts, base, insp := installSetup(t)
+	req := InstallRequest{Inspection: insp, IDs: []string{"demo"}, As: "renamed", Scope: agentdir.Local, Base: base}
+	rep := &recorder{}
+	if _, err := InstallSkills(context.Background(), opts, rep, req); err != nil {
+		t.Fatalf("InstallSkills: %v", err)
+	}
+	var kinds []string
+	for _, ev := range rep.events {
+		switch ev.Type {
+		case EventBatch:
+			if len(ev.Items) != 1 || ev.Items[0] != "renamed" {
+				t.Fatalf("batch items = %v, want the final id", ev.Items)
+			}
+		case EventItemStart, EventItemDone:
+			if ev.Index != 0 || ev.Skill != "renamed" {
+				t.Fatalf("item event %+v", ev)
+			}
+			if ev.Type == EventItemDone && (ev.Code != CodeInstalled || ev.Level != LevelSuccess) {
+				t.Fatalf("item_done %+v, want installed", ev)
+			}
+		default:
+			continue
+		}
+		kinds = append(kinds, string(ev.Type))
+	}
+	if strings.Join(kinds, ",") != "batch,item_start,item_done" {
+		t.Fatalf("event order = %v", kinds)
+	}
+
+	// A foreign entry at another project's slot: SkipForeign's ItemDone is
+	// install_blocked.
+	other := t.TempDir()
+	if err := os.MkdirAll(demoSlot(other), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skip := InstallRequest{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Local, Base: other, SkipForeign: true}
+	rep = &recorder{}
+	if _, err := InstallSkills(context.Background(), opts, rep, skip); err != nil {
+		t.Fatalf("SkipForeign: %v", err)
+	}
+	var done []Event
+	for _, ev := range rep.events {
+		if ev.Type == EventItemDone {
+			done = append(done, ev)
+		}
+	}
+	if len(done) != 1 || done[0].Code != CodeInstallBlocked || done[0].Level != LevelWarn {
+		t.Fatalf("item_done = %+v, want one install_blocked", done)
+	}
+}
+
 // TestInspectRelativeLocalSource: a relative local Source is resolved against
 // Options.Cwd, never the process's working directory, and the install records
 // the absolute path.

@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/selfupdate"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
@@ -32,10 +33,17 @@ func newUpgradeCmd() *cobra.Command {
 			"restored if the swap fails. This upgrades the CLI only; use `skillm update` " +
 			"to pull new revisions of installed skills. A binary built from source (its " +
 			"version is not a release tag) corresponds to no release and is left alone, " +
-			"and the skillm inside the macOS app is upgraded by the app, never here.",
+			"and the skillm inside the macOS app is upgraded by the app, never here.\n\n" +
+			"With --json, --check reports the running skillm against the latest release " +
+			"(its upgrade method, and whether an upgrade is available and eligible), and " +
+			"a plain upgrade reports what it replaced. A source build fails with code " +
+			"source_build, and the app's bundled skillm with managed_by_app.",
 		Args: cobra.NoArgs,
-		// Upgrading the CLI needs no git, unlike every other command.
-		Annotations: map[string]string{annotationSkipGitCheck: "true"},
+		Annotations: map[string]string{
+			// Upgrading the CLI needs no git, unlike every other command.
+			annotationSkipGitCheck: "true",
+			annotationJSON:         "true",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpgrade(cmd.Context(), upgradeFlagCheck)
 		},
@@ -46,6 +54,9 @@ func newUpgradeCmd() *cobra.Command {
 
 func runUpgrade(ctx context.Context, checkOnly bool) error {
 	current := Version()
+	if flagJSON {
+		return runUpgradeJSON(ctx, current, checkOnly)
+	}
 	switch method, _ := core.SelfMethod(current); method {
 	case core.MethodDev:
 		// A source build has no release to compare against; say so plainly
@@ -99,4 +110,36 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 	}
 	ui.Successf("Upgraded skillm %s → %s (%s).", from, to, path)
 	return nil
+}
+
+// runUpgradeJSON is `upgrade --json`. With --check it reports the SelfStatus
+// (for every method; a source build looks nothing up). Otherwise it upgrades
+// with no question: a source build fails with code source_build, the app's
+// bundled skillm with managed_by_app (both before any network request), and
+// a skillm already at the latest release reports upgraded false.
+func runUpgradeJSON(ctx context.Context, current string, checkOnly bool) error {
+	out := jsonOut()
+	if !checkOnly {
+		switch method, _ := core.SelfMethod(current); method {
+		case core.MethodDev:
+			return core.ErrSourceBuild
+		case core.MethodBundled:
+			return core.ErrManagedByApp
+		}
+	}
+	st, err := core.CheckSelf(ctx, current)
+	if err != nil {
+		return err
+	}
+	if checkOnly {
+		return out.Result(protocol.NewSelfStatusData(st))
+	}
+	data := protocol.UpgradeData{From: st.Current, To: st.Latest}
+	if st.Available {
+		if data.Path, err = core.UpgradeSelf(ctx, st); err != nil {
+			return err
+		}
+		data.Upgraded = true
+	}
+	return out.Result(data)
 }

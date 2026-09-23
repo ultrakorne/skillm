@@ -7,9 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/store"
 )
@@ -56,6 +58,41 @@ func TestGoldenFixtures(t *testing.T) {
 		{ID: "omega", Kind: "local", Status: core.StatusLocal},
 	}}
 
+	install := core.InstallResult{Scope: agentdir.Local, Base: "/Users/me/src/app", Skills: []core.InstalledSkill{
+		{ID: "alpha", Action: core.VendorWrote},
+		{ID: "beta", Action: core.VendorRefreshed},
+		{ID: "gamma", Action: core.VendorConverted},
+		{ID: "delta", Action: core.VendorAdopted},
+		{ID: "omega", Action: core.VendorBlocked},
+	}}
+
+	update := core.UpdateResult{
+		Imported: []core.ImportedSkill{
+			{ID: "shared", Root: "/Users/me/src/app", Outcome: core.ImportImported},
+			{ID: "npm-thing", Root: "/Users/me/src/app", Outcome: core.ImportSkipped,
+				Err: errors.New("not a git remote (source type \"node_modules\")")},
+		},
+		Skills: []core.UpdatedSkill{
+			{ID: "alpha", Kind: "git", Outcome: core.OutcomeUpdated, Revision: "aaa2", Advanced: true,
+				Warnings: []error{errors.New("/Users/me/src/app: skills-lock.json not updated: permission denied")}},
+			{ID: "beta", Kind: "git", Outcome: core.OutcomeUpToDate, Revision: "bbb1"},
+			{ID: "gamma", Kind: "git", Outcome: core.OutcomePruned, Revision: "ccc2", Advanced: true,
+				Pruned: []string{"global", "/Users/me/src/old"}},
+			{ID: "delta", Kind: "git", Outcome: core.OutcomeDriftCheckSkipped, Revision: "ddd1",
+				Err: errors.New("stage delta: disk full")},
+			{ID: "omega", Kind: "local", Outcome: core.OutcomeSynced},
+		},
+		Synced: true,
+	}
+
+	imported := core.ImportResult{Root: "/Users/me/src/app", Entries: 3, Skills: update.Imported}
+
+	uninstall := core.UninstallResult{Skills: []core.UninstalledSkill{
+		{ID: "alpha", RemovedCopies: []string{"global", "/Users/me/src/app"}},
+		{ID: "beta", RemovedCopies: []string{"global"},
+			Warnings: []error{errors.New("/Users/me/.claude/skills/beta: not a skillm link; left in place")}},
+	}}
+
 	cases := []struct {
 		name  string
 		write func(w *Writer) error
@@ -76,6 +113,47 @@ func TestGoldenFixtures(t *testing.T) {
 			w.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn, Skill: "beta",
 				Code: core.CodeLinkRefused, Text: "beta: /Users/me/.claude/skills/beta is not a skillm link; left alone"})
 			return w.Fail(&core.ForeignFilesError{Paths: []string{"/Users/me/.agents/skills/beta"}})
+		}},
+		{"install.json", func(w *Writer) error { return w.Result(NewInstallData(install)) }},
+		{"install_global_empty.json", func(w *Writer) error {
+			return w.Result(NewInstallData(core.InstallResult{Scope: agentdir.Global}))
+		}},
+		{"install_events.ndjson", func(w *Writer) error {
+			w.Event(core.Event{Type: core.EventBatch, Items: []string{"alpha"}})
+			w.Event(core.Event{Type: core.EventItemStart, Index: 0, Skill: "alpha"})
+			w.Event(core.Event{Type: core.EventLog, Level: core.LevelSuccess, Skill: "alpha",
+				Code: core.CodeInstalled, Text: "installed alpha in ~/.agents/skills (global)"})
+			w.Event(core.Event{Type: core.EventItemDone, Index: 0, Skill: "alpha", Level: core.LevelSuccess,
+				Code: core.CodeInstalled, Text: "installed alpha in ~/.agents/skills (global)"})
+			return w.Result(NewInstallData(core.InstallResult{Scope: agentdir.Global,
+				Skills: []core.InstalledSkill{{ID: "alpha", Action: core.VendorWrote}}}))
+		}},
+		{"update.json", func(w *Writer) error { return w.Result(NewUpdateData(update)) }},
+		{"update_events.ndjson", func(w *Writer) error {
+			w.Event(core.Event{Type: core.EventBatch, Items: []string{"alpha"}})
+			w.Event(core.Event{Type: core.EventItemStart, Index: 0, Skill: "alpha"})
+			w.Event(core.Event{Type: core.EventItemDone, Index: 0, Skill: "alpha", Level: core.LevelSuccess,
+				Code: string(core.OutcomeUpdated), Text: "alpha: updated"})
+			return w.Result(NewUpdateData(core.UpdateResult{Skills: update.Skills[:1], Synced: true}))
+		}},
+		{"import.json", func(w *Writer) error { return w.Result(NewImportData(imported)) }},
+		{"uninstall.json", func(w *Writer) error { return w.Result(NewUninstallData(uninstall)) }},
+		{"self_status.json", func(w *Writer) error {
+			return w.Result(NewSelfStatusData(core.SelfStatus{Current: "0.4.0", Latest: "0.5.0", Available: true,
+				Method: core.MethodBundled, Executable: "/Applications/skillm.app/Contents/Helpers/skillm"}))
+		}},
+		{"self_status_dev.json", func(w *Writer) error {
+			return w.Result(NewSelfStatusData(core.SelfStatus{Current: "dev", Method: core.MethodDev,
+				Executable: "/Users/me/go/bin/skillm"}))
+		}},
+		{"upgrade.json", func(w *Writer) error {
+			return w.Result(UpgradeData{Upgraded: true, From: "0.4.0", To: "0.5.0", Path: "/usr/local/bin/skillm"})
+		}},
+		{"error_needs_confirm.json", func(w *Writer) error {
+			return w.Fail(&core.UninstallScopeChangedError{Roots: []string{"/Users/me/src/app", "/Users/me/src/new"}})
+		}},
+		{"error_update_failed.json", func(w *Writer) error {
+			return w.Fail(&core.UpdateFailedError{Failures: []string{"alpha: git fetch failed"}})
 		}},
 		{"check_events.ndjson", func(w *Writer) error {
 			w.Event(core.Event{Type: core.EventBatch, Items: []string{"alpha", "beta"}})
@@ -197,6 +275,18 @@ func decodeStrict(file string, doc []byte, last bool) error {
 		return strictUnmarshal(env.Data, &ListData{})
 	case base == "check.json" || base == "check_events.ndjson":
 		return strictUnmarshal(env.Data, &CheckData{})
+	case strings.HasPrefix(base, "install"):
+		return strictUnmarshal(env.Data, &InstallData{})
+	case strings.HasPrefix(base, "update"):
+		return strictUnmarshal(env.Data, &UpdateData{})
+	case base == "import.json":
+		return strictUnmarshal(env.Data, &ImportData{})
+	case base == "uninstall.json":
+		return strictUnmarshal(env.Data, &UninstallData{})
+	case strings.HasPrefix(base, "self_status"):
+		return strictUnmarshal(env.Data, &SelfStatusData{})
+	case base == "upgrade.json":
+		return strictUnmarshal(env.Data, &UpgradeData{})
 	}
 	return errors.New("fixture with no known data type")
 }

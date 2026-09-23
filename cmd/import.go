@@ -8,6 +8,7 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/lockfile"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -30,8 +31,11 @@ func newImportCmd() *cobra.Command {
 			"are simply adopted; entries that do not describe a git remote (local paths, " +
 			"node_modules, registry skills) are reported and skipped. `skillm update` also " +
 			"runs this adoption automatically across every tracked project, so a teammate's " +
-			"additions join your machine-wide updates.",
-		Args: cobra.MaximumNArgs(1),
+			"additions join your machine-wide updates.\n\n" +
+			"With --json, pass the project directory as an absolute path; a directory " +
+			"with no skills-lock.json reports 0 entries rather than failing.",
+		Args:        cobra.MaximumNArgs(1),
+		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "."
 			if len(args) == 1 {
@@ -56,6 +60,14 @@ func runImport(ctx context.Context, dir string) error {
 	// core fetches first and takes Home's lock for its writes only.
 	opts.Lock = func(ctx context.Context) (func(), error) {
 		return lockHome(ctx, opts.Home, "skillm import")
+	}
+	if flagJSON {
+		out := jsonOut()
+		res, err := core.Import(ctx, opts, out, dir)
+		if err != nil {
+			return err
+		}
+		return out.Result(protocol.NewImportData(res))
 	}
 	res, err := core.Import(ctx, opts, termLog, dir)
 	if err != nil {

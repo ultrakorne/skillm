@@ -137,7 +137,7 @@ func TestJSONErrors(t *testing.T) {
 		code     string
 	}{
 		{"git missing", []string{"PATH=" + t.TempDir()}, []string{"list", "--json"}, protocol.CodeGitMissing},
-		{"no json mode", nil, []string{"install", "alpha", "--json"}, protocol.CodeJSONUnsupported},
+		{"no json mode", nil, []string{"agent", "--json"}, protocol.CodeJSONUnsupported},
 		{"unknown flag after --json", nil, []string{"list", "--json", "--bogus"}, protocol.CodeUsage},
 		{"unknown flag before --json", nil, []string{"list", "--bogus", "--json"}, protocol.CodeUsage},
 		{"extra argument", nil, []string{"check", "extra", "--json"}, protocol.CodeUsage},

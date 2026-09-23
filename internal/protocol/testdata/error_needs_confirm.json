@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "data": null,
+  "warnings": [],
+  "error": {
+    "code": "needs_confirm",
+    "message": "the projects whose committed copies would be deleted changed since the confirmation: /Users/me/src/app, /Users/me/src/new",
+    "paths": [
+      "/Users/me/src/app",
+      "/Users/me/src/new"
+    ],
+    "retryable": false
+  }
+}

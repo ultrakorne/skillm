@@ -28,6 +28,9 @@ const (
 	CodeInstallBlocked = "install_blocked"
 	// CodeStateNotSaved: the installs landed but the Registry save failed.
 	CodeStateNotSaved = "state_not_saved"
+	// CodeInstallFailed: the ItemDone code of the skill whose content could
+	// not be staged or written; the install stopped there.
+	CodeInstallFailed = "install_failed"
 )
 
 // InstallRequest says what InstallSkills installs and where.
@@ -112,8 +115,11 @@ type installItem struct {
 // req.SkipForeign skips them; the caller may ask the user and call again.
 // opts.Force alone also takes over foreign entries at agent link paths.
 //
-// It reports progress to rep and does not take the Home lock: the caller holds
-// it. It reloads config and the Registry and re-plans the selection itself, so
+// It reports progress to rep: once the selection is checked, an EventBatch
+// naming the skills (by their final ids), then an ItemStart as each skill's
+// content is staged and an ItemDone once its copy landed (Code CodeInstalled),
+// was skipped (CodeInstallBlocked) or failed (CodeInstallFailed), alongside
+// the log events. It does not take the Home lock: the caller holds it. It reloads config and the Registry and re-plans the selection itself, so
 // a caller may inspect and prompt before locking. On a failure part-way it
 // still records the installs that landed and returns them with the error.
 func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallRequest) (InstallResult, error) {
@@ -197,7 +203,13 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 		return res, &ForeignFilesError{Paths: conflicts}
 	}
 
-	cleanup, err := stageItems(ctx, home, opts.Cwd, st, req.Inspection, items)
+	ids := make([]string, len(items))
+	for i, it := range items {
+		ids[i] = it.entry.ID
+	}
+	rep.Event(Event{Type: EventBatch, Items: ids})
+
+	cleanup, err := stageItems(ctx, rep, home, opts.Cwd, st, req.Inspection, items)
 	defer cleanup()
 	if err != nil {
 		return res, err
@@ -206,21 +218,26 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 	label := ScopeLabel(req.Scope, req.Base, opts.Cwd)
 	stateDirty := false
 	var runErr error
-	for _, it := range items {
+	for i, it := range items {
 		id := it.entry.ID
 		action, err := VendorOne(rep, home, id, it.dir, agents, req.Scope, req.Base, recorded[id], force, forceLinks, label)
 		if err != nil {
+			rep.Event(itemDone(i, installFailed(id, err)))
 			runErr = err
 			break
 		}
 		res.Skills = append(res.Skills, InstalledSkill{ID: id, Action: action})
 		if action == VendorBlocked {
-			rep.Event(logEvent(LevelWarn, id, CodeInstallBlocked,
-				fmt.Sprintf("skipped %s: installing here would overwrite files skillm did not create", id)))
+			ev := logEvent(LevelWarn, id, CodeInstallBlocked,
+				fmt.Sprintf("skipped %s: installing here would overwrite files skillm did not create", id))
+			rep.Event(ev)
+			rep.Event(itemDone(i, ev))
 			continue
 		}
-		rep.Event(logEvent(LevelSuccess, id, CodeInstalled,
-			fmt.Sprintf("%s %s in %s (%s)", action.Label(), id, CanonicalDisplay(req.Scope), label)))
+		ev := logEvent(LevelSuccess, id, CodeInstalled,
+			fmt.Sprintf("%s %s in %s (%s)", action.Label(), id, CanonicalDisplay(req.Scope), label))
+		rep.Event(ev)
+		rep.Event(itemDone(i, ev))
 
 		// Record the entry now that its copy landed. Upsert first (Source/
 		// Path/Ref/Revision, preserving any install markers merged in
@@ -361,11 +378,24 @@ func planIDs(st *state.State, ids []string, as string) ([]installItem, error) {
 	return items, nil
 }
 
+// itemDone turns ev, a log event about item i, into that item's ItemDone.
+func itemDone(i int, ev Event) Event {
+	ev.Type, ev.Index = EventItemDone, i
+	return ev
+}
+
+// installFailed is the error event for skill id's failed install.
+func installFailed(id string, err error) Event {
+	return logEvent(LevelError, id, CodeInstallFailed, fmt.Sprintf("%s: %v", id, err))
+}
+
 // stageItems finds every item's content: an inspected skill is staged from its
 // Inspection (its entry then gets the Revision just read and is merged over
-// its existing entry in st), a registered one from idModeSource. The
-// returned cleanup removes any re-fetch temp dirs; it is never nil.
-func stageItems(ctx context.Context, home, cwd string, st *state.State, insp *Inspection, items []installItem) (cleanup func(), err error) {
+// its existing entry in st), a registered one from idModeSource. rep gets an
+// ItemStart as each item's staging begins, and an ItemDone for the item whose
+// staging failed. The returned cleanup removes any re-fetch temp dirs; it is
+// never nil.
+func stageItems(ctx context.Context, rep Reporter, home, cwd string, st *state.State, insp *Inspection, items []installItem) (cleanup func(), err error) {
 	var cleanups []func()
 	cleanup = func() {
 		for _, c := range cleanups {
@@ -374,9 +404,11 @@ func stageItems(ctx context.Context, home, cwd string, st *state.State, insp *In
 	}
 	for i := range items {
 		it := &items[i]
+		rep.Event(Event{Type: EventItemStart, Index: i, Skill: it.entry.ID})
 		if it.insp != nil {
 			dir, rev, err := insp.stage(ctx, *it.insp, it.entry.ID)
 			if err != nil {
+				rep.Event(itemDone(i, installFailed(it.entry.ID, err)))
 				return cleanup, err
 			}
 			it.dir = dir
@@ -389,6 +421,7 @@ func stageItems(ctx context.Context, home, cwd string, st *state.State, insp *In
 			cleanups = append(cleanups, clean)
 		}
 		if err != nil {
+			rep.Event(itemDone(i, installFailed(it.entry.ID, err)))
 			return cleanup, err
 		}
 		it.dir = dir

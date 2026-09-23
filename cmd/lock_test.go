@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -74,7 +75,7 @@ func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 			if err := state.Save(os.Getenv("SKILLM_HOME"), st); err != nil {
 				t.Fatal(err)
 			}
-			return runUninstall(context.Background(), []string{"demo"}, false)
+			return runUninstall(context.Background(), []string{"demo"}, false, core.UninstallRequest{})
 		},
 		"import": func(t *testing.T) error {
 			dir := t.TempDir()

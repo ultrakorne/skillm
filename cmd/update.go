@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/store"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
@@ -38,8 +39,12 @@ func newUpdateCmd() *cobra.Command {
 			"An agent link path occupied by something skillm did not create (a skill " +
 			"copied in by hand or by another tool) is left alone (with a warning when its " +
 			"copy is re-synced); pass " +
-			"--force to replace it with skillm's link and take the skill over.",
-		Args: cobra.MaximumNArgs(1),
+			"--force to replace it with skillm's link and take the skill over.\n\n" +
+			"With --json the result lists every skill's outcome; --events also streams " +
+			"one row per fetched skill as it happens. A skill that failed makes the run " +
+			"fail with code update_failed after the others were written.",
+		Args:        cobra.MaximumNArgs(1),
+		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var id string
 			if len(args) == 1 {
@@ -61,6 +66,9 @@ func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 	// update must not fail when it is gone, so it is best effort.
 	if cwd, err := os.Getwd(); err == nil {
 		opts.Cwd = cwd
+	}
+	if flagJSON {
+		return runUpdateJSON(ctx, opts, id)
 	}
 
 	// One live row per fetched skill, with a progress bar. Quitting the live
@@ -102,4 +110,24 @@ func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 		ui.Successf("Everything is up to date.")
 	}
 	return nil
+}
+
+// runUpdateJSON is `update --json`: core.Update reports to the protocol
+// writer (one row per fetched skill with --events) and takes Home's lock for
+// its writes only. A cancelled run fails with code "cancelled" (nothing was
+// written if the fetches had not finished); a failed skill fails the run with
+// code "update_failed" after the others were written.
+func runUpdateJSON(ctx context.Context, opts core.Options, id string) error {
+	opts.Lock = func(ctx context.Context) (func(), error) {
+		return lockHome(ctx, opts.Home, "skillm update")
+	}
+	out := jsonOut()
+	res, err := core.Update(ctx, opts, out, core.UpdateRequest{ID: id})
+	if cerr := ctx.Err(); cerr != nil {
+		return cerr
+	}
+	if err != nil {
+		return err
+	}
+	return out.Result(protocol.NewUpdateData(res))
 }

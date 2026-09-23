@@ -13,6 +13,7 @@ import (
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/ui"
@@ -22,11 +23,13 @@ import (
 // splitLocalAliased) live in this file but, because the cmd package is shared,
 // are reused by uninstall.go, list.go, and agent.go.
 var (
-	installFlagGlobal bool
-	installFlagLocal  bool
-	installFlagAll    bool
-	installFlagAs     string
-	installFlagRef    string
+	installFlagGlobal      bool
+	installFlagLocal       bool
+	installFlagProject     string
+	installFlagAll         bool
+	installFlagAs          string
+	installFlagRef         string
+	installFlagSkipForeign bool
 )
 
 func init() {
@@ -61,9 +64,10 @@ func newInstallCmd() *cobra.Command {
 			"With no scope flag, skillm asks where to install: Global (the agents' " +
 			"user-level ~/.<agent>/skills folders), Local (this project), or a custom " +
 			"directory you type with Tab path-completion; the chosen scope applies to " +
-			"every selected skill. --global or --local skip the prompt; on a " +
-			"non-interactive terminal pass skill ids (or --all) together with --global or " +
-			"--local. Folders are created if missing.\n\n" +
+			"every selected skill. --global, --local or --project <dir> (an existing " +
+			"project directory, the cwd-free spelling of --local) skip the prompt; on a " +
+			"non-interactive terminal pass skill ids (or --all) together with one of " +
+			"them. Folders are created if missing.\n\n" +
 			"Both scopes write a real copy into a canonical .agents/skills store (read " +
 			"natively by Codex, Cursor, Amp, Gemini CLI, and more) and link every other " +
 			"enabled agent to it. A Global install puts the copy in ~/.agents/skills and " +
@@ -74,8 +78,15 @@ func newInstallCmd() *cobra.Command {
 			"and the lockfile is interoperable with vercel's `npx skills` CLI. Re-installing " +
 			"something already correct is a no-op; skillm refuses to overwrite anything it " +
 			"did not create. Pass --force to overwrite it anyway, including taking over an " +
-			"agent link path occupied by a skill copied in by hand or by another tool.",
-		Args: cobra.ArbitraryArgs,
+			"agent link path occupied by a skill copied in by hand or by another tool, " +
+			"--yes to overwrite only the canonical copies, or --skip-foreign to leave " +
+			"those skills out and install the rest.\n\n" +
+			"With --json it never prompts: pass skill ids (or --all) and --global, " +
+			"--local or --project <dir>. Files skillm did not create fail the install " +
+			"with code foreign_files, listing them, before anything is written; retry " +
+			"with --yes, --force or --skip-foreign.",
+		Args:        cobra.ArbitraryArgs,
+		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInstall(cmd, args, installFlagGlobal, installFlagLocal, installFlagAll)
 		},
@@ -83,15 +94,30 @@ func newInstallCmd() *cobra.Command {
 	f := c.Flags()
 	f.BoolVar(&installFlagGlobal, "global", false, "install into the agents' user-level skill folders")
 	f.BoolVar(&installFlagLocal, "local", false, "install into the current directory's project (.agents/skills + agent links)")
+	f.StringVar(&installFlagProject, "project", "", "install into the project at this existing directory, as --local does for the current one")
 	f.BoolVar(&installFlagAll, "all", false, "install every skill (in Home, or in a source catalog); no interactive picker")
 	f.StringVar(&installFlagAs, "as", "", "override the Skill ID when installing from a source (resolves a collision; single skill only)")
 	f.StringVar(&installFlagRef, "ref", "", "pin a branch, tag, or commit when installing from a git source")
-	c.MarkFlagsMutuallyExclusive("global", "local")
+	f.BoolVar(&installFlagSkipForeign, "skip-foreign", false, "skip the skills whose copy would overwrite files skillm did not create, and install the rest")
+	c.MarkFlagsMutuallyExclusive("global", "local", "project")
 	return c
 }
 
 func runInstall(cmd *cobra.Command, args []string, global, local, all bool) error {
 	ctx := cmd.Context()
+	project := installFlagProject
+	if flagJSON {
+		// JSON mode never prompts, so it needs everything a question would
+		// have asked for.
+		if !global && !local && project == "" {
+			return usageError("install --json needs --global, --local or --project <dir>")
+		}
+		if len(args) == 0 || (source.LooksLikeSource(args[0]) && len(args) == 1) {
+			if !all {
+				return usageError("install --json needs skill ids or --all")
+			}
+		}
+	}
 	opts, err := coreOptions(false)
 	if err != nil {
 		return err
@@ -119,18 +145,34 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		return err
 	}
 
+	// The working directory anchors --local, the scope question, a relative
+	// --project and a relative Source. A run that names its target
+	// absolutely (--global, or --project with an absolute path) does not
+	// need it, so a GUI's install works whatever its cwd is.
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("determine current directory: %w", err)
+		if !global && !filepath.IsAbs(project) {
+			return fmt.Errorf("determine current directory: %w", err)
+		}
+		cwd = ""
 	}
 	opts.Cwd = cwd
+
+	// A scope given by flag is resolved now, so a bad --project fails before
+	// any fetch; the scope question waits until the skills are picked.
+	var req core.InstallRequest
+	targetGiven := global || local || project != ""
+	if targetGiven {
+		if req.Scope, req.Base, err = resolveInstallTarget(global, local, project, cwd); err != nil {
+			return err
+		}
+	}
 
 	// Resolve which skills to install. The first argument decides the mode and
 	// a Source cannot be mixed with registered ids: a Source-shaped first arg (a
 	// git URL or an explicitly path-shaped path) triggers source mode — inspect
 	// the Source, then pick from its skills — while a bare name (or no arg) is
 	// a registered id. core.InstallSkills then does the install either way.
-	var req core.InstallRequest
 	if len(args) > 0 && source.LooksLikeSource(args[0]) {
 		insp, err := core.Inspect(ctx, opts, args[0], installFlagRef)
 		if err != nil {
@@ -150,31 +192,53 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		if err := core.ValidateSourceSelection(opts, insp, ids, installFlagAs); err != nil {
 			return installError(err)
 		}
-		req = core.InstallRequest{Inspection: insp, IDs: ids, As: installFlagAs}
+		req.Inspection, req.IDs, req.As = insp, ids, installFlagAs
 	} else {
 		// --as/--ref only make sense when fetching a source.
 		if installFlagAs != "" {
-			return errors.New("the --as flag only applies when installing from a source (a git URL or local path)")
+			return usageError("the --as flag only applies when installing from a source (a git URL or local path)")
 		}
 		if installFlagRef != "" {
-			return errors.New("the --ref flag only applies when installing from a git source")
+			return usageError("the --ref flag only applies when installing from a git source")
 		}
 		ids, err := selectInstallIDs(opts.Home, st, agents, cwd, args, all)
-		if err != nil || len(ids) == 0 {
-			return err // on none, the selection step already reported why
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			// The selection step already told the terminal why; JSON mode
+			// reports an install of nothing (--all with nothing installed).
+			if flagJSON {
+				return jsonOut().Result(protocol.NewInstallData(core.InstallResult{Scope: req.Scope, Base: req.Base}))
+			}
+			return nil
 		}
 		// Report a local skill whose source is gone before asking where to
 		// install (a git skill's re-fetch still runs after).
 		if err := core.ValidateIDSelection(opts, ids); err != nil {
 			return err
 		}
-		req = core.InstallRequest{IDs: ids}
+		req.IDs = ids
 	}
 
-	// One scope applies to every selected skill. Resolved after selection so an
+	// One scope applies to every selected skill. Asked after selection so an
 	// interactive run asks "which skills" before "where".
-	if req.Scope, req.Base, err = resolveInstallTarget(global, local, cwd); err != nil {
-		return err
+	if !targetGiven {
+		if req.Scope, req.Base, err = resolveInstallTarget(false, false, "", cwd); err != nil {
+			return err
+		}
+	}
+	req.SkipForeign = installFlagSkipForeign
+
+	if flagJSON {
+		// No question: files skillm did not create fail the install with
+		// code foreign_files, and the caller retries with --yes, --force or
+		// --skip-foreign.
+		res, err := installLocked(ctx, opts, jsonOut(), req)
+		if err != nil {
+			return err
+		}
+		return jsonOut().Result(protocol.NewInstallData(res))
 	}
 
 	res, err := installConfirmingOverwrite(ctx, opts, req)
@@ -228,8 +292,12 @@ func installLocked(ctx context.Context, opts core.Options, rep core.Reporter, re
 }
 
 // installError adds the CLI's flag advice to the install errors a flag
-// resolves; core's own text never names a flag.
+// resolves; core's own text never names a flag. JSON mode keeps core's error,
+// whose code tells a GUI what to offer.
 func installError(err error) error {
+	if flagJSON {
+		return err
+	}
 	var collision *core.SourceCollisionError
 	var aliased *core.LocalScopeAliasedError
 	switch {
@@ -272,7 +340,9 @@ func selectInstallIDs(home string, st *state.State, agents []agentdir.Agent, cwd
 
 	registered := registeredIDs(st)
 	if len(registered) == 0 {
-		ui.Warnf("no skills installed yet; run `skillm install <url|path>` to fetch and install one")
+		if !flagJSON {
+			ui.Warnf("no skills installed yet; run `skillm install <url|path>` to fetch and install one")
+		}
 		return nil, nil
 	}
 	if all {
@@ -305,6 +375,13 @@ func validateRegistered(st *state.State, ids []string) ([]string, error) {
 		}
 	}
 	if len(missing) > 0 {
+		if flagJSON {
+			perr := &protocol.Error{Code: protocol.CodeNotInstalled, Message: "not installed: " + strings.Join(missing, ", ")}
+			if len(missing) == 1 {
+				perr.SkillID = missing[0]
+			}
+			return nil, perr
+		}
 		return nil, fmt.Errorf("not installed: %s; install them from a source first (`skillm install <url|path> %s`)", strings.Join(missing, ", "), strings.Join(missing, " "))
 	}
 	return ids, nil
@@ -354,12 +431,12 @@ func registeredIDs(st *state.State) []string {
 // skill folder at base (see core.SplitLocalAliased).
 var splitLocalAliased = core.SplitLocalAliased
 
-// resolveInstallTarget maps the --global/--local flags to a Scope and the base
-// directory a local install is rooted at. When no scope flag is given it runs
-// the interactive picker (Global / Local / custom path); on a non-TTY the
-// picker refuses and names the flags to pass instead. base is ignored for
-// Global scope. cobra enforces that --global/--local are not both set.
-func resolveInstallTarget(global, local bool, cwd string) (scope agentdir.Scope, base string, err error) {
+// resolveInstallTarget maps the --global/--local/--project flags to a Scope
+// and the base directory a local install is rooted at. When no scope flag is
+// given it runs the interactive picker (Global / Local / custom path); on a
+// non-TTY the picker refuses and names the flags to pass instead. base is
+// ignored for Global scope. cobra enforces that at most one flag is set.
+func resolveInstallTarget(global, local bool, project, cwd string) (scope agentdir.Scope, base string, err error) {
 	switch {
 	case global:
 		return agentdir.Global, cwd, nil
@@ -369,6 +446,9 @@ func resolveInstallTarget(global, local bool, cwd string) (scope agentdir.Scope,
 			abs = cwd
 		}
 		return agentdir.Local, abs, nil
+	case project != "":
+		b, perr := projectDir(project, cwd)
+		return agentdir.Local, b, perr
 	default:
 		sel, serr := ui.SelectScope(cwd)
 		if serr != nil {
@@ -385,6 +465,28 @@ func resolveInstallTarget(global, local bool, cwd string) (scope agentdir.Scope,
 		}
 		return agentdir.Local, b, nil
 	}
+}
+
+// projectDir resolves --project: a path relative to cwd (which must then be
+// known) made absolute and clean. It must name an existing directory, so a
+// typo never starts a new project somewhere unexpected.
+func projectDir(project, cwd string) (string, error) {
+	dir := project
+	if !filepath.IsAbs(dir) {
+		if cwd == "" {
+			return "", usageError(fmt.Sprintf("--project %s is relative and the working directory is unknown; pass an absolute path", project))
+		}
+		dir = filepath.Join(cwd, dir)
+	}
+	dir = filepath.Clean(dir)
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return "", fmt.Errorf("--project %s: %w", project, err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("--project %s is not a directory", project)
+	}
+	return dir, nil
 }
 
 // scopeLabel renders the scope for per-agent report lines (see

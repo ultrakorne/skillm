@@ -179,6 +179,9 @@ func isUsageError(err error) bool {
 		"accepts ",
 		"requires at least",
 		"requires at most",
+		// Flag groups (MarkFlagsMutuallyExclusive and friends).
+		"if any flags in the group",
+		"at least one of the flags in the group",
 	} {
 		if strings.HasPrefix(s, prefix) {
 			return true
@@ -203,4 +206,10 @@ func jsonCapabilities() []string {
 	walk(rootCmd)
 	sort.Strings(caps)
 	return caps
+}
+
+// usageError is a command-line mistake the command itself found (a missing
+// or conflicting flag): code "usage" in JSON mode, its message otherwise.
+func usageError(msg string) error {
+	return &protocol.Error{Code: protocol.CodeUsage, Message: msg}
 }

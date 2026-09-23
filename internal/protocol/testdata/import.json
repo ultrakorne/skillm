@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "data": {
+    "root": "/Users/me/src/app",
+    "entries": 3,
+    "skills": [
+      {
+        "id": "shared",
+        "root": "/Users/me/src/app",
+        "outcome": "imported"
+      },
+      {
+        "id": "npm-thing",
+        "root": "/Users/me/src/app",
+        "outcome": "skipped",
+        "error": "not a git remote (source type \"node_modules\")"
+      }
+    ]
+  },
+  "warnings": [],
+  "error": null
+}
