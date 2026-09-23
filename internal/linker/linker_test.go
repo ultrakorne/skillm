@@ -1,6 +1,7 @@
 package linker
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -318,8 +319,8 @@ func TestLink_RefusesToClobberRealDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd); err == nil {
-		t.Fatal("expected refusal error when a real dir occupies the link path")
+	if _, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd); !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("expected an ErrNotManaged refusal when a real dir occupies the link path, got %v", err)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("user directory contents disturbed: %v", err)
@@ -644,5 +645,59 @@ func TestLink_RelativeForeignSymlinkRefused(t *testing.T) {
 
 	if _, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd); err == nil {
 		t.Fatal("expected refusal for relative foreign symlink")
+	}
+}
+
+// TestLinkOverwrite_TakesOverForeignEntries: LinkOverwrite replaces a real
+// directory, a real file, and a foreign symlink at the link path with the
+// relative link into the canonical copy, reporting ActionReplaced.
+func TestLinkOverwrite_TakesOverForeignEntries(t *testing.T) {
+	cases := map[string]func(t *testing.T, linkPath string){
+		"dir": func(t *testing.T, linkPath string) {
+			if err := os.MkdirAll(linkPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(linkPath, "SKILL.md"), []byte("hand-copied\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"file": func(t *testing.T, linkPath string) {
+			if err := os.WriteFile(linkPath, []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"foreign symlink": func(t *testing.T, linkPath string) {
+			if err := os.Symlink(t.TempDir(), linkPath); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, occupy := range cases {
+		t.Run(name, func(t *testing.T) {
+			const id = "demo"
+			fx := newFixture(t, id)
+			ag := []agentdir.Agent{claude(t)}
+			folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+			if err := os.MkdirAll(folder, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			linkPath := filepath.Join(folder, id)
+			occupy(t, linkPath)
+
+			res, err := LinkOverwrite(fx.home, id, ag, agentdir.Local, fx.cwd)
+			if err != nil {
+				t.Fatalf("LinkOverwrite: %v", err)
+			}
+			if len(res.Agents) != 1 || res.Agents[0].Action != ActionReplaced {
+				t.Fatalf("want one ActionReplaced result, got %+v", res.Agents)
+			}
+			got, err := os.Readlink(linkPath)
+			if err != nil {
+				t.Fatalf("link path is not a symlink: %v", err)
+			}
+			if want := filepath.Join("..", "..", ".agents", "skills", id); got != want {
+				t.Errorf("link target = %q, want %q", got, want)
+			}
+		})
 	}
 }

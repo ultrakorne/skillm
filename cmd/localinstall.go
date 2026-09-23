@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -145,23 +146,40 @@ func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.
 		return vendorBlocked, fmt.Errorf("install copy of %s: %w", id, err)
 	}
 
-	linkVendorAgents(home, id, agents, scope, base, label)
+	overwriteHint := ""
+	if !force {
+		overwriteHint = "--force"
+	}
+	linkVendorAgents(home, id, agents, scope, base, label, force, overwriteHint)
 	return action, nil
 }
 
 // linkVendorAgents creates (or repoints) the agent links into the canonical
 // copy of id at (scope, base) for every supplied agent, warning on refusals
 // instead of failing — a foreign file at one agent's link path must not block
-// the others.
-func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string) {
+// the others. With overwrite, such a foreign entry is replaced by the link
+// instead (taking the skill over). A non-empty hint names the flag that would
+// do so, and is appended to a refusal warning.
+func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, overwrite bool, hint string) {
+	link := linker.Link
+	if overwrite {
+		link = linker.LinkOverwrite
+	}
 	for _, a := range agents {
-		res, err := linker.Link(home, id, []agentdir.Agent{a}, scope, base)
+		res, err := link(home, id, []agentdir.Agent{a}, scope, base)
 		if err != nil {
-			ui.Warnf("%v", err)
+			if hint != "" && errors.Is(err, linker.ErrNotManaged) {
+				ui.Warnf("%v (pass %s to take it over)", err, hint)
+			} else {
+				ui.Warnf("%v", err)
+			}
 		}
 		for _, ar := range res.Agents {
-			if ar.Action == linker.ActionCreated {
+			switch ar.Action {
+			case linker.ActionCreated:
 				ui.Successf("linked %s for %s (%s)", id, ar.Agent.Name, label)
+			case linker.ActionReplaced:
+				ui.Successf("took over %s for %s (%s): replaced %s", id, ar.Agent.Name, label, ar.Path)
 			}
 		}
 	}

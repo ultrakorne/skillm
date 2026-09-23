@@ -96,6 +96,9 @@ const (
 	ActionAbsent
 	// ActionFound means ScanLinks discovered a live symlink into Home.
 	ActionFound
+	// ActionReplaced means LinkOverwrite replaced an entry skillm did not
+	// create (a real file/dir or a foreign symlink) with the link.
+	ActionReplaced
 )
 
 // String renders the action as a short lowercase label.
@@ -111,6 +114,8 @@ func (a Action) String() string {
 		return "absent"
 	case ActionFound:
 		return "found"
+	case ActionReplaced:
+		return "replaced"
 	default:
 		return fmt.Sprintf("Action(%d)", int(a))
 	}
@@ -158,11 +163,30 @@ type Result struct {
 //     skill, or a legacy absolute link into Home's store), it is repointed
 //     to the correct target (ActionCreated);
 //   - if the entry is a real file, a real directory, or a foreign symlink,
-//     Link refuses: it returns an error and leaves that entry untouched.
+//     Link refuses: it returns an error and leaves that entry untouched
+//     (LinkOverwrite replaces it instead).
 //
 // On the first refusal Link returns the partial Result gathered so far
-// together with the error, having mutated nothing it should not have.
+// together with the error, having mutated nothing it should not have. A
+// refusal error wraps ErrNotManaged.
 func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string) (Result, error) {
+	return link(home, id, agents, scope, cwd, false)
+}
+
+// LinkOverwrite is Link, except that a real file, a real directory, or a
+// foreign symlink at an agent's link path is removed and replaced by the link
+// instead of refused (ActionReplaced) — taking over a skill that was put there
+// by hand or by another tool. Callers must only use it on explicit user
+// consent (the --force flag).
+func LinkOverwrite(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string) (Result, error) {
+	return link(home, id, agents, scope, cwd, true)
+}
+
+// ErrNotManaged is wrapped by Link's refusal to replace an entry skillm did
+// not create, so callers can point the user at their overwrite flag.
+var ErrNotManaged = errors.New("not created by skillm")
+
+func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string, overwrite bool) (Result, error) {
 	var res Result
 
 	for _, a := range agents {
@@ -203,9 +227,17 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 				return res, fmt.Errorf("inspect existing link %s: %w", linkPath, err)
 			}
 			if !ours {
-				return res, fmt.Errorf(
-					"refusing to overwrite %s: it is a symlink to %s, which is not managed by skillm (use --force semantics in the caller or remove it manually)",
-					linkPath, dest)
+				if !overwrite {
+					return res, fmt.Errorf(
+						"refusing to overwrite %s: it is a symlink to %s, which is %w",
+						linkPath, dest, ErrNotManaged)
+				}
+				if err := replaceLink(linkPath, target); err != nil {
+					return res, fmt.Errorf("replace link %s: %w", linkPath, symlinkHint(err))
+				}
+				ar.Action = ActionReplaced
+				res.Agents = append(res.Agents, ar)
+				continue
 			}
 			if filepath.Clean(dest) == filepath.Clean(resolved) {
 				ar.Action = ActionAlreadyLinked
@@ -226,9 +258,19 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 			if info.IsDir() {
 				kind = "directory"
 			}
-			return res, fmt.Errorf(
-				"refusing to overwrite %s: a %s already exists there and was not created by skillm",
-				linkPath, kind)
+			if !overwrite {
+				return res, fmt.Errorf(
+					"refusing to overwrite %s: a %s already exists there and was %w",
+					linkPath, kind, ErrNotManaged)
+			}
+			if err := os.RemoveAll(linkPath); err != nil {
+				return res, fmt.Errorf("remove %s %s: %w", kind, linkPath, err)
+			}
+			if err := os.Symlink(target, linkPath); err != nil {
+				return res, fmt.Errorf("create link %s -> %s: %w", linkPath, target, symlinkHint(err))
+			}
+			ar.Action = ActionReplaced
+			res.Agents = append(res.Agents, ar)
 
 		case errors.Is(lerr, fs.ErrNotExist):
 			// Nothing there — create the folder and the symlink.

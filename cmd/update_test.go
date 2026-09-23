@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func TestRefreshVendoredCopiesDropsEntryWhenLastInstallPruned(t *testing.T) {
 	}}}
 	agents := config.Default().AllAgents()
 
-	changed, _ := refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, map[string]string{})
+	changed, _ := refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, map[string]string{}, false)
 	if !changed {
 		t.Fatal("expected a change (vanished install pruned, entry dropped)")
 	}
@@ -52,7 +53,7 @@ func TestRefreshVendoredCopiesKeepsEntryWithRemainingInstall(t *testing.T) {
 	// the vanished project install is pruned.
 	makeCanonicalCopy(t, agentdir.Global, "", "alpha")
 
-	refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, map[string]string{})
+	refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, map[string]string{}, false)
 	e, ok := st.Get("alpha")
 	if !ok {
 		t.Fatal("entry must survive while the global install remains")
@@ -86,5 +87,40 @@ func TestClassifyStagingErr(t *testing.T) {
 	}
 	if !strings.Contains(unchanged.Error(), boom.Error()) {
 		t.Fatalf("the reported message must name the cause; got %v", unchanged)
+	}
+}
+
+// TestRefreshVendoredCopiesOverwriteTakesOverAgentDir: a skill copied by hand
+// into an agent folder blocks skillm's link on a plain update, and --force
+// replaces it with the link even though the canonical copy is already in sync.
+func TestRefreshVendoredCopiesOverwriteTakesOverAgentDir(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	claude, _ := testAgents(sandboxGlobalRoot(t))
+	agents := []agentdir.Agent{claude}
+	st := &state.State{Skills: []state.SkillEntry{{
+		ID: "alpha", Kind: state.KindGit, Source: "u", Path: "alpha", Ref: "main", Revision: "r",
+		VendoredAt: []string{root},
+	}}}
+	makeCanonicalCopy(t, agentdir.Local, root, "alpha")
+	lp := linkPath(t, claude, agentdir.Local, root, "alpha")
+	if err := os.MkdirAll(lp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Copy in sync, no overwrite: the foreign dir stays.
+	staged := map[string]string{"alpha": agentdir.CanonicalSkillDir(root, "alpha")}
+	refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, staged, false)
+	if fi, err := os.Lstat(lp); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("plain update must leave the foreign dir alone (err=%v)", err)
+	}
+
+	refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, staged, true)
+	fi, err := os.Lstat(lp)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("--force must replace the foreign dir with a link (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(lp, "SKILL.md")); err != nil {
+		t.Fatalf("link does not resolve to the canonical copy: %v", err)
 	}
 }

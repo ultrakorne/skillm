@@ -32,6 +32,7 @@ skillm install grill-with-docs --local                          # add a scope: c
 skillm import                                                   # adopt a repo's skills-lock.json (skillm's or `npx skills`')
 skillm check                                                    # see what has updates
 skillm update                                                   # pull the updates in, everywhere on this machine
+skillm update --force                                           # also take over agent-folder copies skillm didn't create
 ```
 
 A **global** install writes a real copy into the canonical `~/.agents/skills` folder —
