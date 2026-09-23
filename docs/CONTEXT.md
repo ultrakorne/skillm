@@ -290,6 +290,12 @@ CLI whose API version it does not know. Distinct from the **schema version** eve
 event line carries, which covers only the Envelope and event-line shape. The **capabilities**
 reported alongside it name the commands that have a JSON mode.
 
+### Bundled CLI
+The skillm binary shipped inside the macOS app, built from the same source as the app so both
+speak the same **API version**; it is the only skillm the app runs. Its **Upgrade method** is
+bundled: the app upgrades it together with itself, never `skillm upgrade`.
+_Avoid_: helper, embedded binary
+
 ## Persistence
 
 ### Config

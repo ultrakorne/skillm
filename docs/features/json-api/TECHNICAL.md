@@ -46,7 +46,9 @@ styled stderr message; `main.go` exits non-zero either way.
 
 A change to a protocol type changes a fixture, and every GUI decodes the same files, so a
 field is added or changed in the Go type, the fixture (regenerate with `SKILLM_UPDATE_GOLDEN=1`)
-and each GUI's decoder together. `TestFixturesDecode` refuses unknown fields, so a fixture can
+and each GUI's decoder together (the macOS app's is `macos/SkillmKit/Models.swift`, checked by
+`macos/SkillmKitTests/FixtureTests.swift`, which must list every fixture file;
+[macos-app](../macos-app/TECHNICAL.md)). `TestFixturesDecode` refuses unknown fields, so a fixture can
 never drift from the Go structs. Error codes are never renamed or reused. `TestFixturesDecode`
 decodes every file directly in the fixture folder as an envelope or event stream, so other formats
 sit in a subdirectory: `internal/protocol/testdata/cache/status.json` is the Refresh cache file.
