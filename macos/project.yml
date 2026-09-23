@@ -19,7 +19,9 @@ packages:
 settings:
   base:
     # Starberry Games GmbH; the app is signed with this team so it can be
-    # given to colleagues' Macs (Developer ID + notarization in C5).
+    # given to colleagues' Macs. A release is signed with the team's
+    # Developer ID and notarized by scripts/release.sh, which reads the team
+    # from here.
     DEVELOPMENT_TEAM: 6LH2JMGD3J
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
@@ -40,7 +42,10 @@ targets:
     platform: macOS
     sources: [Skillm]
     dependencies:
+      # Static: linked into the executable, never embedded (an embedded copy
+      # is dead weight the release would have to sign).
       - target: SkillmKit
+        embed: false
       - package: Sparkle
     settings:
       base:
@@ -97,6 +102,7 @@ targets:
     sources: [SkillmKitTests]
     dependencies:
       - target: SkillmKit
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm.SkillmKitTests

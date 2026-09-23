@@ -30,6 +30,12 @@ final class BundledCLITests: XCTestCase {
         XCTAssertTrue(
             FileManager.default.fileExists(
                 atPath: app.appending(path: "Contents/Frameworks/Sparkle.framework").path))
+        // SkillmKit is static, linked into the executable: an embedded copy
+        // is unused code the release would still have to sign.
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: app.appending(path: "Contents/Frameworks/SkillmKit.framework").path),
+            "the app embeds the static SkillmKit framework")
         var withFeed = info
         withFeed["SUFeedURL"] = "https://example.com/appcast.xml"
         XCTAssertNotNil(UpdateFeed(info: withFeed), "SUPublicEDKey: \(String(describing: info["SUPublicEDKey"]))")
