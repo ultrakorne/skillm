@@ -42,7 +42,7 @@ func claudeLink(base string) string { return filepath.Join(base, ".claude", "ski
 func TestLocalInstallWritesCopyAndLinks(t *testing.T) {
 	home, base, src, agents := localTestSetup(t)
 
-	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local")
+	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestLocalInstallConvertsLegacyHomeSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local")
+	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 	}
 
 	// Not forced → blocked, nothing written, no links created.
-	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local")
+	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne (no force): %v", err)
 	}
@@ -142,7 +142,7 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 	}
 
 	// Recorded → skillm's own copy → refreshed (overwritten).
-	action, err = vendorOne(home, "demo", src, agents, agentdir.Local, base, true, false, "local")
+	action, err = vendorOne(home, "demo", src, agents, agentdir.Local, base, true, false, false, "local")
 	if err != nil {
 		t.Fatalf("vendorOne (recorded): %v", err)
 	}
@@ -154,11 +154,56 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 	}
 }
 
+// TestVendorOneForceLinksIsSeparateFromCanonicalForce: force (consent to
+// overwrite a canonical-slot conflict, which may come from an interactive
+// "yes" to a prompt listing only canonical-slot paths) must not by itself
+// authorize deleting a foreign entry at an agent's link path — a separate
+// path the user was never shown. Only forceLinks, driven solely by the
+// explicit --force flag, does that.
+func TestVendorOneForceLinksIsSeparateFromCanonicalForce(t *testing.T) {
+	home, base, src, agents := localTestSetup(t)
+
+	// A foreign file at claude's link path; the canonical slot is untouched.
+	if err := os.MkdirAll(filepath.Dir(claudeLink(base)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claudeLink(base), []byte("hand-copied\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// force=true but forceLinks=false: the canonical copy is written, but
+	// claude's foreign file must survive untouched.
+	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, true, false, "local")
+	if err != nil {
+		t.Fatalf("vendorOne: %v", err)
+	}
+	if action != vendorWrote {
+		t.Fatalf("action = %v, want vendorWrote", action)
+	}
+	b, err := os.ReadFile(claudeLink(base))
+	if err != nil || string(b) != "hand-copied\n" {
+		t.Fatalf("claude's foreign file must survive without forceLinks; content=%q err=%v", b, err)
+	}
+
+	// forceLinks=true takes it over.
+	action, err = vendorOne(home, "demo", src, agents, agentdir.Local, base, true, true, true, "local")
+	if err != nil {
+		t.Fatalf("vendorOne: %v", err)
+	}
+	if action != vendorRefreshed {
+		t.Fatalf("action = %v, want vendorRefreshed", action)
+	}
+	fi, err := os.Lstat(claudeLink(base))
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("claude link must be taken over with forceLinks=true (err=%v)", err)
+	}
+}
+
 // TestLocalRemove removes the agent links and the canonical copy, and is
 // idempotent.
 func TestLocalRemove(t *testing.T) {
 	home, base, src, agents := localTestSetup(t)
-	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local"); err != nil {
+	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
 		t.Fatalf("seed install: %v", err)
 	}
 
@@ -186,7 +231,7 @@ func TestLocalRemove(t *testing.T) {
 // emptied lockfile.
 func TestLockEntrySync(t *testing.T) {
 	home, base, src, agents := localTestSetup(t)
-	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, "local"); err != nil {
+	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
 		t.Fatalf("seed install: %v", err)
 	}
 
@@ -228,5 +273,39 @@ func TestLockEntrySync(t *testing.T) {
 	removeLockEntry("demo", base)
 	if _, err := os.Stat(lockfile.Path(base)); !os.IsNotExist(err) {
 		t.Fatalf("emptied lockfile should be deleted; err = %v", err)
+	}
+}
+
+// TestInstallYesDoesNotTakeOverAgentLinks: --yes only answers prompts, so an
+// install with --yes (but not --force) must leave a hand-made skill at an
+// agent's link path alone; only --force takes it over.
+func TestInstallYesDoesNotTakeOverAgentLinks(t *testing.T) {
+	home, base, src, agents := localTestSetup(t)
+	if err := os.MkdirAll(claudeLink(base), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(claudeLink(base), "NOTES.md")
+	if err := os.WriteFile(notes, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []stagedSkill{{entry: state.SkillEntry{ID: "demo", Kind: state.KindLocal, Source: src}, dir: src}}
+
+	oldYes, oldForce := flagYes, flagForce
+	t.Cleanup(func() { flagYes, flagForce = oldYes, oldForce })
+
+	flagYes, flagForce = true, false
+	if err := installVendored(home, &state.State{}, items, agents, agentdir.Local, base, "local"); err != nil {
+		t.Fatalf("installVendored --yes: %v", err)
+	}
+	if _, err := os.Stat(notes); err != nil {
+		t.Fatalf("--yes must not take over the agent link path: %v", err)
+	}
+
+	flagYes, flagForce = false, true
+	if err := installVendored(home, &state.State{}, items, agents, agentdir.Local, base, "local"); err != nil {
+		t.Fatalf("installVendored --force: %v", err)
+	}
+	if fi, err := os.Lstat(claudeLink(base)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("--force must take over the agent link path (err=%v)", err)
 	}
 }

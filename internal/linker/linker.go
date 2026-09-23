@@ -96,6 +96,9 @@ const (
 	ActionAbsent
 	// ActionFound means ScanLinks discovered a live symlink into Home.
 	ActionFound
+	// ActionReplaced means LinkForce replaced an entry skillm did not
+	// create (a real file/dir or a foreign symlink) with the link.
+	ActionReplaced
 )
 
 // String renders the action as a short lowercase label.
@@ -111,6 +114,8 @@ func (a Action) String() string {
 		return "absent"
 	case ActionFound:
 		return "found"
+	case ActionReplaced:
+		return "replaced"
 	default:
 		return fmt.Sprintf("Action(%d)", int(a))
 	}
@@ -158,11 +163,30 @@ type Result struct {
 //     skill, or a legacy absolute link into Home's store), it is repointed
 //     to the correct target (ActionCreated);
 //   - if the entry is a real file, a real directory, or a foreign symlink,
-//     Link refuses: it returns an error and leaves that entry untouched.
+//     Link refuses: it returns an error and leaves that entry untouched
+//     (LinkForce replaces it instead).
 //
 // On the first refusal Link returns the partial Result gathered so far
-// together with the error, having mutated nothing it should not have.
+// together with the error, having mutated nothing it should not have. A
+// refusal error wraps ErrNotManaged.
 func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string) (Result, error) {
+	return link(home, id, agents, scope, cwd, false)
+}
+
+// LinkForce is Link, except that a real file, a real directory, or a
+// foreign symlink at an agent's link path is removed and replaced by the link
+// instead of refused (ActionReplaced) — taking over a skill that was put there
+// by hand or by another tool. Callers must only use it on explicit user
+// consent (the --force flag).
+func LinkForce(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string) (Result, error) {
+	return link(home, id, agents, scope, cwd, true)
+}
+
+// ErrNotManaged is wrapped by Link's refusal to replace an entry skillm did
+// not create, so callers can point the user at their --force flag.
+var ErrNotManaged = errors.New("not created by skillm")
+
+func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string, force bool) (Result, error) {
 	var res Result
 
 	for _, a := range agents {
@@ -203,9 +227,17 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 				return res, fmt.Errorf("inspect existing link %s: %w", linkPath, err)
 			}
 			if !ours {
-				return res, fmt.Errorf(
-					"refusing to overwrite %s: it is a symlink to %s, which is not managed by skillm (use --force semantics in the caller or remove it manually)",
-					linkPath, dest)
+				if !force {
+					return res, fmt.Errorf(
+						"refusing to overwrite %s: it is a symlink to %s, which is %w",
+						linkPath, dest, ErrNotManaged)
+				}
+				if err := replaceLink(linkPath, target); err != nil {
+					return res, fmt.Errorf("replace link %s: %w", linkPath, symlinkHint(err))
+				}
+				ar.Action = ActionReplaced
+				res.Agents = append(res.Agents, ar)
+				continue
 			}
 			if filepath.Clean(dest) == filepath.Clean(resolved) {
 				ar.Action = ActionAlreadyLinked
@@ -221,14 +253,58 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 			res.Agents = append(res.Agents, ar)
 
 		case lerr == nil:
-			// A real file or directory occupies the link path. Never clobber it.
+			// A real file or directory occupies the link path. This is not
+			// necessarily foreign: if some ancestor of linkPath is itself a
+			// symlink into the canonical store (e.g. an agent's whole skill
+			// folder pointed at .agents/skills by hand), Lstat follows that
+			// ancestor and lands on the canonical copy itself — which must
+			// never be treated as an entry to replace or delete. Rule that
+			// out by comparing resolved (real) paths before deciding kind.
+			if real, rerr := filepath.EvalSymlinks(linkPath); rerr == nil {
+				if realTarget, terr := filepath.EvalSymlinks(resolved); terr == nil && real == realTarget {
+					ar.Action = ActionAlreadyLinked
+					res.Agents = append(res.Agents, ar)
+					continue
+				}
+			}
 			kind := "file"
 			if info.IsDir() {
 				kind = "directory"
 			}
-			return res, fmt.Errorf(
-				"refusing to overwrite %s: a %s already exists there and was not created by skillm",
-				linkPath, kind)
+			if !force {
+				return res, fmt.Errorf(
+					"refusing to overwrite %s: a %s already exists there and was %w",
+					linkPath, kind, ErrNotManaged)
+			}
+			// Nothing is destroyed until the link is in place: stage the link
+			// at a temp sibling (catching a symlink-creation failure, e.g. a
+			// missing privilege on Windows), move the foreign entry aside, move
+			// the link in, and only then delete the old entry. Any failure
+			// before that restores the original.
+			tmp := linkPath + ".skillm-tmp"
+			old := linkPath + ".skillm-old"
+			_ = os.RemoveAll(tmp)
+			if err := os.Symlink(target, tmp); err != nil {
+				return res, fmt.Errorf("create link %s -> %s: %w", linkPath, target, symlinkHint(err))
+			}
+			if err := os.RemoveAll(old); err != nil {
+				_ = os.Remove(tmp)
+				return res, fmt.Errorf("clear %s: %w", old, err)
+			}
+			if err := os.Rename(linkPath, old); err != nil {
+				_ = os.Remove(tmp)
+				return res, fmt.Errorf("move %s %s aside: %w", kind, linkPath, err)
+			}
+			if err := os.Rename(tmp, linkPath); err != nil {
+				_ = os.Rename(old, linkPath)
+				_ = os.Remove(tmp)
+				return res, fmt.Errorf("move link into place %s: %w", linkPath, err)
+			}
+			if err := os.RemoveAll(old); err != nil {
+				return res, fmt.Errorf("linked %s, but could not remove the replaced %s at %s: %w", linkPath, kind, old, err)
+			}
+			ar.Action = ActionReplaced
+			res.Agents = append(res.Agents, ar)
 
 		case errors.Is(lerr, fs.ErrNotExist):
 			// Nothing there — create the folder and the symlink.

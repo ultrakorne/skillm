@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -97,12 +98,18 @@ func vendorConflict(home, id string, scope agentdir.Scope, base string, recorded
 // canonical copy elsewhere), then a link for every supplied agent that needs
 // one. recorded says whether the install is already recorded for this skill (so
 // a directory at the canonical slot is skillm's own copy); force permits
-// overwriting a foreign entry there; label names the scope in per-link report
-// lines. It returns what happened to the canonical slot; vendorBlocked means
-// nothing was written at all. Link refusals (a foreign entry at an agent's
-// link path) are warned about, never fatal: the copy is the unit that is
-// recorded, links are re-derivable from disk.
-func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force bool, label string) (vendorAction, error) {
+// overwriting a foreign entry at the canonical slot; label names the scope in
+// per-link report lines. It returns what happened to the canonical slot;
+// vendorBlocked means nothing was written at all. Link refusals (a foreign
+// entry at an agent's link path) are warned about, never fatal: the copy is
+// the unit that is recorded, links are re-derivable from disk.
+//
+// forceLinks is deliberately separate from force: force may come from an
+// interactive "yes" to a prompt that only ever lists canonical-slot
+// conflicts (confirmVendorOverwritePrompt), so it must not also authorize
+// deleting unrelated foreign entries at agent link paths that prompt never
+// showed. Only the explicit --force flag sets forceLinks.
+func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force, forceLinks bool, label string) (vendorAction, error) {
 	src := srcDir
 	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 
@@ -145,26 +152,42 @@ func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.
 		return vendorBlocked, fmt.Errorf("install copy of %s: %w", id, err)
 	}
 
-	linkVendorAgents(home, id, agents, scope, base, label)
+	linkVendorAgents(home, id, agents, scope, base, label, forceLinks)
 	return action, nil
 }
 
 // linkVendorAgents creates (or repoints) the agent links into the canonical
 // copy of id at (scope, base) for every supplied agent, warning on refusals
 // instead of failing — a foreign file at one agent's link path must not block
-// the others.
-func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string) {
+// the others. With force, such a foreign entry is replaced by the link
+// instead (taking the skill over); without it, the refusal warning points at
+// --force. It reports whether any link was created or replaced.
+func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool) (linked bool) {
+	link := linker.Link
+	if force {
+		link = linker.LinkForce
+	}
 	for _, a := range agents {
-		res, err := linker.Link(home, id, []agentdir.Agent{a}, scope, base)
+		res, err := link(home, id, []agentdir.Agent{a}, scope, base)
 		if err != nil {
-			ui.Warnf("%v", err)
+			if errors.Is(err, linker.ErrNotManaged) {
+				ui.Warnf("%v (pass --force to take it over)", err)
+			} else {
+				ui.Warnf("%v", err)
+			}
 		}
 		for _, ar := range res.Agents {
-			if ar.Action == linker.ActionCreated {
+			switch ar.Action {
+			case linker.ActionCreated:
+				linked = true
 				ui.Successf("linked %s for %s (%s)", id, ar.Agent.Name, label)
+			case linker.ActionReplaced:
+				linked = true
+				ui.Successf("took over %s for %s (%s): replaced %s", id, ar.Agent.Name, label, ar.Path)
 			}
 		}
 	}
+	return linked
 }
 
 // vendorCopyExists reports whether the canonical slot for id at (scope, base)

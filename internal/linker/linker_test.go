@@ -1,6 +1,7 @@
 package linker
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -318,8 +319,8 @@ func TestLink_RefusesToClobberRealDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd); err == nil {
-		t.Fatal("expected refusal error when a real dir occupies the link path")
+	if _, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd); !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("expected an ErrNotManaged refusal when a real dir occupies the link path, got %v", err)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Fatalf("user directory contents disturbed: %v", err)
@@ -644,5 +645,129 @@ func TestLink_RelativeForeignSymlinkRefused(t *testing.T) {
 
 	if _, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd); err == nil {
 		t.Fatal("expected refusal for relative foreign symlink")
+	}
+}
+
+// TestLinkForce_TakesOverForeignEntries: LinkForce replaces a real
+// directory, a real file, and a foreign symlink at the link path with the
+// relative link into the canonical copy, reporting ActionReplaced.
+func TestLinkForce_TakesOverForeignEntries(t *testing.T) {
+	cases := map[string]func(t *testing.T, linkPath string){
+		"dir": func(t *testing.T, linkPath string) {
+			if err := os.MkdirAll(linkPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(linkPath, "SKILL.md"), []byte("hand-copied\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"file": func(t *testing.T, linkPath string) {
+			if err := os.WriteFile(linkPath, []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"foreign symlink": func(t *testing.T, linkPath string) {
+			if err := os.Symlink(t.TempDir(), linkPath); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, occupy := range cases {
+		t.Run(name, func(t *testing.T) {
+			const id = "demo"
+			fx := newFixture(t, id)
+			ag := []agentdir.Agent{claude(t)}
+			folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+			if err := os.MkdirAll(folder, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			linkPath := filepath.Join(folder, id)
+			occupy(t, linkPath)
+
+			res, err := LinkForce(fx.home, id, ag, agentdir.Local, fx.cwd)
+			if err != nil {
+				t.Fatalf("LinkForce: %v", err)
+			}
+			if len(res.Agents) != 1 || res.Agents[0].Action != ActionReplaced {
+				t.Fatalf("want one ActionReplaced result, got %+v", res.Agents)
+			}
+			got, err := os.Readlink(linkPath)
+			if err != nil {
+				t.Fatalf("link path is not a symlink: %v", err)
+			}
+			if want := filepath.Join("..", "..", ".agents", "skills", id); got != want {
+				t.Errorf("link target = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestLink_AncestorSymlinkAliasedToCanonicalIsNeverDeleted: an agent's whole
+// skill folder can itself be a symlink into the canonical store (a manual
+// merge, not something skillm creates) rather than the individual skill
+// entries under it. Lstat on the skill's link path then follows that ancestor
+// symlink and lands on the canonical copy itself, which is a real directory,
+// not a symlink — both Link and LinkForce must recognize this as
+// already-correct and must never delete or replace it.
+func TestLink_AncestorSymlinkAliasedToCanonicalIsNeverDeleted(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	ag := []agentdir.Agent{claude(t)}
+
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	if err := os.MkdirAll(filepath.Dir(folder), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(agentdir.CanonicalLocalDir(fx.cwd), folder); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(agentdir.CanonicalSkillDir(fx.cwd, id), "SKILL.md")
+
+	res, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].Action != ActionAlreadyLinked {
+		t.Fatalf("want ActionAlreadyLinked, got %+v", res.Agents)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("canonical copy must survive Link: %v", err)
+	}
+
+	res, err = LinkForce(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if err != nil {
+		t.Fatalf("LinkForce: %v", err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].Action != ActionAlreadyLinked {
+		t.Fatalf("want ActionAlreadyLinked, got %+v", res.Agents)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("canonical copy must survive LinkForce: %v", err)
+	}
+}
+
+// TestLinkForce_LeavesNoTempSiblings: a takeover leaves nothing but the link
+// in the agent's folder (no staged .skillm-tmp or moved-aside .skillm-old).
+func TestLinkForce_LeavesNoTempSiblings(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	ag := []agentdir.Agent{claude(t)}
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	if err := os.MkdirAll(filepath.Join(folder, id), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LinkForce(fx.home, id, ag, agentdir.Local, fx.cwd); err != nil {
+		t.Fatalf("LinkForce: %v", err)
+	}
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != id {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("agent folder should hold only %q, got %v", id, names)
 	}
 }

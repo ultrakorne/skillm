@@ -40,14 +40,18 @@ func newUpdateCmd() *cobra.Command {
 			"copy reverted by git or edited in place is repaired while its install is still " +
 			"recorded. Local-path skills have no " +
 			"upstream and are not re-fetched, but their installed copies are re-synced from " +
-			"the recorded source directory when it still exists and its content has changed.",
+			"the recorded source directory when it still exists and its content has changed. " +
+			"An agent link path occupied by something skillm did not create (a skill " +
+			"copied in by hand or by another tool) is left alone (with a warning when its " +
+			"copy is re-synced); pass " +
+			"--force to replace it with skillm's link and take the skill over.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var id string
 			if len(args) == 1 {
 				id = strings.TrimSpace(args[0])
 			}
-			return runUpdate(cmd.Context(), flagHome, id)
+			return runUpdate(cmd.Context(), flagHome, id, flagForce)
 		},
 	}
 	return c
@@ -58,7 +62,7 @@ type updateTarget struct {
 	entry state.SkillEntry
 }
 
-func runUpdate(ctx context.Context, homeOverride, id string) error {
+func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 	home, err := store.Home(homeOverride)
 	if err != nil {
 		return err
@@ -182,7 +186,7 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 	// agent's links were removed when it was disabled, and update must not
 	// resurrect them. (Uninstall's sweep, by contrast, spans ALL defined
 	// agents — removing stale links is safe, creating them is not.)
-	pruned, synced := refreshVendoredCopies(home, cfg.EnabledAgents(), st, inScope, updatedSet, stagedByID)
+	pruned, synced := refreshVendoredCopies(home, cfg.EnabledAgents(), st, inScope, updatedSet, stagedByID, force)
 	if pruned {
 		dirty = true
 	}
@@ -218,14 +222,16 @@ func runUpdate(ctx context.Context, homeOverride, id string) error {
 // differs from it (so an unchanged skill produces no git churn), and left
 // untouched with a one-time warning when that source directory is gone.
 // Whenever a copy is rewritten, any missing agent links are recreated, and a
-// Local copy's skills-lock.json entry is refreshed too. A recorded install whose copy has vanished — the project was moved or
+// Local copy's skills-lock.json entry is refreshed too. With force, every
+// surviving install's links are (re)made whether or not its copy changed,
+// replacing any entry skillm did not create at an agent's link path. A recorded install whose copy has vanished — the project was moved or
 // the files were deleted — is reported and pruned; a skill whose last install
 // is pruned this way has its registry entry dropped, matching "an entry exists
 // only while installed somewhere". It mutates st in place and returns whether
 // anything was pruned or dropped (changed, so the caller persists) and whether
-// any copy was actually rewritten (synced, so the caller does not claim
+// any copy was actually rewritten or link made (synced, so the caller does not claim
 // everything was already up to date).
-func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool, staged map[string]string) (changed, synced bool) {
+func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool, staged map[string]string, force bool) (changed, synced bool) {
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		want[id] = true
@@ -259,9 +265,14 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 				ui.Warnf("forgetting global install of %s: no copy remains in %s", e.ID, canonicalDisplay(agentdir.Global))
 				e.Global = false
 				changed = true
-			} else if canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID]) {
-				synced = true
-				linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String())
+			} else {
+				refreshed := canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID])
+				if refreshed {
+					synced = true
+				}
+				if (refreshed || force) && linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String(), force) {
+					synced = true
+				}
 			}
 		}
 
@@ -273,11 +284,16 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 					changed = true
 					continue // prune
 				}
-				if canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID]) {
+				refreshed := canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID])
+				if refreshed {
 					synced = true
-					localAgents, _ := splitLocalAliased(agents, root)
-					linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""))
 					upsertLockEntry(*e, root)
+				}
+				if refreshed || force {
+					localAgents, _ := splitLocalAliased(agents, root)
+					if linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), force) {
+						synced = true
+					}
 				}
 				kept = append(kept, root)
 			}
