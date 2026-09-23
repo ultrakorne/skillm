@@ -29,3 +29,5 @@ Thumbs.db
 # Local environment overrides
 .env
 .env.local
+
+.claude/worktrees
