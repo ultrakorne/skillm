@@ -648,10 +648,10 @@ func TestLink_RelativeForeignSymlinkRefused(t *testing.T) {
 	}
 }
 
-// TestLinkOverwrite_TakesOverForeignEntries: LinkOverwrite replaces a real
+// TestLinkForce_TakesOverForeignEntries: LinkForce replaces a real
 // directory, a real file, and a foreign symlink at the link path with the
 // relative link into the canonical copy, reporting ActionReplaced.
-func TestLinkOverwrite_TakesOverForeignEntries(t *testing.T) {
+func TestLinkForce_TakesOverForeignEntries(t *testing.T) {
 	cases := map[string]func(t *testing.T, linkPath string){
 		"dir": func(t *testing.T, linkPath string) {
 			if err := os.MkdirAll(linkPath, 0o755); err != nil {
@@ -684,9 +684,9 @@ func TestLinkOverwrite_TakesOverForeignEntries(t *testing.T) {
 			linkPath := filepath.Join(folder, id)
 			occupy(t, linkPath)
 
-			res, err := LinkOverwrite(fx.home, id, ag, agentdir.Local, fx.cwd)
+			res, err := LinkForce(fx.home, id, ag, agentdir.Local, fx.cwd)
 			if err != nil {
-				t.Fatalf("LinkOverwrite: %v", err)
+				t.Fatalf("LinkForce: %v", err)
 			}
 			if len(res.Agents) != 1 || res.Agents[0].Action != ActionReplaced {
 				t.Fatalf("want one ActionReplaced result, got %+v", res.Agents)

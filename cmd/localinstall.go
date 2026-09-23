@@ -146,24 +146,24 @@ func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.
 		return vendorBlocked, fmt.Errorf("install copy of %s: %w", id, err)
 	}
 
-	overwriteHint := ""
+	hint := ""
 	if !force {
-		overwriteHint = "--force"
+		hint = "--force"
 	}
-	linkVendorAgents(home, id, agents, scope, base, label, force, overwriteHint)
+	linkVendorAgents(home, id, agents, scope, base, label, force, hint)
 	return action, nil
 }
 
 // linkVendorAgents creates (or repoints) the agent links into the canonical
 // copy of id at (scope, base) for every supplied agent, warning on refusals
 // instead of failing — a foreign file at one agent's link path must not block
-// the others. With overwrite, such a foreign entry is replaced by the link
+// the others. With force, such a foreign entry is replaced by the link
 // instead (taking the skill over). A non-empty hint names the flag that would
 // do so, and is appended to a refusal warning.
-func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, overwrite bool, hint string) {
+func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool, hint string) {
 	link := linker.Link
-	if overwrite {
-		link = linker.LinkOverwrite
+	if force {
+		link = linker.LinkForce
 	}
 	for _, a := range agents {
 		res, err := link(home, id, []agentdir.Agent{a}, scope, base)

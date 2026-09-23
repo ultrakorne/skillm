@@ -96,7 +96,7 @@ const (
 	ActionAbsent
 	// ActionFound means ScanLinks discovered a live symlink into Home.
 	ActionFound
-	// ActionReplaced means LinkOverwrite replaced an entry skillm did not
+	// ActionReplaced means LinkForce replaced an entry skillm did not
 	// create (a real file/dir or a foreign symlink) with the link.
 	ActionReplaced
 )
@@ -164,7 +164,7 @@ type Result struct {
 //     to the correct target (ActionCreated);
 //   - if the entry is a real file, a real directory, or a foreign symlink,
 //     Link refuses: it returns an error and leaves that entry untouched
-//     (LinkOverwrite replaces it instead).
+//     (LinkForce replaces it instead).
 //
 // On the first refusal Link returns the partial Result gathered so far
 // together with the error, having mutated nothing it should not have. A
@@ -173,20 +173,20 @@ func Link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 	return link(home, id, agents, scope, cwd, false)
 }
 
-// LinkOverwrite is Link, except that a real file, a real directory, or a
+// LinkForce is Link, except that a real file, a real directory, or a
 // foreign symlink at an agent's link path is removed and replaced by the link
 // instead of refused (ActionReplaced) — taking over a skill that was put there
 // by hand or by another tool. Callers must only use it on explicit user
 // consent (the --force flag).
-func LinkOverwrite(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string) (Result, error) {
+func LinkForce(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string) (Result, error) {
 	return link(home, id, agents, scope, cwd, true)
 }
 
 // ErrNotManaged is wrapped by Link's refusal to replace an entry skillm did
-// not create, so callers can point the user at their overwrite flag.
+// not create, so callers can point the user at their --force flag.
 var ErrNotManaged = errors.New("not created by skillm")
 
-func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string, overwrite bool) (Result, error) {
+func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string, force bool) (Result, error) {
 	var res Result
 
 	for _, a := range agents {
@@ -227,7 +227,7 @@ func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 				return res, fmt.Errorf("inspect existing link %s: %w", linkPath, err)
 			}
 			if !ours {
-				if !overwrite {
+				if !force {
 					return res, fmt.Errorf(
 						"refusing to overwrite %s: it is a symlink to %s, which is %w",
 						linkPath, dest, ErrNotManaged)
@@ -258,7 +258,7 @@ func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 			if info.IsDir() {
 				kind = "directory"
 			}
-			if !overwrite {
+			if !force {
 				return res, fmt.Errorf(
 					"refusing to overwrite %s: a %s already exists there and was %w",
 					linkPath, kind, ErrNotManaged)

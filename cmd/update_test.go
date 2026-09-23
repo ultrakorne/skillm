@@ -90,10 +90,10 @@ func TestClassifyStagingErr(t *testing.T) {
 	}
 }
 
-// TestRefreshVendoredCopiesOverwriteTakesOverAgentDir: a skill copied by hand
+// TestRefreshVendoredCopiesForceTakesOverAgentDir: a skill copied by hand
 // into an agent folder blocks skillm's link on a plain update, and --force
 // replaces it with the link even though the canonical copy is already in sync.
-func TestRefreshVendoredCopiesOverwriteTakesOverAgentDir(t *testing.T) {
+func TestRefreshVendoredCopiesForceTakesOverAgentDir(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
 	claude, _ := testAgents(sandboxGlobalRoot(t))
@@ -108,7 +108,7 @@ func TestRefreshVendoredCopiesOverwriteTakesOverAgentDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Copy in sync, no overwrite: the foreign dir stays.
+	// Copy in sync, no --force: the foreign dir stays.
 	staged := map[string]string{"alpha": agentdir.CanonicalSkillDir(root, "alpha")}
 	refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, staged, false)
 	if fi, err := os.Lstat(lp); err != nil || fi.Mode()&os.ModeSymlink != 0 {

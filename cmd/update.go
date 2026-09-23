@@ -61,7 +61,7 @@ type updateTarget struct {
 	entry state.SkillEntry
 }
 
-func runUpdate(ctx context.Context, homeOverride, id string, overwrite bool) error {
+func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 	home, err := store.Home(homeOverride)
 	if err != nil {
 		return err
@@ -185,7 +185,7 @@ func runUpdate(ctx context.Context, homeOverride, id string, overwrite bool) err
 	// agent's links were removed when it was disabled, and update must not
 	// resurrect them. (Uninstall's sweep, by contrast, spans ALL defined
 	// agents — removing stale links is safe, creating them is not.)
-	pruned, synced := refreshVendoredCopies(home, cfg.EnabledAgents(), st, inScope, updatedSet, stagedByID, overwrite)
+	pruned, synced := refreshVendoredCopies(home, cfg.EnabledAgents(), st, inScope, updatedSet, stagedByID, force)
 	if pruned {
 		dirty = true
 	}
@@ -221,7 +221,7 @@ func runUpdate(ctx context.Context, homeOverride, id string, overwrite bool) err
 // differs from it (so an unchanged skill produces no git churn), and left
 // untouched with a one-time warning when that source directory is gone.
 // Whenever a copy is rewritten, any missing agent links are recreated, and a
-// Local copy's skills-lock.json entry is refreshed too. With overwrite, every
+// Local copy's skills-lock.json entry is refreshed too. With force, every
 // surviving install's links are (re)made whether or not its copy changed,
 // replacing any entry skillm did not create at an agent's link path. A recorded install whose copy has vanished — the project was moved or
 // the files were deleted — is reported and pruned; a skill whose last install
@@ -230,7 +230,7 @@ func runUpdate(ctx context.Context, homeOverride, id string, overwrite bool) err
 // anything was pruned or dropped (changed, so the caller persists) and whether
 // any copy was actually rewritten (synced, so the caller does not claim
 // everything was already up to date).
-func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool, staged map[string]string, overwrite bool) (changed, synced bool) {
+func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool, staged map[string]string, force bool) (changed, synced bool) {
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		want[id] = true
@@ -269,8 +269,8 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 				if refreshed {
 					synced = true
 				}
-				if refreshed || overwrite {
-					linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String(), overwrite, "--force")
+				if refreshed || force {
+					linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String(), force, "--force")
 				}
 			}
 		}
@@ -288,9 +288,9 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 					synced = true
 					upsertLockEntry(*e, root)
 				}
-				if refreshed || overwrite {
+				if refreshed || force {
 					localAgents, _ := splitLocalAliased(agents, root)
-					linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), overwrite, "--force")
+					linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), force, "--force")
 				}
 				kept = append(kept, root)
 			}
