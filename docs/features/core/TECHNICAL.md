@@ -3,21 +3,25 @@
 ## Architecture
 
 Each command in `cmd/` is a cobra command. `install`, `update`, `uninstall`, `import` and
-`agent` orchestrate the `internal/` packages directly: a command that changes anything resolves
-Home, takes the Home lock, loads Config and the Registry, fetches any content it needs into a
-temp dir outside Home, writes Canonical copies, agent Links and Lockfile entries, saves the
-Registry (and Config, when `agent` toggles Enabled flags or a first run seeds the defaults) and
-releases the lock on return. `upgrade` never touches Home.
+`agent` keep their loops and prompts in `cmd` and write through core's install primitives
+(Canonical copies, agent Links, Lockfile entries, Source identity; see
+[install-primitives.md](install-primitives.md)): a command that changes anything resolves Home,
+takes the Home lock, loads Config and the Registry, fetches any content it needs into a temp dir
+outside Home, writes copies, Links and Lockfile entries, saves the Registry (and Config, when
+`agent` toggles Enabled flags or a first run seeds the defaults) and releases the lock on
+return. `upgrade` never touches Home.
 
-`check` and `list` call the presentation-free `internal/core` package. `core.Check` and
-`core.List` take a `core.Options`, load Config and the Registry with no lock, and return a typed
-result; core reports progress through a `Reporter`'s `Event`, and `cmd`'s `termReporter` turns
-those Events into the terminal checklist and the `ui` print helpers. `update`'s per-skill loop
-lives in `cmd/update.go` and drives its work through `runChecklist`, which fans out over
+`check` and `list` call `core.Check` and `core.List`, which take a `core.Options`, load Config
+and the Registry with no lock, and return a typed result. Core reports through a `Reporter`'s
+`Event`: `cmd`'s `termReporter` turns Events into the terminal checklist and the `ui` print
+helpers, and `termLog` prints the log Events of the install primitives. `update`'s per-skill
+loop lives in `cmd/update.go` and drives its work through `runChecklist`, which fans out over
 `core.FanOut` and renders through the same `ui.Checklist`. Prompts and every other presentation
 concern stay in `cmd`: `internal/core` imports neither `internal/ui` nor cobra/bubbletea/huh/
-lipgloss and never reads the process cwd or standard streams, which `internal/core/arch_test.go`
-enforces.
+lipgloss and never touches the standard streams or calls `os.Getwd`, which
+`internal/core/arch_test.go` enforces. It still depends on the process cwd in one way:
+`filepath.Abs`, used to compare local Sources and to normalise install roots, resolves a
+relative path (a local Source recorded as typed) against it.
 
 Home holds three files: `config.toml` (Config), `state.toml` (Registry) and `.lock`. Both TOML
 files are replaced whole on every save through one atomic-write primitive; the lock file holds
@@ -30,9 +34,7 @@ nothing but the current holder's description.
 | `cmd/root.go` | Root command and the global flags (`--home`, `--force`, `--yes`) |
 | `cmd/lock.go` | Takes the Home lock for a command and prints the "waiting for …" notice |
 | `cmd/fetch.go` | Shared fetch → discover → select → stage pipeline for a Source |
-| `cmd/localinstall.go` | Canonical-copy and Link orchestration shared by `install`, `update`, `uninstall`, `list` and `agent` |
-| `cmd/locksync.go` | Best-effort `skills-lock.json` sync for every Local install root |
-| `cmd/reporter.go` | `coreOptions`, `termReporter` (core Events → checklist and prints) and `runChecklist` |
+| `cmd/reporter.go` | `coreOptions`, `termReporter` (core Events → checklist and prints), `termLog` and `runChecklist` |
 | `cmd/check.go` | `check` over `core.Check`, with `checkReporter` restoring the CLI's "untracked" line |
 | `internal/store/store.go` | Home resolution (`--home`, `$SKILLM_HOME`, `~/.skillm`) and the directory-copy primitives |
 | `internal/store/atomic.go` | Atomic file replace used by every Config and Registry save |
@@ -46,6 +48,9 @@ nothing but the current holder's description.
 | `internal/core/check.go`, `internal/core/list.go`, `internal/core/scan.go` | `core.Check` (per-skill upstream status) and `core.List` (installs read live from disk) |
 | `internal/core/events.go`, `internal/core/errors.go`, `internal/core/options.go` | The `Reporter`/`Event` model, typed errors returned in place of prompts, and `Options` |
 | `internal/core/pool.go` | `FanOut`, the bounded concurrent fan-out core work runs under |
+| `internal/core/vendor.go` | Writes, refreshes and removes a Canonical copy and its agent Links; the log Event codes |
+| `internal/core/locksync.go` | Upserts and removes a skill's `skills-lock.json` entry at a Local install root |
+| `internal/core/source.go` | Source identity (same-source refresh or `--as` collision), the entry to record, git re-fetch |
 | `internal/ui/checklist.go` | `Checklist`: one row per label for work the caller runs, resolved via `Done`/`Wait` |
 | `cmd/lock_test.go` | Asserts every mutating command waits for a held Home lock |
 | `cmd/golden_test.go`, `cmd/testdata/golden/*.txt` | Pins `check`/`list` plain-mode output byte-for-byte across every status kind |
@@ -75,7 +80,9 @@ is removed and the stage renamed into place, so a failed copy leaves the old one
 write first sweeps stages a killed run left for that skill, which is safe only because the
 caller holds the Home lock.
 
-### `check` and `list` over `internal/core`
+### Sub-component rules live on topic pages
 
-The status, cancellation and install-listing rules of `core.Check` and `core.List` are in
-[check-and-list.md](check-and-list.md).
+[check-and-list.md](check-and-list.md) holds the status, cancellation and install-listing rules
+of `core.Check` and `core.List`; [install-primitives.md](install-primitives.md) the
+refusal-versus-failure codes, the `force`/`forceLinks` split, best-effort Lockfile writes and
+the recorded-copy invariant.
