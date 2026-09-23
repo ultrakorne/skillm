@@ -28,12 +28,21 @@ func buildReleaseBinary(t *testing.T, path, version string) {
 
 // runOffline runs the binary with every HTTP(S) request routed to a dead
 // proxy, so a network lookup fails fast and visibly instead of reaching
-// GitHub.
+// GitHub. Every inherited proxy variable, in either case, is dropped first:
+// Go reads the first non-empty of NO_PROXY and no_proxy, so an empty
+// NO_PROXY alone would let a lowercase no_proxy exempt GitHub.
 func runOffline(t *testing.T, bin string, args ...string) (string, error) {
 	t.Helper()
 	c := exec.Command(bin, args...)
-	c.Env = append(os.Environ(),
-		"HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1", "NO_PROXY=",
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strings.HasSuffix(strings.ToLower(name), "_proxy") {
+			env = append(env, kv)
+		}
+	}
+	c.Env = append(env,
+		"HTTPS_PROXY=http://127.0.0.1:1", "HTTP_PROXY=http://127.0.0.1:1",
 		"HOME="+t.TempDir(), "SKILLM_HOME="+t.TempDir())
 	out, err := c.CombinedOutput()
 	// fang styles errors (capitalized, wrapped to the terminal width), so
