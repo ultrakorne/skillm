@@ -115,7 +115,9 @@ func TestRefreshVendoredCopiesForceTakesOverAgentDir(t *testing.T) {
 		t.Fatalf("plain update must leave the foreign dir alone (err=%v)", err)
 	}
 
-	refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, staged, true)
+	if _, synced := refreshVendoredCopies(home, agents, st, []string{"alpha"}, map[string]bool{}, staged, true); !synced {
+		t.Fatal("a takeover is work done: synced must be true so update does not claim everything was up to date")
+	}
 	fi, err := os.Lstat(lp)
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("--force must replace the foreign dir with a link (err=%v)", err)

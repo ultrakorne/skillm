@@ -75,7 +75,8 @@ func newInstallCmd() *cobra.Command {
 			"skills-lock.json — all committable, so teammates get working skills on clone, " +
 			"and the lockfile is interoperable with vercel's `npx skills` CLI. Re-installing " +
 			"something already correct is a no-op; skillm refuses to overwrite anything it " +
-			"did not create.",
+			"did not create. Pass --force to overwrite it anyway, including taking over an " +
+			"agent link path occupied by a skill copied in by hand or by another tool.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInstall(cmd, args, installFlagGlobal, installFlagLocal, installFlagAll)
@@ -203,12 +204,11 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 // converted to a copy without asking.
 func installVendored(home string, st *state.State, items []stagedSkill, agents []agentdir.Agent, scope agentdir.Scope, base, label string) error {
 	force := flagForce || flagYes
-	// agentTakeover gates deleting foreign entries at agent link paths.
-	// It is fixed to the explicit flags and never widened by the interactive
-	// confirmation below, which only ever asks about canonical-slot conflicts
-	// (see vendorOne's doc comment) — a "yes" there must not also authorize
-	// taking over unrelated agent-folder copies it never showed the user.
-	agentTakeover := force
+	// forceLinks gates deleting foreign entries at agent link paths. Only
+	// --force sets it: --yes answers prompts, and no prompt asks about agent
+	// link paths, and an interactive "yes" below (which only lists
+	// canonical-slot conflicts) must not widen it either.
+	forceLinks := flagForce
 
 	// Pre-scan every canonical slot for foreign entries that would be
 	// overwritten, so the question (or the refusal) covers the whole batch once.
@@ -241,7 +241,7 @@ func installVendored(home string, st *state.State, items []stagedSkill, agents [
 	var runErr error
 	for _, it := range items {
 		id := it.entry.ID
-		action, err := vendorOne(home, id, it.dir, agents, scope, base, recorded[id], force, agentTakeover, label)
+		action, err := vendorOne(home, id, it.dir, agents, scope, base, recorded[id], force, forceLinks, label)
 		if err != nil {
 			runErr = err
 			break

@@ -303,7 +303,7 @@ func landLocalInstall(ctx context.Context, home string, st *state.State, agents 
 		}
 		upsertLockEntry(e, root)
 	}
-	linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), false, "")
+	linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), flagForce)
 	return changed
 }
 

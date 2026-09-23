@@ -104,12 +104,12 @@ func vendorConflict(home, id string, scope agentdir.Scope, base string, recorded
 // entry at an agent's link path) are warned about, never fatal: the copy is
 // the unit that is recorded, links are re-derivable from disk.
 //
-// agentTakeover is deliberately separate from force: force may come from an
+// forceLinks is deliberately separate from force: force may come from an
 // interactive "yes" to a prompt that only ever lists canonical-slot
 // conflicts (confirmVendorOverwritePrompt), so it must not also authorize
 // deleting unrelated foreign entries at agent link paths that prompt never
-// showed. Only the explicit --force/--yes flags set agentTakeover.
-func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force, agentTakeover bool, label string) (vendorAction, error) {
+// showed. Only the explicit --force flag sets forceLinks.
+func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force, forceLinks bool, label string) (vendorAction, error) {
 	src := srcDir
 	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 
@@ -152,11 +152,7 @@ func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.
 		return vendorBlocked, fmt.Errorf("install copy of %s: %w", id, err)
 	}
 
-	hint := ""
-	if !agentTakeover {
-		hint = "--force"
-	}
-	linkVendorAgents(home, id, agents, scope, base, label, agentTakeover, hint)
+	linkVendorAgents(home, id, agents, scope, base, label, forceLinks)
 	return action, nil
 }
 
@@ -164,9 +160,9 @@ func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.
 // copy of id at (scope, base) for every supplied agent, warning on refusals
 // instead of failing — a foreign file at one agent's link path must not block
 // the others. With force, such a foreign entry is replaced by the link
-// instead (taking the skill over). A non-empty hint names the flag that would
-// do so, and is appended to a refusal warning.
-func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool, hint string) {
+// instead (taking the skill over); without it, the refusal warning points at
+// --force. It reports whether any link was created or replaced.
+func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool) (linked bool) {
 	link := linker.Link
 	if force {
 		link = linker.LinkForce
@@ -174,8 +170,8 @@ func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.S
 	for _, a := range agents {
 		res, err := link(home, id, []agentdir.Agent{a}, scope, base)
 		if err != nil {
-			if hint != "" && errors.Is(err, linker.ErrNotManaged) {
-				ui.Warnf("%v (pass %s to take it over)", err, hint)
+			if errors.Is(err, linker.ErrNotManaged) {
+				ui.Warnf("%v (pass --force to take it over)", err)
 			} else {
 				ui.Warnf("%v", err)
 			}
@@ -183,12 +179,15 @@ func linkVendorAgents(home, id string, agents []agentdir.Agent, scope agentdir.S
 		for _, ar := range res.Agents {
 			switch ar.Action {
 			case linker.ActionCreated:
+				linked = true
 				ui.Successf("linked %s for %s (%s)", id, ar.Agent.Name, label)
 			case linker.ActionReplaced:
+				linked = true
 				ui.Successf("took over %s for %s (%s): replaced %s", id, ar.Agent.Name, label, ar.Path)
 			}
 		}
 	}
+	return linked
 }
 
 // vendorCopyExists reports whether the canonical slot for id at (scope, base)

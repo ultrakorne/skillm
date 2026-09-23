@@ -745,3 +745,29 @@ func TestLink_AncestorSymlinkAliasedToCanonicalIsNeverDeleted(t *testing.T) {
 		t.Fatalf("canonical copy must survive LinkForce: %v", err)
 	}
 }
+
+// TestLinkForce_LeavesNoTempSiblings: a takeover leaves nothing but the link
+// in the agent's folder (no staged .skillm-tmp or moved-aside .skillm-old).
+func TestLinkForce_LeavesNoTempSiblings(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	ag := []agentdir.Agent{claude(t)}
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	if err := os.MkdirAll(filepath.Join(folder, id), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LinkForce(fx.home, id, ag, agentdir.Local, fx.cwd); err != nil {
+		t.Fatalf("LinkForce: %v", err)
+	}
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != id {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("agent folder should hold only %q, got %v", id, names)
+	}
+}

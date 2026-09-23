@@ -42,7 +42,8 @@ func newUpdateCmd() *cobra.Command {
 			"upstream and are not re-fetched, but their installed copies are re-synced from " +
 			"the recorded source directory when it still exists and its content has changed. " +
 			"An agent link path occupied by something skillm did not create (a skill " +
-			"copied in by hand or by another tool) is left alone with a warning; pass " +
+			"copied in by hand or by another tool) is left alone (with a warning when its " +
+			"copy is re-synced); pass " +
 			"--force to replace it with skillm's link and take the skill over.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -228,7 +229,7 @@ func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 // is pruned this way has its registry entry dropped, matching "an entry exists
 // only while installed somewhere". It mutates st in place and returns whether
 // anything was pruned or dropped (changed, so the caller persists) and whether
-// any copy was actually rewritten (synced, so the caller does not claim
+// any copy was actually rewritten or link made (synced, so the caller does not claim
 // everything was already up to date).
 func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool, staged map[string]string, force bool) (changed, synced bool) {
 	want := make(map[string]bool, len(ids))
@@ -269,8 +270,8 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 				if refreshed {
 					synced = true
 				}
-				if refreshed || force {
-					linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String(), force, "--force")
+				if (refreshed || force) && linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String(), force) {
+					synced = true
 				}
 			}
 		}
@@ -290,7 +291,9 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 				}
 				if refreshed || force {
 					localAgents, _ := splitLocalAliased(agents, root)
-					linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), force, "--force")
+					if linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), force) {
+						synced = true
+					}
 				}
 				kept = append(kept, root)
 			}

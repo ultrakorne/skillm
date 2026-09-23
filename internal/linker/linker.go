@@ -276,22 +276,32 @@ func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 					"refusing to overwrite %s: a %s already exists there and was %w",
 					linkPath, kind, ErrNotManaged)
 			}
-			// Stage the replacement link before touching the existing entry:
-			// create it at a temp sibling name first, so a symlink-creation
-			// failure (e.g. a missing privilege on Windows) is caught before
-			// anything is destroyed, then remove the foreign entry and move
-			// the staged link into place.
+			// Nothing is destroyed until the link is in place: stage the link
+			// at a temp sibling (catching a symlink-creation failure, e.g. a
+			// missing privilege on Windows), move the foreign entry aside, move
+			// the link in, and only then delete the old entry. Any failure
+			// before that restores the original.
 			tmp := linkPath + ".skillm-tmp"
+			old := linkPath + ".skillm-old"
 			_ = os.RemoveAll(tmp)
 			if err := os.Symlink(target, tmp); err != nil {
 				return res, fmt.Errorf("create link %s -> %s: %w", linkPath, target, symlinkHint(err))
 			}
-			if err := os.RemoveAll(linkPath); err != nil {
-				_ = os.RemoveAll(tmp)
-				return res, fmt.Errorf("remove %s %s: %w", kind, linkPath, err)
+			if err := os.RemoveAll(old); err != nil {
+				_ = os.Remove(tmp)
+				return res, fmt.Errorf("clear %s: %w", old, err)
+			}
+			if err := os.Rename(linkPath, old); err != nil {
+				_ = os.Remove(tmp)
+				return res, fmt.Errorf("move %s %s aside: %w", kind, linkPath, err)
 			}
 			if err := os.Rename(tmp, linkPath); err != nil {
+				_ = os.Rename(old, linkPath)
+				_ = os.Remove(tmp)
 				return res, fmt.Errorf("move link into place %s: %w", linkPath, err)
+			}
+			if err := os.RemoveAll(old); err != nil {
+				return res, fmt.Errorf("linked %s, but could not remove the replaced %s at %s: %w", linkPath, kind, old, err)
 			}
 			ar.Action = ActionReplaced
 			res.Agents = append(res.Agents, ar)
