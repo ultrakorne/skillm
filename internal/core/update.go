@@ -25,8 +25,8 @@ const (
 	// copies were left as they are.
 	CodeSourceMissing = "source_missing"
 	// CodeUpdateSkipped: a skill changed in the Registry while its update was
-	// fetched (reinstalled from another source), so the fetched content was
-	// not written.
+	// fetched (reinstalled from another source, or moved to another Revision
+	// by another process), so the fetched content was not written.
 	CodeUpdateSkipped = "update_skipped"
 )
 
@@ -67,11 +67,22 @@ type UpdatedSkill struct {
 	Outcome UpdateOutcome
 	// Revision is the skill's recorded Revision afterwards (git skills).
 	Revision string
+	// Advanced reports that the skill's upstream Revision advanced and was
+	// recorded. It stays true when the skill was then pruned (OutcomePruned),
+	// so it is what UpdatedAny counts.
+	Advanced bool
 	// Pruned lists the installs forgotten because their copy had vanished:
 	// "global" or a project root.
 	Pruned []string
 	// Err is the cause of OutcomeFailed or OutcomeDriftCheckSkipped.
 	Err error
+	// Warnings are the writes that failed for an install that stays recorded:
+	// a canonical copy that could not be rewritten, or a skills-lock.json
+	// entry that could not be refreshed. Each was also reported as a warning
+	// event. They do not change Outcome: an updated or synced skill with
+	// Warnings is a partial success, and the next update retries the stale
+	// installs (their content no longer matches upstream).
+	Warnings []error
 }
 
 // UpdateResult is Update's outcome.
@@ -85,10 +96,11 @@ type UpdateResult struct {
 	Synced bool
 }
 
-// UpdatedAny reports whether any skill's upstream Revision advanced.
+// UpdatedAny reports whether any skill's upstream Revision advanced, even
+// when that skill was then pruned.
 func (r UpdateResult) UpdatedAny() bool {
 	for _, s := range r.Skills {
-		if s.Outcome == OutcomeUpdated {
+		if s.Advanced {
 			return true
 		}
 	}
@@ -132,7 +144,10 @@ func (e *UpdateFailedError) Error() string {
 // an EventBatch naming them, then an ItemStart and an ItemDone per skill
 // whose Code is its UpdateOutcome so far. The writes then run under the lock
 // (opts.Lock) against a fresh read of config and the Registry, so a skill
-// changed by another process meanwhile is judged by its current entry.
+// changed by another process meanwhile is judged by its current entry: one
+// that process moved to the Revision fetched here is only checked for drift,
+// and one it reinstalled from another source or moved to a different Revision
+// fails with "run update again" rather than being rolled back.
 //
 // Cancellation before the writes returns ctx's error with nothing written
 // (beyond what the adoption sweep already saved). One or more failed skills
@@ -216,6 +231,17 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 			failures = append(failures, fmt.Sprintf("%s: %v", t.ID, err))
 		case f.err != nil:
 			us.Outcome, us.Err, us.Revision = OutcomeDriftCheckSkipped, f.err, e.Revision
+		case e.Revision != t.Revision && f.revision != e.Revision:
+			// Another process moved the skill to a Revision other than the one
+			// fetched here. Which of the two is newer upstream is unknown, so
+			// the fetched tree is neither recorded nor used to repair drift:
+			// either could roll the skill back over what the other process
+			// wrote. It fails rather than claiming "up to date" because it may
+			// not be; running update again settles it.
+			err := errors.New("it was changed by another process while its update was fetched; run update again")
+			rep.Event(logEvent(LevelWarn, t.ID, CodeUpdateSkipped, fmt.Sprintf("skipped %s: %v", t.ID, err)))
+			us.Outcome, us.Err, us.Revision = OutcomeFailed, err, e.Revision
+			failures = append(failures, fmt.Sprintf("%s: %v", t.ID, err))
 		default:
 			// Staged for every successful fetch, advanced or not: an unchanged
 			// skill still needs its tree so drifted installs are repaired.
@@ -227,7 +253,7 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 				st.Upsert(e)
 				dirty = true
 				updated[t.ID] = true
-				us.Outcome, us.Revision = OutcomeUpdated, f.revision
+				us.Outcome, us.Revision, us.Advanced = OutcomeUpdated, f.revision, true
 			}
 		}
 		skills = append(skills, us)
@@ -252,6 +278,7 @@ func Update(ctx context.Context, opts Options, rep Reporter, req UpdateRequest) 
 	for i := range skills {
 		s := &skills[i]
 		s.Pruned = ref.pruned[s.ID]
+		s.Warnings = ref.warnings[s.ID]
 		switch {
 		case s.Outcome == OutcomeFailed:
 		case ref.dropped[s.ID]:
@@ -482,6 +509,9 @@ type refreshed struct {
 	pruned map[string][]string
 	// dropped are the skills whose last install was forgotten.
 	dropped map[string]bool
+	// warnings are each skill's failed writes (already reported as events)
+	// for installs that stay recorded.
+	warnings map[string][]error
 }
 
 // refreshInstalls re-syncs and prunes the installs of the skills in ids — the
@@ -499,11 +529,13 @@ type refreshed struct {
 // A recorded install whose copy has vanished — the project was moved or the
 // files were deleted — is reported and forgotten; a skill whose last install
 // is forgotten this way has its registry entry dropped, matching "an entry
-// exists only while installed somewhere". It mutates st in place; the caller
+// exists only while installed somewhere". A failed copy or skills-lock.json
+// write is reported as it happens and collected in the result's warnings. It
+// mutates st in place; the caller
 // holds Home's lock and persists st when the result says it changed.
 func refreshInstalls(opts Options, rep Reporter, agents []agentdir.Agent, st *state.State, ids []string, updated map[string]bool, staged map[string]string) refreshed {
 	rep = nopIfNil(rep)
-	r := refreshed{syncedIDs: map[string]bool{}, pruned: map[string][]string{}, dropped: map[string]bool{}}
+	r := refreshed{syncedIDs: map[string]bool{}, pruned: map[string][]string{}, dropped: map[string]bool{}, warnings: map[string][]error{}}
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		want[id] = true
@@ -511,6 +543,11 @@ func refreshInstalls(opts Options, rep Reporter, agents []agentdir.Agent, st *st
 	synced := func(id string) {
 		r.synced = true
 		r.syncedIDs[id] = true
+	}
+	warn := func(id string, err error) {
+		if err != nil {
+			r.warnings[id] = append(r.warnings[id], err)
+		}
 	}
 
 	var drop []string
@@ -548,7 +585,9 @@ func refreshInstalls(opts Options, rep Reporter, agents []agentdir.Agent, st *st
 				rewritten := false
 				if canRefresh {
 					// A failed write is already reported; the install stays recorded.
-					rewritten, _ = RefreshCopy(rep, src, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID])
+					var err error
+					rewritten, err = RefreshCopy(rep, src, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID])
+					warn(e.ID, err)
 				}
 				if rewritten {
 					synced(e.ID)
@@ -571,11 +610,13 @@ func refreshInstalls(opts Options, rep Reporter, agents []agentdir.Agent, st *st
 				}
 				rewritten := false
 				if canRefresh {
-					rewritten, _ = RefreshCopy(rep, src, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID])
+					var err error
+					rewritten, err = RefreshCopy(rep, src, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID])
+					warn(e.ID, err)
 				}
 				if rewritten {
 					synced(e.ID)
-					_ = UpsertLockEntry(rep, *e, root)
+					warn(e.ID, UpsertLockEntry(rep, *e, root))
 				}
 				if rewritten || opts.Force {
 					localAgents, _ := SplitLocalAliased(agents, root)

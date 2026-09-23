@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -326,5 +327,118 @@ func TestUpdateCancelledWritesNothing(t *testing.T) {
 	}
 	if !strings.Contains(globalBody(t), "alpha v1") {
 		t.Fatalf("a cancelled update must not write:\n%s", globalBody(t))
+	}
+}
+
+// TestUpdateSkipsSkillMovedByAnotherProcess: when another process moves a
+// skill to a different Revision while this update fetches, the stale fetch
+// neither rolls the recorded Revision back nor rewrites the copies with its
+// older tree; the skill fails with "run update again".
+func TestUpdateSkipsSkillMovedByAnotherProcess(t *testing.T) {
+	opts, repo, git := updateFixture(t)
+	v2 := git("rev-parse", "HEAD:alpha")
+	var v3 string
+	opts.Lock = func(context.Context) (func(), error) {
+		// Upstream moves on to v3 and another process records and writes it.
+		writeSkill(t, repo, "alpha", "alpha v3")
+		git("commit", "-q", "-am", "v3")
+		v3 = git("rev-parse", "HEAD:alpha")
+		st, err := state.Load(opts.Home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, _ := st.Get("alpha")
+		e.Revision = v3
+		st.Upsert(e)
+		if err := state.Save(opts.Home, st); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(agentdir.CanonicalSkillDirAt(agentdir.Global, "", "alpha"), "SKILL.md"), "alpha v3\n")
+		return func() {}, nil
+	}
+	rec := &recorder{}
+
+	res, err := Update(context.Background(), opts, rec, UpdateRequest{ID: "alpha"})
+	var failed *UpdateFailedError
+	if !errors.As(err, &failed) || len(failed.Failures) != 1 {
+		t.Fatalf("err = %v, want an UpdateFailedError for alpha", err)
+	}
+	if len(res.Skills) != 1 {
+		t.Fatalf("result = %+v, want one skill", res.Skills)
+	}
+	s := res.Skills[0]
+	if s.Outcome != OutcomeFailed || s.Revision != v3 || s.Advanced || res.UpdatedAny() {
+		t.Fatalf("result = %+v, want alpha failed at %s (fetched %s)", s, v3, v2)
+	}
+	st, _ := state.Load(opts.Home)
+	if e, _ := st.Get("alpha"); e.Revision != v3 {
+		t.Fatalf("registry revision = %s, want %s kept", e.Revision, v3)
+	}
+	if body := globalBody(t); !strings.Contains(body, "alpha v3") {
+		t.Fatalf("the stale fetch rewrote the copy:\n%s", body)
+	}
+	skipped := false
+	for _, ev := range rec.events {
+		if ev.Code == CodeUpdateSkipped {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Fatal("the skip must be reported with CodeUpdateSkipped")
+	}
+}
+
+// TestUpdatePrunedAfterAdvancingCountsAsUpdated: a skill whose upstream
+// advanced but whose every install had vanished is pruned, yet it still
+// counts as updated, so the CLI does not add "Everything is up to date."
+func TestUpdatePrunedAfterAdvancingCountsAsUpdated(t *testing.T) {
+	opts, _, _ := updateFixture(t)
+	if err := os.RemoveAll(agentdir.CanonicalSkillDirAt(agentdir.Global, "", "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	opts.Lock = func(context.Context) (func(), error) { return func() {}, nil }
+
+	res, err := Update(context.Background(), opts, nil, UpdateRequest{ID: "alpha"})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(res.Skills) != 1 || res.Skills[0].Outcome != OutcomePruned || !res.Skills[0].Advanced {
+		t.Fatalf("result = %+v, want alpha pruned and advanced", res.Skills)
+	}
+	if !res.UpdatedAny() {
+		t.Fatal("UpdatedAny must count a skill that advanced before it was pruned")
+	}
+}
+
+// TestUpdateCollectsCopyWriteFailures: a canonical copy that cannot be
+// rewritten leaves the skill updated (its Revision advanced) but carries the
+// failure in Warnings, so a caller can tell a partial success apart.
+func TestUpdateCollectsCopyWriteFailures(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX directory permissions enforced")
+	}
+	opts, _, _ := updateFixture(t)
+	parent := filepath.Dir(agentdir.CanonicalSkillDirAt(agentdir.Global, "", "alpha"))
+	opts.Lock = func(context.Context) (func(), error) {
+		if err := os.Chmod(parent, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		return func() { os.Chmod(parent, 0o755) }, nil
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o755) })
+
+	res, err := Update(context.Background(), opts, nil, UpdateRequest{ID: "alpha"})
+	if err != nil {
+		t.Fatalf("Update: %v (a copy write failure is a warning, not a failed update)", err)
+	}
+	if len(res.Skills) != 1 {
+		t.Fatalf("result = %+v, want one skill", res.Skills)
+	}
+	s := res.Skills[0]
+	if s.Outcome != OutcomeUpdated || s.Err != nil || len(s.Warnings) != 1 {
+		t.Fatalf("result = %+v, want alpha updated with one warning", s)
+	}
+	if body := globalBody(t); !strings.Contains(body, "alpha v1") {
+		t.Fatalf("the copy should have stayed stale:\n%s", body)
 	}
 }
