@@ -13,6 +13,7 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
+	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/gitx"
 	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/state"
@@ -295,7 +296,7 @@ func landLocalInstall(ctx context.Context, home string, st *state.State, agents 
 	}
 
 	localAgents, _ := splitLocalAliased(agents, root)
-	if !localCopyExists(home, e.ID, root) {
+	if !core.LocalCopyExists(home, e.ID, root) {
 		src, cleanup, err := resolveCopySource(ctx, home, st, e, prefer)
 		if err != nil {
 			ui.Warnf("restore copy of %s in %s: %v", e.ID, root, err)
@@ -308,9 +309,9 @@ func landLocalInstall(ctx context.Context, home string, st *state.State, agents 
 			ui.Warnf("restore copy of %s in %s: %v", e.ID, root, err)
 			return changed
 		}
-		upsertLockEntry(e, root)
+		_ = core.UpsertLockEntry(termLog, e, root)
 	}
-	linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), flagForce)
+	core.LinkVendorAgents(termLog, home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), flagForce)
 	return changed
 }
 
@@ -324,11 +325,11 @@ func resolveCopySource(ctx context.Context, home string, st *state.State, e stat
 	if prefer != "" && dirExists(prefer) {
 		return prefer, nil, nil
 	}
-	if e.Global && vendorCopyExists(home, e.ID, agentdir.Global, "") {
+	if e.Global && core.CopyExists(home, e.ID, agentdir.Global, "") {
 		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), nil, nil
 	}
 	for _, r := range st.VendoredRoots(e.ID) {
-		if localCopyExists(home, e.ID, r) {
+		if core.LocalCopyExists(home, e.ID, r) {
 			return agentdir.CanonicalSkillDir(r, e.ID), nil, nil
 		}
 	}
@@ -338,7 +339,7 @@ func resolveCopySource(ctx context.Context, home string, st *state.State, e stat
 		}
 		return "", nil, fmt.Errorf("no copy of local skill %q remains and its source %s is gone", e.ID, e.Source)
 	}
-	d, _, clean, err := refetchSkill(ctx, e)
+	d, _, clean, err := core.RefetchSkill(ctx, e)
 	if err != nil {
 		return "", nil, err
 	}
@@ -362,66 +363,5 @@ func lockEntryMatches(existing state.SkillEntry, entry *lockfile.Entry) bool {
 	if !ok || subdir != existing.Path {
 		return false
 	}
-	return normalizeRemote(url) == normalizeRemote(existing.Source)
-}
-
-// pathCaseInsensitiveHosts are the hosts whose repo paths are case-insensitive,
-// so a case difference there is still one repo. Everywhere else — GitLab
-// self-managed, Gitea, plain git-over-ssh, a case-sensitive filesystem — path
-// case is significant and two spellings are two repos. A host missing from this
-// list only ever errs toward "different source", which the user resolves with
-// --as; the reverse would silently install one repo over another.
-var pathCaseInsensitiveHosts = map[string]bool{
-	"github.com":    true,
-	"gitlab.com":    true,
-	"bitbucket.org": true,
-}
-
-// normalizeRemote reduces a git remote URL to a comparable form: scheme and
-// trailing ".git"/slashes stripped, the scp-like "git@host:path" form folded to
-// "host/path", and the host lowercased (DNS is case-insensitive). The path is
-// folded only for the hosts that treat it that way — see
-// pathCaseInsensitiveHosts.
-//
-// It under-normalizes in three confirmed cases (embedded credentials, an ssh://
-// port, an scp-like form with a non-"git@" user), each recorded in
-// docs/known-issues.md.
-func normalizeRemote(u string) string {
-	s := strings.TrimSpace(u)
-	for _, p := range []string{"https://", "http://", "ssh://"} {
-		if rest, ok := cutPrefixFold(s, p); ok {
-			s = rest
-			break
-		}
-	}
-	if rest, ok := cutPrefixFold(s, "git@"); ok {
-		s = strings.Replace(rest, ":", "/", 1)
-	}
-	s = trimSuffixFold(strings.TrimRight(s, "/"), ".git")
-	host, path, ok := strings.Cut(s, "/")
-	host = strings.ToLower(host)
-	if !ok {
-		return host
-	}
-	if pathCaseInsensitiveHosts[host] {
-		path = strings.ToLower(path)
-	}
-	return host + "/" + path
-}
-
-// cutPrefixFold is strings.CutPrefix with a case-insensitive match, for the
-// parts of a remote URL that carry no case significance (the scheme, "git@").
-func cutPrefixFold(s, prefix string) (string, bool) {
-	if len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
-		return s[len(prefix):], true
-	}
-	return s, false
-}
-
-// trimSuffixFold is strings.TrimSuffix with a case-insensitive match.
-func trimSuffixFold(s, suffix string) string {
-	if len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix) {
-		return s[:len(s)-len(suffix)]
-	}
-	return s
+	return core.NormalizeRemote(url) == core.NormalizeRemote(existing.Source)
 }

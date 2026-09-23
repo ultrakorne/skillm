@@ -108,7 +108,7 @@ func installsOf(home string, e state.SkillEntry, agents []agentdir.Agent, roots 
 		Recorded: e.Global,
 	}
 	if e.Global {
-		g.Exists = copyExists(home, e.ID, agentdir.Global, "")
+		g.Exists = CopyExists(home, e.ID, agentdir.Global, "")
 		g.Agents = servedAgents(home, e.ID, agents, agentdir.Global, "")
 	} else {
 		g.Agents = scanLinkNames(home, e.ID, agents, agentdir.Global, "")
@@ -133,7 +133,7 @@ func installsOf(home string, e state.SkillEntry, agents []agentdir.Agent, roots 
 			Recorded: recorded[dir],
 		}
 		if l.Recorded {
-			l.Exists = copyExists(home, e.ID, agentdir.Local, dir)
+			l.Exists = CopyExists(home, e.ID, agentdir.Local, dir)
 			l.Agents = servedAgents(home, e.ID, localAgents, agentdir.Local, dir)
 		} else {
 			l.Agents = scanLinkNames(home, e.ID, localAgents, agentdir.Local, dir)

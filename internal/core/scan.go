@@ -7,23 +7,16 @@ import (
 	"github.com/ultrakorne/skillm/internal/linker"
 )
 
-// Read-only disk scans behind List. cmd still holds its own copies of these
-// helpers for the commands that have not moved into core yet; each copy goes
-// away when its last caller moves (A3–A6 of docs/plans/macos-menubar.md).
-
-// copyExists reports whether the canonical slot for id at (scope, base) holds
-// a real directory (skillm's copy or otherwise — the caller decides via the
-// recorded installs).
-func copyExists(home, id string, scope agentdir.Scope, base string) bool {
-	kind, _, err := linker.Classify(home, agentdir.CanonicalSkillDirAt(scope, base, id))
-	return err == nil && kind == linker.TargetDir
-}
+// Read-only disk scans behind List. cmd still holds its own copies of
+// scanLinkNames and localScanDirs for the commands that have not moved into
+// core yet; each copy goes away when its last caller moves (A4–A6 of
+// docs/plans/macos-menubar.md).
 
 // servedAgents returns the names of the agents that skill id's install at
 // (scope, base) serves: agents whose folder at the scope IS the canonical
 // store when the copy exists, plus agents holding a skillm link there.
 func servedAgents(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string) []string {
-	exists := copyExists(home, id, scope, base)
+	exists := CopyExists(home, id, scope, base)
 	var names []string
 	for _, a := range agents {
 		if agentdir.IsCanonicalAt(a, scope) && exists {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
+	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/gitx"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -268,16 +269,20 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 		}
 
 		if e.Global {
-			if !vendorCopyExists(home, e.ID, agentdir.Global, "") {
-				ui.Warnf("forgetting global install of %s: no copy remains in %s", e.ID, canonicalDisplay(agentdir.Global))
+			if !core.CopyExists(home, e.ID, agentdir.Global, "") {
+				ui.Warnf("forgetting global install of %s: no copy remains in %s", e.ID, core.CanonicalDisplay(agentdir.Global))
 				e.Global = false
 				changed = true
 			} else {
-				refreshed := canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID])
+				refreshed := false
+				if canRefresh {
+					// A failed write is already reported; the install stays recorded.
+					refreshed, _ = core.RefreshCopy(termLog, src, e.ID, agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), "global", isGit, updated[e.ID])
+				}
 				if refreshed {
 					synced = true
 				}
-				if (refreshed || force) && linkVendorAgents(home, e.ID, agents, agentdir.Global, "", agentdir.Global.String(), force) {
+				if (refreshed || force) && core.LinkVendorAgents(termLog, home, e.ID, agents, agentdir.Global, "", agentdir.Global.String(), force) {
 					synced = true
 				}
 			}
@@ -286,19 +291,22 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 		if len(e.VendoredAt) > 0 {
 			kept := make([]string, 0, len(e.VendoredAt))
 			for _, root := range e.VendoredAt {
-				if !localCopyExists(home, e.ID, root) {
+				if !core.LocalCopyExists(home, e.ID, root) {
 					ui.Warnf("forgetting local install of %s: no copy remains in %s", e.ID, root)
 					changed = true
 					continue // prune
 				}
-				refreshed := canRefresh && refreshCopy(src, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID])
+				refreshed := false
+				if canRefresh {
+					refreshed, _ = core.RefreshCopy(termLog, src, e.ID, agentdir.CanonicalSkillDir(root, e.ID), root, isGit, updated[e.ID])
+				}
 				if refreshed {
 					synced = true
-					upsertLockEntry(*e, root)
+					_ = core.UpsertLockEntry(termLog, *e, root)
 				}
 				if refreshed || force {
 					localAgents, _ := splitLocalAliased(agents, root)
-					if linkVendorAgents(home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), force) {
+					if core.LinkVendorAgents(termLog, home, e.ID, localAgents, agentdir.Local, root, scopeLabel(agentdir.Local, root, ""), force) {
 						synced = true
 					}
 				}
@@ -325,41 +333,6 @@ func refreshVendoredCopies(home string, agents []agentdir.Agent, st *state.State
 		}
 	}
 	return changed, synced
-}
-
-// refreshCopy overwrites the canonical copy at target from src when it is due:
-// always for a just-updated git skill (src is its staged clone), and otherwise
-// on content drift — for a git skill whose revision did not advance (src is the
-// staged clone of the unchanged upstream) as much as for a local-path skill
-// (src is its recorded source directory). Comparing content, rather than
-// trusting the recorded revision, is what repairs an install that was reverted
-// or hand-edited out from under state.toml; comparing it first is what keeps an
-// already-correct install from producing pointless git churn. An empty src
-// means there is nothing to refresh from (the fetch failed, or the skill was
-// not in scope), so nothing is written. place names the install in report lines
-// (a project root or "global"). It returns whether the copy was rewritten; a
-// write failure is warned about and reported as false, leaving the install
-// recorded so the next update retries.
-func refreshCopy(src, id, target, place string, isGit, updated bool) bool {
-	switch {
-	case src == "":
-		return false
-	case isGit && updated:
-		if err := store.ReplaceDir(src, target); err != nil {
-			ui.Warnf("refresh copy %s: %v", target, err)
-			return false
-		}
-		ui.Successf("refreshed copy of %s (%s)", id, place)
-		return true
-	case !store.DirContentEqual(src, target):
-		if err := store.ReplaceDir(src, target); err != nil {
-			ui.Warnf("sync copy %s: %v", target, err)
-			return false
-		}
-		ui.Successf("synced copy of %s (%s)", id, place)
-		return true
-	}
-	return false
 }
 
 // selectUpdateTargets resolves which skills to process: the git skills to fetch

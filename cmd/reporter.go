@@ -56,16 +56,36 @@ func (r *termReporter) Event(ev core.Event) {
 			r.cl.Done(ev.Index, ui.Result{Level: uiLevel(ev.Level), Text: ev.Text})
 		}
 	case core.EventLog:
-		switch ev.Level {
-		case core.LevelSuccess:
-			ui.Successf("%s", ev.Text)
-		case core.LevelWarn:
-			ui.Warnf("%s", ev.Text)
-		case core.LevelError:
-			ui.Errorf("%s", ev.Text)
-		default:
-			fmt.Fprintln(os.Stdout, ev.Text)
-		}
+		printLog(ev)
+	}
+}
+
+// printLog prints an EventLog through the ui helper for its level.
+func printLog(ev core.Event) {
+	switch ev.Level {
+	case core.LevelSuccess:
+		ui.Successf("%s", ev.Text)
+	case core.LevelWarn:
+		ui.Warnf("%s", ev.Text)
+	case core.LevelError:
+		ui.Errorf("%s", ev.Text)
+	default:
+		fmt.Fprintln(os.Stdout, ev.Text)
+	}
+}
+
+// termLog prints the EventLogs of the core primitives cmd calls directly
+// (VendorOne, UpsertLockEntry, …), which report nothing else. Each line goes
+// out as soon as it is reported, exactly as the ui call it replaced did.
+var termLog core.Reporter = logReporter{}
+
+// logReporter is termLog's type: it prints EventLogs and drops the rest.
+type logReporter struct{}
+
+// Event implements core.Reporter.
+func (logReporter) Event(ev core.Event) {
+	if ev.Type == core.EventLog {
+		printLog(ev)
 	}
 }
 

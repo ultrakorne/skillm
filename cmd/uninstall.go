@@ -12,6 +12,7 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
+	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -182,12 +183,12 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 	// Delete the canonical copies FIRST — the Global one, then the committed
 	// Local ones in every recorded project — so a later symlink sweep over the
 	// same place sees an empty slot rather than refusing on a real directory.
-	// vendorRemove also clears each scope's agent links, and only deletes a
+	// core.VendorRemove also clears each scope's agent links, and only deletes a
 	// directory the registry records as skillm's own copy. The Local removals
 	// edit the user's git working tree; the batch confirmation already named
 	// those directories. A missing copy (project moved/deleted) is silently
 	// skipped.
-	removedGlobal, err := vendorRemove(home, id, agents, agentdir.Global, cwd, st.IsGlobal(id), agentdir.Global.String())
+	removedGlobal, err := core.VendorRemove(termLog, home, id, agents, agentdir.Global, cwd, st.IsGlobal(id), agentdir.Global.String())
 	if err != nil {
 		if flagForce {
 			ui.Warnf("%v", err)
@@ -196,12 +197,12 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 		}
 	}
 	if removedGlobal {
-		ui.Successf("deleted copy of %s in %s (global)", id, canonicalDisplay(agentdir.Global))
+		ui.Successf("deleted copy of %s in %s (global)", id, core.CanonicalDisplay(agentdir.Global))
 	}
 
 	for _, dir := range st.VendoredRoots(id) {
 		localAgents, _ := splitLocalAliased(agents, dir)
-		removed, err := vendorRemove(home, id, localAgents, agentdir.Local, dir, true, scopeLabel(agentdir.Local, dir, cwd))
+		removed, err := core.VendorRemove(termLog, home, id, localAgents, agentdir.Local, dir, true, scopeLabel(agentdir.Local, dir, cwd))
 		if err != nil {
 			if flagForce {
 				ui.Warnf("%v", err)
@@ -212,7 +213,7 @@ func uninstallOne(home string, agents []agentdir.Agent, st *state.State, id, cwd
 		if removed {
 			ui.Successf("deleted copy of %s in %s (%s)", id, agentdir.CanonicalLocalRel, scopeLabel(agentdir.Local, dir, cwd))
 		}
-		removeLockEntry(id, dir)
+		_ = core.RemoveLockEntry(termLog, id, dir)
 	}
 
 	// Sweep tracked local roots AND vendored roots for stray symlinks: a

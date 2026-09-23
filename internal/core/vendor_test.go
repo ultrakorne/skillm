@@ -1,4 +1,4 @@
-package cmd
+package core
 
 import (
 	"os"
@@ -16,7 +16,7 @@ import (
 // localTestSetup builds a temp Home plus a source directory holding skill
 // "demo"'s content, and returns the home, a fresh project base distinct from
 // HOME (so each agent's local folder is real, not aliased to its global one),
-// the source dir vendorOne copies from, and the default agents (claude+agents).
+// the source dir VendorOne copies from, and the default agents (claude+agents).
 func localTestSetup(t *testing.T) (home, base, src string, agents []agentdir.Agent) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -42,12 +42,12 @@ func claudeLink(base string) string { return filepath.Join(base, ".claude", "ski
 func TestLocalInstallWritesCopyAndLinks(t *testing.T) {
 	home, base, src, agents := localTestSetup(t)
 
-	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
+	action, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
 	if err != nil {
-		t.Fatalf("vendorOne: %v", err)
+		t.Fatalf("VendorOne: %v", err)
 	}
-	if action != vendorWrote {
-		t.Fatalf("action = %v, want vendorWrote", action)
+	if action != VendorWrote {
+		t.Fatalf("action = %v, want VendorWrote", action)
 	}
 
 	// The canonical slot is a real directory with the skill's content.
@@ -92,12 +92,12 @@ func TestLocalInstallConvertsLegacyHomeSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
+	action, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
 	if err != nil {
-		t.Fatalf("vendorOne: %v", err)
+		t.Fatalf("VendorOne: %v", err)
 	}
-	if action != vendorConverted {
-		t.Fatalf("action = %v, want vendorConverted", action)
+	if action != VendorConverted {
+		t.Fatalf("action = %v, want VendorConverted", action)
 	}
 	fi, err := os.Lstat(demoSlot(base))
 	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
@@ -119,20 +119,20 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if c := vendorConflict(home, "demo", agentdir.Local, base, false); c != foreign {
-		t.Fatalf("vendorConflict = %q, want %q", c, foreign)
+	if c := VendorConflict(home, "demo", agentdir.Local, base, false); c != foreign {
+		t.Fatalf("VendorConflict = %q, want %q", c, foreign)
 	}
-	if c := vendorConflict(home, "demo", agentdir.Local, base, true); c != "" {
+	if c := VendorConflict(home, "demo", agentdir.Local, base, true); c != "" {
 		t.Fatalf("recorded dir must not be a conflict, got %q", c)
 	}
 
 	// Not forced → blocked, nothing written, no links created.
-	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
+	action, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local")
 	if err != nil {
-		t.Fatalf("vendorOne (no force): %v", err)
+		t.Fatalf("VendorOne (no force): %v", err)
 	}
-	if action != vendorBlocked {
-		t.Fatalf("action = %v, want vendorBlocked", action)
+	if action != VendorBlocked {
+		t.Fatalf("action = %v, want VendorBlocked", action)
 	}
 	if _, err := os.Stat(filepath.Join(foreign, "MINE.txt")); err != nil {
 		t.Fatalf("blocked foreign dir must survive: %v", err)
@@ -142,12 +142,12 @@ func TestLocalInstallForeignDirBlockedThenForced(t *testing.T) {
 	}
 
 	// Recorded → skillm's own copy → refreshed (overwritten).
-	action, err = vendorOne(home, "demo", src, agents, agentdir.Local, base, true, false, false, "local")
+	action, err = VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, true, false, false, "local")
 	if err != nil {
-		t.Fatalf("vendorOne (recorded): %v", err)
+		t.Fatalf("VendorOne (recorded): %v", err)
 	}
-	if action != vendorRefreshed {
-		t.Fatalf("action = %v, want vendorRefreshed", action)
+	if action != VendorRefreshed {
+		t.Fatalf("action = %v, want VendorRefreshed", action)
 	}
 	if _, err := os.Stat(filepath.Join(foreign, "MINE.txt")); !os.IsNotExist(err) {
 		t.Fatalf("refresh should overwrite the dir; MINE.txt err = %v", err)
@@ -173,12 +173,12 @@ func TestVendorOneForceLinksIsSeparateFromCanonicalForce(t *testing.T) {
 
 	// force=true but forceLinks=false: the canonical copy is written, but
 	// claude's foreign file must survive untouched.
-	action, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, true, false, "local")
+	action, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, true, false, "local")
 	if err != nil {
-		t.Fatalf("vendorOne: %v", err)
+		t.Fatalf("VendorOne: %v", err)
 	}
-	if action != vendorWrote {
-		t.Fatalf("action = %v, want vendorWrote", action)
+	if action != VendorWrote {
+		t.Fatalf("action = %v, want VendorWrote", action)
 	}
 	b, err := os.ReadFile(claudeLink(base))
 	if err != nil || string(b) != "hand-copied\n" {
@@ -186,12 +186,12 @@ func TestVendorOneForceLinksIsSeparateFromCanonicalForce(t *testing.T) {
 	}
 
 	// forceLinks=true takes it over.
-	action, err = vendorOne(home, "demo", src, agents, agentdir.Local, base, true, true, true, "local")
+	action, err = VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, true, true, true, "local")
 	if err != nil {
-		t.Fatalf("vendorOne: %v", err)
+		t.Fatalf("VendorOne: %v", err)
 	}
-	if action != vendorRefreshed {
-		t.Fatalf("action = %v, want vendorRefreshed", action)
+	if action != VendorRefreshed {
+		t.Fatalf("action = %v, want VendorRefreshed", action)
 	}
 	fi, err := os.Lstat(claudeLink(base))
 	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
@@ -203,16 +203,16 @@ func TestVendorOneForceLinksIsSeparateFromCanonicalForce(t *testing.T) {
 // idempotent.
 func TestLocalRemove(t *testing.T) {
 	home, base, src, agents := localTestSetup(t)
-	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
+	if _, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
 		t.Fatalf("seed install: %v", err)
 	}
 
-	removed, err := vendorRemove(home, "demo", agents, agentdir.Local, base, true, "local")
+	removed, err := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local")
 	if err != nil {
-		t.Fatalf("vendorRemove: %v", err)
+		t.Fatalf("VendorRemove: %v", err)
 	}
 	if !removed {
-		t.Fatal("vendorRemove should report the copy removed")
+		t.Fatal("VendorRemove should report the copy removed")
 	}
 	if _, err := os.Lstat(demoSlot(base)); !os.IsNotExist(err) {
 		t.Fatalf("canonical copy should be gone; err = %v", err)
@@ -221,8 +221,8 @@ func TestLocalRemove(t *testing.T) {
 		t.Fatalf("claude link should be gone; err = %v", err)
 	}
 	// Idempotent.
-	if again, _ := vendorRemove(home, "demo", agents, agentdir.Local, base, true, "local"); again {
-		t.Fatal("second vendorRemove removed something")
+	if again, _ := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local"); again {
+		t.Fatal("second VendorRemove removed something")
 	}
 }
 
@@ -231,7 +231,7 @@ func TestLocalRemove(t *testing.T) {
 // emptied lockfile.
 func TestLockEntrySync(t *testing.T) {
 	home, base, src, agents := localTestSetup(t)
-	if _, err := vendorOne(home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
+	if _, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
 		t.Fatalf("seed install: %v", err)
 	}
 
@@ -243,7 +243,9 @@ func TestLockEntrySync(t *testing.T) {
 		Ref:      "main",
 		Revision: "abc",
 	}
-	upsertLockEntry(entry, base)
+	if err := UpsertLockEntry(nil, entry, base); err != nil {
+		t.Fatalf("UpsertLockEntry: %v", err)
+	}
 
 	lf, err := lockfile.Load(base)
 	if err != nil {
@@ -264,48 +266,144 @@ func TestLockEntrySync(t *testing.T) {
 	if err := os.WriteFile(lockfile.Path(base), []byte(patched), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	upsertLockEntry(entry, base)
+	if err := UpsertLockEntry(nil, entry, base); err != nil {
+		t.Fatalf("UpsertLockEntry: %v", err)
+	}
 	raw, _ = os.ReadFile(lockfile.Path(base))
 	if !strings.Contains(string(raw), "subagents") {
 		t.Fatalf("re-upsert dropped foreign key:\n%s", raw)
 	}
 
-	removeLockEntry("demo", base)
+	if err := RemoveLockEntry(nil, "demo", base); err != nil {
+		t.Fatalf("RemoveLockEntry: %v", err)
+	}
 	if _, err := os.Stat(lockfile.Path(base)); !os.IsNotExist(err) {
 		t.Fatalf("emptied lockfile should be deleted; err = %v", err)
 	}
 }
 
-// TestInstallYesDoesNotTakeOverAgentLinks: --yes only answers prompts, so an
-// install with --yes (but not --force) must leave a hand-made skill at an
-// agent's link path alone; only --force takes it over.
-func TestInstallYesDoesNotTakeOverAgentLinks(t *testing.T) {
+// eventsWith returns the recorded EventLogs carrying code.
+func eventsWith(r *recorder, code string) []Event {
+	var out []Event
+	for _, ev := range r.events {
+		if ev.Type == EventLog && ev.Code == code {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// TestVendorOneReportsLinks: the per-link lines the CLI used to print are now
+// EventLogs with a stable code, the skill id and the unchanged sentence.
+func TestVendorOneReportsLinks(t *testing.T) {
 	home, base, src, agents := localTestSetup(t)
-	if err := os.MkdirAll(claudeLink(base), 0o755); err != nil {
+	rep := &recorder{}
+	if _, err := VendorOne(rep, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
+		t.Fatalf("VendorOne: %v", err)
+	}
+	linked := eventsWith(rep, CodeLinked)
+	if len(linked) != 1 {
+		t.Fatalf("linked events = %+v, want one (claude)", rep.events)
+	}
+	ev := linked[0]
+	if ev.Level != LevelSuccess || ev.Skill != "demo" || ev.Text != "linked demo for claude (local)" {
+		t.Fatalf("linked event = %+v", ev)
+	}
+
+	// A foreign file at claude's link path is refused with a pointer to --force.
+	if _, err := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
+		t.Fatalf("VendorRemove: %v", err)
+	}
+	if err := os.WriteFile(claudeLink(base), []byte("mine\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	notes := filepath.Join(claudeLink(base), "NOTES.md")
-	if err := os.WriteFile(notes, []byte("mine\n"), 0o644); err != nil {
+	rep = &recorder{}
+	if _, err := VendorOne(rep, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
+		t.Fatalf("VendorOne: %v", err)
+	}
+	refused := eventsWith(rep, CodeLinkRefused)
+	if len(refused) != 1 || refused[0].Level != LevelWarn || !strings.HasSuffix(refused[0].Text, "(pass --force to take it over)") {
+		t.Fatalf("refused events = %+v", rep.events)
+	}
+}
+
+// TestLockEntryFailuresAreReturned: a lockfile with a newer schema is left
+// alone, and the failure is both reported (as before) and returned.
+func TestLockEntryFailuresAreReturned(t *testing.T) {
+	home, base, src, agents := localTestSetup(t)
+	if _, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
+		t.Fatalf("seed install: %v", err)
+	}
+	newer := "{\n  \"version\": 99,\n  \"skills\": {\n    \"demo\": {\"source\": \"x\", \"sourceType\": \"local\", \"computedHash\": \"h\"}\n  }\n}\n"
+	if err := os.WriteFile(lockfile.Path(base), []byte(newer), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	items := []stagedSkill{{entry: state.SkillEntry{ID: "demo", Kind: state.KindLocal, Source: src}, dir: src}}
+	entry := state.SkillEntry{ID: "demo", Kind: state.KindLocal, Source: src}
 
-	oldYes, oldForce := flagYes, flagForce
-	t.Cleanup(func() { flagYes, flagForce = oldYes, oldForce })
-
-	flagYes, flagForce = true, false
-	if err := installVendored(home, &state.State{}, items, agents, agentdir.Local, base, "local"); err != nil {
-		t.Fatalf("installVendored --yes: %v", err)
+	rep := &recorder{}
+	err := UpsertLockEntry(rep, entry, base)
+	if err == nil || !strings.Contains(err.Error(), "newer schema") {
+		t.Fatalf("UpsertLockEntry err = %v, want the newer-schema failure", err)
 	}
-	if _, err := os.Stat(notes); err != nil {
-		t.Fatalf("--yes must not take over the agent link path: %v", err)
+	if got := eventsWith(rep, CodeLockfileFailed); len(got) != 1 || got[0].Text != err.Error() || got[0].Level != LevelWarn {
+		t.Fatalf("events = %+v, want one warning carrying the error", rep.events)
 	}
 
-	flagYes, flagForce = false, true
-	if err := installVendored(home, &state.State{}, items, agents, agentdir.Local, base, "local"); err != nil {
-		t.Fatalf("installVendored --force: %v", err)
+	rep = &recorder{}
+	err = RemoveLockEntry(rep, "demo", base)
+	if err == nil || !strings.Contains(err.Error(), "not removed") {
+		t.Fatalf("RemoveLockEntry err = %v, want the newer-schema failure", err)
 	}
-	if fi, err := os.Lstat(claudeLink(base)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("--force must take over the agent link path (err=%v)", err)
+	if got := eventsWith(rep, CodeLockfileFailed); len(got) != 1 {
+		t.Fatalf("events = %+v, want one warning", rep.events)
+	}
+	if b, _ := os.ReadFile(lockfile.Path(base)); string(b) != newer {
+		t.Fatalf("newer-schema lockfile was rewritten:\n%s", b)
+	}
+}
+
+// TestRefreshCopy covers when a copy is rewritten and that a failed write is
+// reported and returned.
+func TestRefreshCopy(t *testing.T) {
+	_, base, src, _ := localTestSetup(t)
+	target := demoSlot(base)
+
+	// Nothing to refresh from.
+	if ok, err := RefreshCopy(nil, "", "demo", target, "p", true, true); ok || err != nil {
+		t.Fatalf("empty src: ok=%v err=%v", ok, err)
+	}
+
+	// Drift (the target is missing) → synced.
+	rep := &recorder{}
+	ok, err := RefreshCopy(rep, src, "demo", target, "p", false, false)
+	if !ok || err != nil {
+		t.Fatalf("drift: ok=%v err=%v", ok, err)
+	}
+	if got := eventsWith(rep, CodeCopySynced); len(got) != 1 || got[0].Text != "synced copy of demo (p)" {
+		t.Fatalf("events = %+v", rep.events)
+	}
+
+	// Equal content and not updated → untouched.
+	if ok, err := RefreshCopy(nil, src, "demo", target, "p", false, false); ok || err != nil {
+		t.Fatalf("equal: ok=%v err=%v", ok, err)
+	}
+
+	// A just-updated git skill is always rewritten.
+	rep = &recorder{}
+	if ok, err := RefreshCopy(rep, src, "demo", target, "p", true, true); !ok || err != nil {
+		t.Fatalf("updated: ok=%v err=%v", ok, err)
+	}
+	if got := eventsWith(rep, CodeCopyRefreshed); len(got) != 1 || got[0].Text != "refreshed copy of demo (p)" {
+		t.Fatalf("events = %+v", rep.events)
+	}
+
+	// A failed write is reported and returned.
+	rep = &recorder{}
+	ok, err = RefreshCopy(rep, filepath.Join(src, "missing"), "demo", target, "p", true, true)
+	if ok || err == nil || !strings.HasPrefix(err.Error(), "refresh copy "+target+": ") {
+		t.Fatalf("failed write: ok=%v err=%v", ok, err)
+	}
+	if got := eventsWith(rep, CodeCopyFailed); len(got) != 1 || got[0].Text != err.Error() {
+		t.Fatalf("events = %+v", rep.events)
 	}
 }

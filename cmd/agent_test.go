@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/state"
 )
@@ -279,7 +280,7 @@ func TestDisableAgentUnlinksButKeepsHome(t *testing.T) {
 	assertAbsent(t, linkPath(t, claude, agentdir.Local, projA, "alpha"))
 
 	// The canonical copies survive — this is not uninstall.
-	if !vendorCopyExists(home, "alpha", agentdir.Global, "") || !vendorCopyExists(home, "beta", agentdir.Global, "") {
+	if !core.CopyExists(home, "alpha", agentdir.Global, "") || !core.CopyExists(home, "beta", agentdir.Global, "") {
 		t.Fatal("disabling an agent must not delete the canonical skill copies")
 	}
 
@@ -316,7 +317,7 @@ func TestAgentSwapTransfersFootprint(t *testing.T) {
 	// claude has nothing left, but alpha's canonical copies stay put.
 	assertAbsent(t, linkPath(t, claude, agentdir.Global, cwd, "alpha"))
 	assertAbsent(t, linkPath(t, claude, agentdir.Local, projA, "alpha"))
-	if !vendorCopyExists(home, "alpha", agentdir.Global, "") {
+	if !core.CopyExists(home, "alpha", agentdir.Global, "") {
 		t.Fatal("swap must not delete alpha's canonical global copy")
 	}
 }

@@ -153,7 +153,7 @@ func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) 
 	hasCopy := make(map[string]bool)
 	for _, e := range st.Skills {
 		for _, root := range e.VendoredAt {
-			if !hasCopy[root] && localCopyExists(home, e.ID, root) {
+			if !hasCopy[root] && core.LocalCopyExists(home, e.ID, root) {
 				hasCopy[root] = true
 			}
 		}
@@ -189,7 +189,7 @@ func reconcileLocalRoots(home string, agents []agentdir.Agent, st *state.State) 
 func reconcileVendoredRoots(home string, st *state.State) bool {
 	changed := false
 	for i := range st.Skills {
-		if st.Skills[i].Global && !vendorCopyExists(home, st.Skills[i].ID, agentdir.Global, "") {
+		if st.Skills[i].Global && !core.CopyExists(home, st.Skills[i].ID, agentdir.Global, "") {
 			st.Skills[i].Global = false
 			changed = true
 		}
@@ -199,7 +199,7 @@ func reconcileVendoredRoots(home string, st *state.State) bool {
 		}
 		kept := make([]string, 0, len(roots))
 		for _, root := range roots {
-			if !localCopyExists(home, st.Skills[i].ID, root) {
+			if !core.LocalCopyExists(home, st.Skills[i].ID, root) {
 				changed = true
 				continue
 			}

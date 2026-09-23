@@ -11,6 +11,7 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
+	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -191,7 +192,7 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 			// A link points at the scope's canonical copy; without one (a
 			// legacy install whose peers still hold old Home links) a new link
 			// would dangle — skip it.
-			if !vendorCopyExists(home, id, scope, base) {
+			if !core.CopyExists(home, id, scope, base) {
 				continue
 			}
 			res, err := linker.Link(home, id, one, scope, base)
@@ -234,7 +235,7 @@ func enableAgent(home string, a agentdir.Agent, beforeEnabled []agentdir.Agent, 
 	// the copy itself and needs nothing). A foreign entry at the agent's own
 	// link path is warned about, never clobbered.
 	linkRecorded := func(id string, scope agentdir.Scope, base string) {
-		if !vendorCopyExists(home, id, scope, base) {
+		if !core.CopyExists(home, id, scope, base) {
 			return // copy vanished; nothing to link to
 		}
 		res, lerr := linker.Link(home, id, one, scope, base)
@@ -331,7 +332,7 @@ func disableAgent(home string, a agentdir.Agent, st *state.State, cwd string) {
 		ui.Hintf("committed copies in the projects' %s folders stay in place; use `skillm uninstall` to remove skills entirely", agentdir.CanonicalLocalRel)
 	}
 	if agentdir.IsCanonicalGlobal(a) && anyGlobalInstall(st) {
-		ui.Hintf("global copies in %s stay in place; use `skillm uninstall` to remove skills entirely", canonicalDisplay(agentdir.Global))
+		ui.Hintf("global copies in %s stay in place; use `skillm uninstall` to remove skills entirely", core.CanonicalDisplay(agentdir.Global))
 	}
 
 	if len(skills) == 0 {
@@ -417,4 +418,17 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// dedupeStrings returns s with duplicates removed, preserving first-seen order.
+func dedupeStrings(s []string) []string {
+	seen := make(map[string]bool, len(s))
+	out := make([]string, 0, len(s))
+	for _, v := range s {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }

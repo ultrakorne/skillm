@@ -14,6 +14,7 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
+	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -228,7 +229,7 @@ func installVendored(home string, st *state.State, items []stagedSkill, agents [
 		} else {
 			recorded[id] = st.IsGlobal(id)
 		}
-		if c := vendorConflict(home, id, scope, base, recorded[id]); c != "" {
+		if c := core.VendorConflict(home, id, scope, base, recorded[id]); c != "" {
 			conflicts = append(conflicts, c)
 		}
 	}
@@ -248,16 +249,16 @@ func installVendored(home string, st *state.State, items []stagedSkill, agents [
 	var runErr error
 	for _, it := range items {
 		id := it.entry.ID
-		action, err := vendorOne(home, id, it.dir, agents, scope, base, recorded[id], force, forceLinks, label)
+		action, err := core.VendorOne(termLog, home, id, it.dir, agents, scope, base, recorded[id], force, forceLinks, label)
 		if err != nil {
 			runErr = err
 			break
 		}
-		if action == vendorBlocked {
+		if action == core.VendorBlocked {
 			ui.Warnf("skipped %s: installing here would overwrite files skillm did not create (pass --force)", id)
 			continue
 		}
-		ui.Successf("%s %s in %s (%s)", vendorActionLabel(action), id, canonicalDisplay(scope), label)
+		ui.Successf("%s %s in %s (%s)", action.Label(), id, core.CanonicalDisplay(scope), label)
 		installedAny = true
 
 		// Record the entry now that its copy landed. Upsert first (Source/Path/
@@ -268,7 +269,7 @@ func installVendored(home string, st *state.State, items []stagedSkill, agents [
 		if scope == agentdir.Local {
 			st.AddVendoredRoot(id, base)
 			if entry, ok := st.Get(id); ok {
-				upsertLockEntry(entry, base)
+				_ = core.UpsertLockEntry(termLog, entry, base)
 			}
 		} else {
 			st.SetGlobal(id, true)
@@ -349,7 +350,7 @@ func resolveIDItems(cmd *cobra.Command, home string, st *state.State, agents []a
 // recorded Revision. It returns the content dir and a cleanup func (nil when no
 // temp was created). e is mutated in place when a re-fetch advances the revision.
 func idModeSource(ctx context.Context, home string, e *state.SkillEntry) (string, func(), error) {
-	if e.Global && vendorCopyExists(home, e.ID, agentdir.Global, "") {
+	if e.Global && core.CopyExists(home, e.ID, agentdir.Global, "") {
 		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), nil, nil
 	}
 	if e.Kind == state.KindLocal {
@@ -359,7 +360,7 @@ func idModeSource(ctx context.Context, home string, e *state.SkillEntry) (string
 		return "", nil, fmt.Errorf("local skill %q has no global copy and its source %s is gone; reinstall it from a source", e.ID, e.Source)
 	}
 	// Git skill with no reusable global copy: re-fetch from the pinned source.
-	dir, rev, clean, err := refetchSkill(ctx, *e)
+	dir, rev, clean, err := core.RefetchSkill(ctx, *e)
 	if err != nil {
 		return "", nil, fmt.Errorf("re-fetch %q from %s: %w", e.ID, e.Source, err)
 	}
@@ -446,7 +447,7 @@ func dirExists(p string) bool {
 // what installing from here would change. Returns "" when neither applies.
 func installedMark(home, id string, agents []agentdir.Agent, cwd string, globalRecorded bool) string {
 	var where []string
-	if (globalRecorded && vendorCopyExists(home, id, agentdir.Global, "")) ||
+	if (globalRecorded && core.CopyExists(home, id, agentdir.Global, "")) ||
 		len(scanLinkNames(home, id, agents, agentdir.Global, "")) > 0 {
 		where = append(where, "global")
 	}
@@ -456,7 +457,7 @@ func installedMark(home, id string, agents []agentdir.Agent, cwd string, globalR
 	// copy itself also counts — a local install may have no links at all when
 	// only .agents-native agents are enabled.
 	localAgents, _ := splitLocalAliased(agents, cwd)
-	if len(scanLinkNames(home, id, localAgents, agentdir.Local, cwd)) > 0 || localCopyExists(home, id, cwd) {
+	if len(scanLinkNames(home, id, localAgents, agentdir.Local, cwd)) > 0 || core.LocalCopyExists(home, id, cwd) {
 		where = append(where, "local")
 	}
 	if len(where) == 0 {
