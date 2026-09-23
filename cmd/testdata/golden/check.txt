@@ -1,0 +1,8 @@
+--- stdout
+✓ alpha: up-to-date
+! beta: update available (file://$REPO//beta)
+! omega: local skill — no upstream (edit its source dir and run `skillm update` to re-sync)
+1 skill has an update available; run `skillm update` to apply it.
+--- stderr
+✗ gamma: untracked — its subdir was not found upstream (file://$REPO//gamma)
+✗ delta: untracked — its subdir was not found upstream (file://$REPO2//delta)

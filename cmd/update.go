@@ -111,8 +111,8 @@ func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 	}
 
 	// Each git target requires its own treeless clone and tree-SHA comparison.
-	// That per-skill network/git work is run concurrently (bounded by ui's
-	// fan-out) and shown as a live spinner row per skill with an aggregate
+	// That per-skill network/git work is run concurrently (bounded by
+	// core.FanOut) and shown as a live spinner row per skill with an aggregate
 	// progress bar underneath. Because the workers run in parallel, the shared
 	// bookkeeping below is guarded by mu; the registry is persisted once after.
 	var (
@@ -173,7 +173,7 @@ func runUpdate(ctx context.Context, homeOverride, id string, force bool) error {
 
 		// The rows themselves report each skill's outcome (Updated / up to date /
 		// failed), so there is no separate per-skill print pass afterwards.
-		ui.RunChecklistProgress(ctx, labels, work)
+		runChecklist(ctx, labels, true, work)
 		if err := ctx.Err(); err != nil {
 			return err
 		}

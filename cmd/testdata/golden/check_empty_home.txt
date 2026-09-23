@@ -1,0 +1,3 @@
+--- stdout
+No skills in Home.
+--- stderr

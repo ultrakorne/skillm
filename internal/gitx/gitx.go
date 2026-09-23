@@ -190,7 +190,7 @@ func SubtreeSHA(ctx context.Context, repoDir, ref, subpath string) (string, erro
 		return "", fmt.Errorf("gitx: ls-tree %q at %q: %w", clean, ref, err)
 	}
 	if out == "" {
-		return "", fmt.Errorf("gitx: %q not found at %q", clean, ref)
+		return "", &NotFoundError{Path: clean, Ref: ref}
 	}
 
 	// Each NUL-terminated record is: "<mode> <type> <object>\t<path>".
@@ -213,7 +213,17 @@ func SubtreeSHA(ctx context.Context, repoDir, ref, subpath string) (string, erro
 		return objID, nil
 	}
 
-	return "", fmt.Errorf("gitx: %q not found at %q", clean, ref)
+	return "", &NotFoundError{Path: clean, Ref: ref}
+}
+
+// NotFoundError is SubtreeSHA's error when ref holds nothing at the subpath:
+// the repository was read, and the skill's directory is not in it.
+type NotFoundError struct {
+	Path, Ref string
+}
+
+func (e *NotFoundError) Error() string {
+	return fmt.Sprintf("gitx: %q not found at %q", e.Path, e.Ref)
 }
 
 // MaterializeSubdir extracts the files under subpath (resolved at the currently
