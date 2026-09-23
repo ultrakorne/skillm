@@ -19,6 +19,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/store"
 )
 
 // FileName is the base name of the config file within Home.
@@ -122,7 +123,7 @@ func Save(homeDir string, c *Config) error {
 	}
 
 	path := Path(homeDir)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := store.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
 	}
 	return nil

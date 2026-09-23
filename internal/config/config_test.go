@@ -187,3 +187,32 @@ func TestSetEnabled(t *testing.T) {
 		t.Errorf("claude location lost on toggle: %q", c.Agents["claude"].Global)
 	}
 }
+
+// Save replaces config.toml through a temp file and a rename (see
+// store.WriteFileAtomic, which tests the failure path), so rewriting it leaves
+// nothing else behind in Home.
+func TestSaveOverwritesAtomically(t *testing.T) {
+	home := t.TempDir()
+	if err := Save(home, Default()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	c := Default()
+	c.SetEnabled([]string{"claude"})
+	if err := Save(home, c); err != nil {
+		t.Fatalf("Save (overwrite): %v", err)
+	}
+	got, err := Load(home)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if names := got.EnabledNames(); !reflect.DeepEqual(names, []string{"claude"}) {
+		t.Errorf("EnabledNames = %v, want [claude]", names)
+	}
+	ents, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 || ents[0].Name() != FileName {
+		t.Errorf("home holds %v, want only %s", ents, FileName)
+	}
+}

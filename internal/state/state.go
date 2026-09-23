@@ -16,6 +16,8 @@ import (
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	"github.com/ultrakorne/skillm/internal/store"
 )
 
 // FileName is the base name of the registry file within Home.
@@ -118,7 +120,7 @@ func Save(homeDir string, s *State) error {
 	}
 
 	path := Path(homeDir)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := store.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("state: write %s: %w", path, err)
 	}
 	return nil

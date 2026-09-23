@@ -97,6 +97,13 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 	if err != nil {
 		return err
 	}
+	// Hold Home's lock from load to save so a concurrent skillm process cannot
+	// interleave its writes with ours.
+	unlock, err := store.Lock(home)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	cfg, err := config.Load(home)
 	if err != nil {

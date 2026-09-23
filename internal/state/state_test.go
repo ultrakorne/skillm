@@ -301,3 +301,30 @@ func TestLocalRootsOmittedWhenEmpty(t *testing.T) {
 		t.Errorf("empty LocalRoots serialized a local_roots key:\n%s", data)
 	}
 }
+
+// Save replaces state.toml through a temp file and a rename (see
+// store.WriteFileAtomic, which tests the failure path), so rewriting it leaves
+// nothing else behind in Home.
+func TestSaveOverwritesAtomically(t *testing.T) {
+	home := t.TempDir()
+	if err := Save(home, &State{Skills: []SkillEntry{{ID: "a", Kind: KindLocal}}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := Save(home, &State{Skills: []SkillEntry{{ID: "b", Kind: KindLocal}}}); err != nil {
+		t.Fatalf("Save (overwrite): %v", err)
+	}
+	got, err := Load(home)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Skills) != 1 || got.Skills[0].ID != "b" {
+		t.Errorf("Skills = %+v, want only b", got.Skills)
+	}
+	ents, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 || ents[0].Name() != FileName {
+		t.Errorf("home holds %v, want only %s", ents, FileName)
+	}
+}

@@ -6,13 +6,15 @@
 //
 //	<home>/
 //	├── config.toml
-//	└── state.toml
+//	├── state.toml
+//	└── .lock        (see Lock)
 //
-// Home holds only skillm's config and registry; a skill's files live solely in
-// its canonical install stores (~/.agents/skills at Global scope,
-// <project>/.agents/skills at Local scope). There is no longer a Home skills/
-// library — the installs are the only copies. Reading/writing config.toml and
-// state.toml belongs to the config and state packages respectively.
+// Home holds only skillm's config, registry, and lock file; a skill's files
+// live solely in its canonical install stores (~/.agents/skills at Global
+// scope, <project>/.agents/skills at Local scope). There is no longer a Home
+// skills/ library — the installs are the only copies. Reading/writing
+// config.toml and state.toml belongs to the config and state packages
+// respectively; both write through WriteFileAtomic.
 package store
 
 import (
@@ -80,7 +82,8 @@ func CopyDir(srcDir, dstDir string) error {
 }
 
 // ReplaceDir replaces dstDir with a fresh copy of srcDir. It copies srcDir into
-// a temporary sibling first, then removes any existing dstDir and renames the
+// a uniquely named temporary sibling first (so concurrent or crashed runs never
+// share a staging dir), then removes any existing dstDir and renames the
 // staging copy into place. This is not atomic — between the remove and the
 // rename there is a brief window where dstDir does not exist — but it does
 // guarantee the destination is never left half-written: the copy is fully
@@ -88,15 +91,29 @@ func CopyDir(srcDir, dstDir string) error {
 // existing dstDir intact. The parent of dstDir is created if missing. This is
 // how a Vendored copy is written and refreshed.
 func ReplaceDir(srcDir, dstDir string) error {
-	if _, err := os.Stat(srcDir); err != nil {
+	info, err := os.Stat(srcDir)
+	if err != nil {
 		return fmt.Errorf("read source directory %s: %w", srcDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("source path %s is not a directory", srcDir)
 	}
 	if err := os.MkdirAll(filepath.Dir(dstDir), 0o755); err != nil {
 		return fmt.Errorf("create parent of %s: %w", dstDir, err)
 	}
 
-	stage := dstDir + ".skillm-tmp"
-	_ = os.RemoveAll(stage)
+	// Hidden, so an agent scanning the skill folder mid-copy never sees it as
+	// a skill.
+	stage, err := os.MkdirTemp(filepath.Dir(dstDir), "."+filepath.Base(dstDir)+".skillm-tmp-*")
+	if err != nil {
+		return fmt.Errorf("create staging dir for %s: %w", dstDir, err)
+	}
+	// MkdirTemp creates the dir 0700; give it the source's mode, as a fresh
+	// copy would have.
+	if err := os.Chmod(stage, info.Mode().Perm()); err != nil {
+		_ = os.RemoveAll(stage)
+		return fmt.Errorf("stage copy of %s: %w", srcDir, err)
+	}
 	if err := CopyDir(srcDir, stage); err != nil {
 		_ = os.RemoveAll(stage)
 		return fmt.Errorf("stage copy of %s: %w", srcDir, err)

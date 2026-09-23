@@ -139,8 +139,31 @@ func TestReplaceDir(t *testing.T) {
 		t.Fatalf("ReplaceDir must drop stale files; STALE.md err = %v", err)
 	}
 	// No staging dir is left behind.
-	if _, err := os.Stat(dst + ".skillm-tmp"); !os.IsNotExist(err) {
-		t.Fatalf("ReplaceDir left a staging dir behind: err = %v", err)
+	assertOnlyEntries(t, filepath.Dir(dst), "demo")
+}
+
+// ReplaceDir's unique staging dir must not leave the copy with MkdirTemp's
+// 0700 mode: the root keeps the source's permissions, as a plain copy would.
+func TestReplaceDir_KeepsSourceDirMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	dst := filepath.Join(root, "dst", "demo")
+	mustWrite(t, filepath.Join(src, "SKILL.md"), "v1\n", 0o644)
+	if err := os.Chmod(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceDir(src, dst); err != nil {
+		t.Fatalf("ReplaceDir: %v", err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("dst mode = %v, want 0755", got)
 	}
 }
 

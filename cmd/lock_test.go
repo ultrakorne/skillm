@@ -1,0 +1,71 @@
+package cmd
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/ultrakorne/skillm/internal/store"
+)
+
+// holdHomeLock points SKILLM_HOME at a fresh Home, takes its lock, and
+// releases it after hold. It returns the time the lock was taken.
+func holdHomeLock(t *testing.T, hold time.Duration) time.Time {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("SKILLM_HOME", home)
+	unlock, err := store.Lock(home)
+	if err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	t.Cleanup(unlock)
+	go func() {
+		time.Sleep(hold)
+		unlock()
+	}()
+	return time.Now()
+}
+
+// Every command that saves config or state takes Home's lock before loading
+// anything: while another process holds it, the command waits. Each command
+// here runs against an empty Home, so it does no real work once it gets the
+// lock — its result does not matter, only that it waited.
+func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
+	cmds := map[string]func(t *testing.T) error{
+		"install":   func(*testing.T) error { return runInstall(&cobra.Command{}, nil, true, false, true) },
+		"update":    func(*testing.T) error { return runUpdate(context.Background(), "", "", false) },
+		"uninstall": func(*testing.T) error { return runUninstall(nil, true) },
+		"import":    func(t *testing.T) error { return runImport(context.Background(), t.TempDir()) },
+		"agent":     func(*testing.T) error { return runAgent() },
+	}
+	const hold = 300 * time.Millisecond
+	for name, run := range cmds {
+		t.Run(name, func(t *testing.T) {
+			start := holdHomeLock(t, hold)
+			_ = run(t)
+			if waited := time.Since(start); waited < hold {
+				t.Errorf("%s finished after %v, without waiting for the %v lock holder", name, waited, hold)
+			}
+		})
+	}
+}
+
+// Read-only commands take no lock, so a long-running mutation never blocks them.
+func TestReadOnlyCommandsIgnoreHomeLock(t *testing.T) {
+	cmds := map[string]func() error{
+		"list":  runList,
+		"check": func() error { return runCheck(context.Background()) },
+	}
+	const hold = 5 * time.Second
+	for name, run := range cmds {
+		t.Run(name, func(t *testing.T) {
+			start := holdHomeLock(t, hold)
+			_ = run()
+			if waited := time.Since(start); waited >= hold {
+				t.Errorf("%s waited %v for the lock holder; read-only commands must not lock", name, waited)
+			}
+		})
+	}
+}

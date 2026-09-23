@@ -60,6 +60,13 @@ func runImport(ctx context.Context, dir string) error {
 	if err := store.EnsureHome(home); err != nil {
 		return err
 	}
+	// Hold Home's lock from load to save so a concurrent skillm process cannot
+	// interleave its writes with ours.
+	unlock, err := store.Lock(home)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := config.EnsureExists(home); err != nil {
 		return err
 	}
