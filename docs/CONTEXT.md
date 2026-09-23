@@ -12,7 +12,8 @@ files (references, sub-docs, scripts). One skill = one directory.
 
 ### Home
 The single central directory holding skillm's own state — `~/.skillm/`, which contains
-**only** `config.toml` and `state.toml`. There is exactly one Home per machine. Home does
+**only** `config.toml`, `state.toml` and the `.lock` file behind the **Home lock**. There is
+exactly one Home per machine. Home does
 **not** store skills: there is no skills library. A skill's files live solely in its
 **Canonical copies** (the Installs), which are the only copies of its content. Two installs
 of the same skill cannot share a Skill ID; a colliding install from a different Source is an
@@ -217,3 +218,12 @@ installed somewhere**: installing a skill creates its entry, and removing its la
 Uninstall, or when Update prunes a vanished copy) drops it. This machine-wide index of installs
 is what lets one `skillm update` sweep every project on the machine — the capability per-repo
 lockfiles alone cannot provide.
+
+### Home lock
+The exclusive, cross-process lock on Home that serializes skillm processes. Every command that
+changes Config, the Registry or any install (Install, Update, Uninstall, Import, and enabling
+or disabling agents) holds it for its whole run, from reading Home to its last save; List,
+Check and Upgrade take none. A command that finds Home locked waits for the holder, then gives
+up after a bounded wait with an error naming the holding command. Readers need no lock because
+every save of `config.toml` and `state.toml` replaces the file in one step.
+_Avoid_: Lockfile (that is the per-project `skills-lock.json`)

@@ -53,8 +53,8 @@ func Home(override string) (string, error) {
 }
 
 // EnsureHome creates the Home directory if it does not already exist. Home holds
-// only config.toml and state.toml, so this is just a MkdirAll of the home dir
-// itself. It is idempotent.
+// only config.toml, state.toml and .lock, so this is just a MkdirAll of the
+// home dir itself. It is idempotent.
 func EnsureHome(home string) error {
 	if home == "" {
 		return errors.New("home directory path is empty")
