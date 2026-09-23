@@ -3,18 +3,27 @@ import Foundation
 /// One launched skillm process: its stdout as a stream of chunks, its stderr
 /// collected (the last 64 KiB), and its exit status. Arguments go straight to
 /// the executable as an array; no shell is involved.
+///
+/// Waiting for the exit does not depend on the waiting task: a cancelled
+/// caller still waits until the child has really exited, so whatever the
+/// child was writing (the Registry, `status.json`) is finished when the
+/// caller goes on. Read `stdout` from a task that is not cancelled (an
+/// `AsyncStream` ends as soon as its reader's task is cancelled).
 final class ChildProcess: @unchecked Sendable {
     /// stdout, chunk by chunk; finishes at EOF.
     let stdout: AsyncStream<Data>
 
     private let process = Process()
     private let stdoutContinuation: AsyncStream<Data>.Continuation
-    private let exit: AsyncStream<Int32>
-    private let exitContinuation: AsyncStream<Int32>.Continuation
+    private let exited = Latch<Int32>()
+    private let stderrClosed = Latch<Void>()
     private let lock = NSLock()
     private var stderrBuffer = Data()
     private var interrupted = false
     private static let stderrLimit = 64 * 1024
+    /// How long `waitForExit` waits, after the exit, for stderr's EOF: a
+    /// grandchild that inherited the pipe must not hold the caller forever.
+    private static let stderrDrainLimit: DispatchTimeInterval = .seconds(2)
 
     init(executable: URL, arguments: [String], environment: [String: String]) {
         process.executableURL = executable
@@ -22,7 +31,6 @@ final class ChildProcess: @unchecked Sendable {
         process.environment = environment
         process.standardInput = FileHandle.nullDevice
         (stdout, stdoutContinuation) = AsyncStream.makeStream(of: Data.self)
-        (exit, exitContinuation) = AsyncStream.makeStream(of: Int32.self, bufferingPolicy: .bufferingNewest(1))
     }
 
     /// Starts the process. Throws `SkillmError.launchFailed`.
@@ -31,21 +39,21 @@ final class ChildProcess: @unchecked Sendable {
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
-        let exitContinuation = self.exitContinuation
-        process.terminationHandler = { p in
-            exitContinuation.yield(p.terminationStatus)
-            exitContinuation.finish()
-        }
+        let exited = self.exited
+        process.terminationHandler = { p in exited.set(p.terminationStatus) }
         do {
             try process.run()
         } catch {
             stdoutContinuation.finish()
-            exitContinuation.finish()
+            exited.set(-1)
+            stderrClosed.set(())
             throw SkillmError.launchFailed(path: process.executableURL?.path ?? "?", reason: error.localizedDescription)
         }
         let stdoutContinuation = self.stdoutContinuation
         Self.drain(out.fileHandleForReading) { stdoutContinuation.yield($0) } done: { stdoutContinuation.finish() }
-        Self.drain(err.fileHandleForReading) { [weak self] in self?.appendStderr($0) } done: {}
+        // Held strongly until EOF, when the drain thread ends.
+        let stderrClosed = self.stderrClosed
+        Self.drain(err.fileHandleForReading) { self.appendStderr($0) } done: { stderrClosed.set(()) }
     }
 
     /// Reads `handle` to EOF on its own thread, so a full pipe never blocks
@@ -87,7 +95,8 @@ final class ChildProcess: @unchecked Sendable {
         }
     }
 
-    /// What the process wrote to stderr so far (the tail, trimmed).
+    /// What the process wrote to stderr (the tail, trimmed): all of it once
+    /// `waitForExit` has returned.
     var stderr: String {
         lock.lock()
         defer { lock.unlock() }
@@ -103,7 +112,9 @@ final class ChildProcess: @unchecked Sendable {
 
     /// Asks the process to stop: SIGINT, which skillm answers by cancelling
     /// and writing a "cancelled" result. If it is still running after
-    /// `grace`, SIGTERM follows.
+    /// `grace`, SIGTERM follows. skillm does not catch SIGTERM, so that
+    /// kills it on the spot: keep `grace` long, a guard against a hung
+    /// child rather than part of an ordinary cancel.
     func interrupt(grace: Duration) {
         lock.lock()
         let first = !interrupted
@@ -118,10 +129,51 @@ final class ChildProcess: @unchecked Sendable {
         }
     }
 
-    /// Waits for the process to exit and returns its status. Call it once.
+    /// Waits until the process has exited and its stderr is read to the end,
+    /// then returns its exit status. The wait goes on even if the calling
+    /// task is cancelled.
     func waitForExit() async -> Int32 {
-        for await status in exit { return status }
-        return process.isRunning ? -1 : process.terminationStatus
+        let status = await exited.wait()
+        let stderrClosed = self.stderrClosed
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.stderrDrainLimit) { stderrClosed.set(()) }
+        await stderrClosed.wait()
+        return status
+    }
+}
+
+/// A value set once. Waiting for it does not depend on the waiting task's
+/// cancellation (unlike iterating an `AsyncStream`).
+final class Latch<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value?
+    private var waiters: [CheckedContinuation<Value, Never>] = []
+
+    /// Sets the value and wakes every waiter; later calls do nothing.
+    func set(_ newValue: Value) {
+        lock.lock()
+        guard value == nil else {
+            lock.unlock()
+            return
+        }
+        value = newValue
+        let waiting = waiters
+        waiters = []
+        lock.unlock()
+        for w in waiting { w.resume(returning: newValue) }
+    }
+
+    /// The value, once it is set.
+    func wait() async -> Value {
+        await withCheckedContinuation { (c: CheckedContinuation<Value, Never>) in
+            lock.lock()
+            if let value {
+                lock.unlock()
+                c.resume(returning: value)
+            } else {
+                waiters.append(c)
+                lock.unlock()
+            }
+        }
     }
 }
 

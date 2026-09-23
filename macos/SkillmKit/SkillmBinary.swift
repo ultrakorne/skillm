@@ -77,17 +77,21 @@ public enum SkillmBinary {
 
 /// The environment a skillm child runs with.
 public enum ChildEnvironment {
-    /// Appended to PATH when missing: a GUI app starts with a minimal PATH
-    /// that lacks Homebrew's (and a hand-installed) git.
-    public static let extraPath = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+    /// Put ahead of PATH when missing, in this order, as a login shell with
+    /// Homebrew set up would have them: a GUI app starts with the minimal
+    /// `/usr/bin:/bin:/usr/sbin:/sbin`, where Apple's `/usr/bin/git` (a stub
+    /// without the Command Line Tools) would always win over Homebrew's git.
+    public static let preferredPath = ["/opt/homebrew/bin", "/usr/local/bin"]
+    /// Appended to PATH when missing.
+    public static let fallbackPath = ["/usr/bin"]
 
-    /// `path` with every `extraPath` entry it lacks appended.
+    /// `path` with the `preferredPath` entries it lacks put in front and the
+    /// `fallbackPath` entries it lacks appended.
     public static func extendedPath(_ path: String?) -> String {
-        var entries = (path ?? "").split(separator: ":").map(String.init).filter { !$0.isEmpty }
-        for extra in extraPath where !entries.contains(extra) {
-            entries.append(extra)
-        }
-        return entries.joined(separator: ":")
+        let entries = (path ?? "").split(separator: ":").map(String.init).filter { !$0.isEmpty }
+        let front = preferredPath.filter { !entries.contains($0) }
+        let back = fallbackPath.filter { !entries.contains($0) }
+        return (front + entries + back).joined(separator: ":")
     }
 
     /// `base` with PATH extended.

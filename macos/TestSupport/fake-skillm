@@ -6,7 +6,11 @@
 #   FAKE_SKILLM_MODE      how to answer (see below); default: by command
 #   FAKE_SKILLM_ARGS      if set, each argument is written to it, one per line
 #   FAKE_SKILLM_PATH      if set, $PATH is written to it
-#   FAKE_SKILLM_SIGNALS   if set, "INT" is written to it when SIGINT arrives
+#   FAKE_SKILLM_SIGNALS   if set, "INT" or "TERM" is appended to it as each
+#                         signal arrives
+#   FAKE_SKILLM_EXITED    if set, created just before a cancelled fake exits
+#   FAKE_SKILLM_CANCEL_DELAY  seconds a cancelled fake keeps working after
+#                         SIGINT before it answers (default 0)
 set -u
 fx=${FAKE_SKILLM_FIXTURES:?}
 [ -n "${FAKE_SKILLM_ARGS:-}" ] && printf '%s\n' "$@" >"$FAKE_SKILLM_ARGS"
@@ -15,12 +19,21 @@ fx=${FAKE_SKILLM_FIXTURES:?}
 events=no
 for a in "$@"; do [ "$a" = "--events" ] && events=yes; done
 
-# wait_for_interrupt: block until SIGINT, then run `answer` and exit 1, as
-# skillm does when it is cancelled.
+record() { [ -n "${FAKE_SKILLM_SIGNALS:-}" ] && echo "$1" >>"$FAKE_SKILLM_SIGNALS"; }
+exiting() { [ -n "${FAKE_SKILLM_EXITED:-}" ] && : >"$FAKE_SKILLM_EXITED"; }
+started() { :; }
+after_interrupt() { :; }
+
+# wait_for_interrupt: set up the traps, run `started`, block until SIGINT,
+# keep working for FAKE_SKILLM_CANCEL_DELAY seconds (after_interrupt runs
+# first), then run `answer` and exit 1, as skillm does when it is cancelled. SIGTERM ends it
+# at once, as it does skillm, which does not catch it.
 wait_for_interrupt() {
-	trap 'kill "$pid" 2>/dev/null; [ -n "${FAKE_SKILLM_SIGNALS:-}" ] && echo INT >"$FAKE_SKILLM_SIGNALS"; answer; exit 1' INT
+	trap 'kill "$pid" 2>/dev/null; record TERM; exiting; exit 143' TERM
+	trap 'kill "$pid" 2>/dev/null; record INT; after_interrupt; sleep "${FAKE_SKILLM_CANCEL_DELAY:-0}"; answer; exiting; exit 1' INT
 	sleep 30 >/dev/null 2>&1 &
 	pid=$!
+	started
 	wait "$pid"
 	echo "fake-skillm: never interrupted" >&2
 	exit 3
@@ -44,12 +57,40 @@ garbage)
 	echo "panic: something broke" >&2
 	exit 2
 	;;
+stderr_flood)
+	# More stderr than a pipe holds, the diagnostic last.
+	echo "this is not json"
+	i=0
+	while [ $i -lt 2000 ]; do
+		echo "goroutine $i [running]: some/package.function(0x0, 0x0) at /src/file.go:123 +0x45" >&2
+		i=$((i + 1))
+	done
+	echo "panic: the real reason" >&2
+	exit 2
+	;;
 hang)
-	answer() { cat "$fx/error_cancelled.json"; }
+	answer() {
+		echo '{"schema_version":1,"data":null,"warnings":[{"code":"copy_failed","message":"beta: partly copied","skill_id":"beta"}],"error":{"code":"cancelled","message":"context canceled","retryable":true}}'
+	}
 	wait_for_interrupt
 	;;
+ignore_int)
+	# A hung skillm: SIGINT changes nothing, only SIGTERM ends it.
+	trap 'record TERM; kill "$pid" 2>/dev/null; exiting; exit 143' TERM
+	trap 'record INT; kill "$pid" 2>/dev/null' INT
+	while :; do
+		sleep 30 >/dev/null 2>&1 &
+		pid=$!
+		wait "$pid"
+	done
+	;;
 stream_hang)
-	echo '{"schema_version":1,"type":"event","event":"batch","items":["alpha"]}'
+	# The first event is written once SIGINT is trapped.
+	started() { echo '{"schema_version":1,"type":"event","event":"batch","items":["alpha"]}'; }
+	# The work in progress when SIGINT arrives still reports its events.
+	after_interrupt() {
+		echo '{"schema_version":1,"type":"event","event":"item_start","index":0,"skill_id":"alpha"}'
+	}
 	answer() {
 		echo '{"schema_version":1,"type":"result","data":null,"warnings":[],"error":{"code":"cancelled","message":"context canceled","retryable":true}}'
 	}

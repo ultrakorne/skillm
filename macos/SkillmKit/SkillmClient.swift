@@ -7,7 +7,10 @@ import Foundation
 /// - `stream` runs with `--events` and delivers each event, then the result.
 ///
 /// Cancelling the calling task sends SIGINT; skillm then stops and answers
-/// "cancelled" (SIGTERM follows if it has not exited after `interruptGrace`).
+/// "cancelled". Either way a call returns (or a stream finishes) only once
+/// skillm has exited, so it no longer holds Home's lock and a follow-up
+/// `status` reads what the command left. SIGTERM follows only if skillm is
+/// still running after `interruptGrace`, a guard against a hung child.
 public struct SkillmClient: Sendable {
     /// The API versions this app understands (`skillm version --json`).
     public static let supportedAPIVersions: Set<Int> = [1]
@@ -18,8 +21,11 @@ public struct SkillmClient: Sendable {
     public let environment: [String: String]
     /// A Home override (`--home`); nil means skillm's default (~/.skillm).
     public let home: String?
-    /// How long to wait after SIGINT before sending SIGTERM.
-    public var interruptGrace: Duration = .seconds(5)
+    /// How long to wait after SIGINT before sending SIGTERM. skillm does not
+    /// catch SIGTERM, so it dies on the spot and may leave a write half done
+    /// (copies the Registry does not record): keep this long enough for any
+    /// cancelled command to finish its current write.
+    public var interruptGrace: Duration = .seconds(60)
 
     public init(
         executable: URL,
@@ -63,15 +69,18 @@ public struct SkillmClient: Sendable {
 
     /// Runs `skillm <args> --json` and returns its data. A failed command
     /// throws `SkillmError.command` (or `.gitMissing`); a run cancelled by
-    /// the calling task throws `CancellationError`.
+    /// the calling task throws `CancellationError` once skillm has exited.
     public func run<T: Codable & Sendable>(_ args: [String], as type: T.Type = T.self) async throws -> T {
         let env = try await runEnvelope(args, as: type)
+        if env.error?.code == .cancelled { throw CancellationError() }
         return try Self.unwrap(env)
     }
 
     /// Runs `skillm <args> --json` and returns its envelope as written,
-    /// failed or not (for callers that need the warnings of a success). It
-    /// throws only when there is no envelope to return.
+    /// failed or not (for callers that need the warnings of a success, or
+    /// of a cancelled command: cancelling the calling task returns skillm's
+    /// "cancelled" envelope). It throws only when there is no envelope to
+    /// return: `CancellationError` when a cancelled skillm wrote none.
     public func runEnvelope<T: Codable & Sendable>(_ args: [String], as type: T.Type = T.self) async throws
         -> Envelope<T>
     {
@@ -79,44 +88,45 @@ public struct SkillmClient: Sendable {
         let child = ChildProcess(executable: executable, arguments: arguments(args, events: false), environment: environment)
         try child.start()
         let grace = interruptGrace
-        return try await withTaskCancellationHandler {
+        // Read in a task of its own: the caller's cancellation must not cut
+        // the read short, only interrupt skillm, whose answer is then read
+        // to the end.
+        let collector = Task.detached { () -> (Data, Int32) in
             var output = Data()
             for await chunk in child.stdout { output.append(chunk) }
-            let status = await child.waitForExit()
-            let env: Envelope<T>
-            do {
-                env = try Self.decodeDocument(output, as: T.self)
-            } catch let error as SkillmError {
-                if child.wasInterrupted { throw CancellationError() }
-                throw Self.withProcessContext(error, stderr: child.stderr, status: status)
-            }
-            if child.wasInterrupted, env.error?.code == .cancelled { throw CancellationError() }
-            return env
+            return (output, await child.waitForExit())
+        }
+        let (output, status) = await withTaskCancellationHandler {
+            await collector.value
         } onCancel: {
             child.interrupt(grace: grace)
+        }
+        do {
+            return try Self.decodeDocument(output, as: T.self)
+        } catch let error as SkillmError {
+            if child.wasInterrupted { throw CancellationError() }
+            throw Self.withProcessContext(error, stderr: child.stderr, status: status)
         }
     }
 
     /// Runs `skillm <args> --json --events` and delivers each event as it
     /// happens, then `.result` as the last message. A failed command ends
-    /// the stream by throwing, as `run` does. Ending the iteration early (or
-    /// cancelling its task) interrupts skillm with SIGINT; a cancelled task's
-    /// loop then simply ends without a `.result`, as any `AsyncSequence` does,
-    /// so a caller checks `Task.isCancelled` rather than catching an error.
-    public func stream<T: Codable & Sendable>(_ args: [String], as type: T.Type = T.self)
-        -> AsyncThrowingStream<StreamMessage<T>, any Error>
-    {
-        let (stream, continuation) = AsyncThrowingStream.makeStream(of: StreamMessage<T>.self)
+    /// the stream by throwing, as `run` does.
+    ///
+    /// Cancelling the consumer's task interrupts skillm with SIGINT, but the
+    /// stream goes on delivering until skillm has exited and then throws
+    /// `CancellationError`, so the loop ends only when skillm is done.
+    /// Ending the iteration early (`break`) also interrupts skillm, without
+    /// waiting for it.
+    public func stream<T: Codable & Sendable>(_ args: [String], as type: T.Type = T.self) -> SkillmStream<T> {
         let child = ChildProcess(executable: executable, arguments: arguments(args, events: true), environment: environment)
         let grace = interruptGrace
-        continuation.onTermination = { reason in
-            if case .cancelled = reason { child.interrupt(grace: grace) }
-        }
+        let channel = SkillmStream<T>.Channel(interrupt: { child.interrupt(grace: grace) })
         do {
             try child.start()
         } catch {
-            continuation.finish(throwing: error)
-            return stream
+            channel.finish(throwing: error)
+            return SkillmStream(channel: channel)
         }
         Task.detached {
             var splitter = LineSplitter()
@@ -126,7 +136,7 @@ public struct SkillmClient: Sendable {
                 guard failure == nil, result == nil else { return }
                 do {
                     switch try StreamLine<T>.decode(line) {
-                    case .event(let ev): continuation.yield(.event(ev))
+                    case .event(let ev): channel.yield(.event(ev))
                     case .result(let env): result = env
                     }
                 } catch let e as SkillmError {
@@ -146,42 +156,45 @@ public struct SkillmClient: Sendable {
             let status = await child.waitForExit()
 
             if child.wasInterrupted, failure != nil || result == nil || result?.error?.code == .cancelled {
-                continuation.finish(throwing: CancellationError())
+                channel.finish(throwing: CancellationError())
                 return
             }
             if let failure {
-                continuation.finish(throwing: Self.withProcessContext(failure, stderr: child.stderr, status: status))
+                channel.finish(throwing: Self.withProcessContext(failure, stderr: child.stderr, status: status))
                 return
             }
             guard let result else {
-                continuation.finish(
+                channel.finish(
                     throwing: SkillmError.malformedOutput(
                         detail: "the event stream ended without a result", stderr: child.stderr, exitCode: status))
                 return
             }
             do {
                 let data = try Self.unwrap(result)
-                continuation.yield(.result(data, warnings: result.warnings))
-                continuation.finish()
+                channel.yield(.result(data, warnings: result.warnings))
+                channel.finish()
             } catch {
-                continuation.finish(throwing: error)
+                channel.finish(throwing: error)
             }
         }
-        return stream
+        return SkillmStream(channel: channel)
     }
 
     // MARK: - Helpers
 
-    /// The full argument list: `args`, then `--json` (and `--events`) and
-    /// `--home` unless `args` already has them.
+    /// The full argument list: `args` with `--json` (and `--events`) and
+    /// `--home` added unless `args` already has them. They go before a `--`
+    /// separator, after which skillm reads every argument as positional.
     func arguments(_ args: [String], events: Bool) -> [String] {
-        var out = args
-        if !out.contains("--json") { out.append("--json") }
-        if events, !out.contains("--events") { out.append("--events") }
-        if let home, !out.contains(where: { $0 == "--home" || $0.hasPrefix("--home=") }) {
-            out += ["--home", home]
+        let split = args.firstIndex(of: "--") ?? args.endIndex
+        let flags = args[..<split]
+        var added: [String] = []
+        if !flags.contains("--json") { added.append("--json") }
+        if events, !flags.contains("--events") { added.append("--events") }
+        if let home, !flags.contains(where: { $0 == "--home" || $0.hasPrefix("--home=") }) {
+            added += ["--home", home]
         }
-        return out
+        return Array(flags) + added + args[split...]
     }
 
     static func decodeDocument<T: Codable & Sendable>(_ data: Data, as: T.Type) throws -> Envelope<T> {

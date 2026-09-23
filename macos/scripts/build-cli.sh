@@ -25,6 +25,12 @@ if [ -z "$go_bin" ]; then
 fi
 
 version=${SKILLM_VERSION:-dev}
+if [ "${CONFIGURATION:-}" = "Release" ] && [ "$version" = "dev" ]; then
+	# A dev CLI reports `method: dev`: no self-update check, and `upgrade`
+	# gives the source-build answer. A release build must set SKILLM_VERSION
+	# (and MARKETING_VERSION) from the release tag.
+	echo "warning: bundling a skillm CLI stamped \"dev\" in a Release build; set SKILLM_VERSION to the release version" >&2
+fi
 out_dir="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
 work_dir="${DERIVED_FILE_DIR:-${TMPDIR:-/tmp}}/skillm-cli"
 mkdir -p "$out_dir" "$work_dir"

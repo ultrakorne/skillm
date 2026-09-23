@@ -17,18 +17,41 @@ final class SkillmClientTests: XCTestCase {
         try? FileManager.default.removeItem(at: scratch)
     }
 
-    private func client(mode: String? = nil, home: String? = nil, path: String = "/usr/bin:/bin") -> SkillmClient {
+    private var exitedMarker: URL { scratch.appending(path: "exited") }
+
+    /// A client for the fake. The default `interruptGrace` stays: a cancel
+    /// must never need SIGTERM.
+    private func client(
+        mode: String? = nil, home: String? = nil, path: String = "/usr/bin:/bin", cancelDelay: Double = 0
+    ) -> SkillmClient {
         var env = [
             "FAKE_SKILLM_FIXTURES": TestPaths.fixtures.path,
             "FAKE_SKILLM_ARGS": scratch.appending(path: "args").path,
             "FAKE_SKILLM_PATH": scratch.appending(path: "path").path,
             "FAKE_SKILLM_SIGNALS": scratch.appending(path: "signals").path,
+            "FAKE_SKILLM_EXITED": exitedMarker.path,
+            "FAKE_SKILLM_CANCEL_DELAY": String(cancelDelay),
             "PATH": path,
         ]
         if let mode { env["FAKE_SKILLM_MODE"] = mode }
-        var c = SkillmClient(executable: TestPaths.fakeSkillm, environment: env, home: home)
-        c.interruptGrace = .seconds(2)
-        return c
+        return SkillmClient(executable: TestPaths.fakeSkillm, environment: env, home: home)
+    }
+
+    /// Waits until the fake has started (it records its arguments first).
+    private func waitForStart() async throws {
+        let url = scratch.appending(path: "args")
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !FileManager.default.fileExists(atPath: url.path) {
+            guard ContinuousClock.now < deadline else { return XCTFail("the fake skillm did not start") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // Let the shell reach its `trap` lines.
+        try await Task.sleep(for: .milliseconds(200))
+    }
+
+    private func recordedSignals() -> [String] {
+        let s = (try? String(contentsOf: scratch.appending(path: "signals"), encoding: .utf8)) ?? ""
+        return s.split(separator: "\n").map(String.init)
     }
 
     private func recordedArgs() throws -> [String] {
@@ -71,7 +94,7 @@ final class SkillmClientTests: XCTestCase {
         let _: ListData = try await client(path: "/custom/bin:/bin").run(["list"])
         let path = try String(contentsOf: scratch.appending(path: "path"), encoding: .utf8)
             .trimmingCharacters(in: .newlines)
-        XCTAssertEqual(path, "/custom/bin:/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin")
+        XCTAssertEqual(path, "/opt/homebrew/bin:/usr/local/bin:/custom/bin:/bin:/usr/bin")
     }
 
     func testCommandErrorKeepsCodeAndWarnings() async throws {
@@ -120,6 +143,32 @@ final class SkillmClientTests: XCTestCase {
         }
     }
 
+    func testMalformedOutputKeepsTheEndOfStderr() async throws {
+        // The diagnostic comes last, after more than a pipe holds; the error
+        // must carry it every time (stderr is read to EOF before it is built).
+        for _ in 0..<20 {
+            do {
+                let _: ListData = try await client(mode: "stderr_flood").run(["list"])
+                XCTFail("garbage decoded")
+            } catch SkillmError.malformedOutput(_, let stderr, let status) {
+                XCTAssertTrue(stderr.hasSuffix("panic: the real reason"), String(stderr.suffix(200)))
+                XCTAssertEqual(status, 2)
+            }
+        }
+    }
+
+    func testClientFlagsGoBeforeSeparator() {
+        let c = SkillmClient(executable: URL(fileURLWithPath: "/x"), environment: [:], home: "/h")
+        XCTAssertEqual(
+            c.arguments(["install", "src", "--", "-x"], events: true),
+            ["install", "src", "--json", "--events", "--home", "/h", "--", "-x"])
+        XCTAssertEqual(
+            c.arguments(["list", "--json", "--", "--home"], events: false),
+            ["list", "--json", "--home", "/h", "--", "--home"],
+            "flags after -- do not count")
+        XCTAssertEqual(c.arguments(["list"], events: false), ["list", "--json", "--home", "/h"])
+    }
+
     func testUnknownSchemaIsRefused() async throws {
         do {
             let _: ListData = try await client(mode: "schema2").run(["list"])
@@ -142,17 +191,51 @@ final class SkillmClientTests: XCTestCase {
     func testCancellingRunSendsSIGINT() async throws {
         let c = client(mode: "hang")
         let task = Task { () -> ListData in try await c.run(["list"]) }
-        try await Task.sleep(for: .milliseconds(500))
+        try await waitForStart()
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("a cancelled run returned data")
+        } catch is CancellationError {}
+        XCTAssertEqual(recordedSignals(), ["INT"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "returned before the fake exited")
+    }
+
+    func testCancelledRunReturnsOnlyOnceSkillmHasExited() async throws {
+        // The fake goes on working for a second after SIGINT, as skillm does
+        // when it is finishing a write; the call must wait for it.
+        let c = client(mode: "hang", cancelDelay: 1)
+        let task = Task { () -> Envelope<ListData> in try await c.runEnvelope(["list"]) }
+        try await waitForStart()
+        let start = ContinuousClock.now
+        task.cancel()
+        let env = try await task.value
+        XCTAssertGreaterThanOrEqual(ContinuousClock.now - start, .milliseconds(900))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "returned before the fake exited")
+        XCTAssertEqual(env.error?.code, .cancelled)
+        XCTAssertEqual(env.warnings.map(\.code), ["copy_failed"], "a cancelled command's warnings are kept")
+        XCTAssertEqual(recordedSignals(), ["INT"], "no SIGTERM while skillm is finishing")
+    }
+
+    func testDefaultGraceIsLong() {
+        let c = SkillmClient(executable: URL(fileURLWithPath: "/x"), environment: [:])
+        XCTAssertGreaterThanOrEqual(c.interruptGrace, .seconds(30))
+    }
+
+    func testHungSkillmGetsSIGTERMAfterTheGrace() async throws {
+        var c = client(mode: "ignore_int")
+        c.interruptGrace = .seconds(1)
+        let task = Task { () -> ListData in try await c.run(["list"]) }
+        try await waitForStart()
         let start = ContinuousClock.now
         task.cancel()
         do {
             _ = try await task.value
             XCTFail("a cancelled run returned data")
-        } catch is CancellationError {
-            // The fake answered SIGINT itself, well before SIGTERM would be sent.
-            XCTAssertLessThan(ContinuousClock.now - start, .seconds(2))
-        }
-        try await waitForSignal("INT")
+        } catch is CancellationError {}
+        XCTAssertGreaterThanOrEqual(ContinuousClock.now - start, .milliseconds(900))
+        XCTAssertEqual(recordedSignals(), ["INT", "TERM"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "returned before the fake exited")
     }
 
     func testStreamDeliversEventsThenResult() async throws {
@@ -176,43 +259,50 @@ final class SkillmClientTests: XCTestCase {
     }
 
     func testCancellingStreamSendsSIGINT() async throws {
-        let c = client(mode: "stream_hang")
+        let c = client(mode: "stream_hang", cancelDelay: 1)
         let firstEvent = expectation(description: "first event")
         let task = Task { () -> [Event] in
             var events: [Event] = []
             for try await message in c.stream(["update"], as: UpdateData.self) {
                 if case .event(let ev) = message {
                     events.append(ev)
-                    firstEvent.fulfill()
+                    if events.count == 1 { firstEvent.fulfill() }
                 }
             }
-            // A cancelled consumer's iteration simply ends (AsyncStream
-            // semantics); the consumer notices by checking for cancellation.
-            try Task.checkCancellation()
+            XCTFail("a cancelled stream finished normally with \(events)")
             return events
         }
         await fulfillment(of: [firstEvent], timeout: 5)
         task.cancel()
         do {
-            let events = try await task.value
-            XCTFail("a cancelled stream finished normally with \(events)")
+            _ = try await task.value
+            XCTFail("a cancelled stream finished normally")
         } catch is CancellationError {}
-        try await waitForSignal("INT")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "finished before the fake exited")
+        XCTAssertEqual(recordedSignals(), ["INT"])
     }
 
-    /// Waits until the fake recorded `signal` (well before SIGTERM would follow).
-    private func waitForSignal(_ signal: String, timeout: Duration = .seconds(1.5)) async throws {
-        let url = scratch.appending(path: "signals")
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if let s = try? String(contentsOf: url, encoding: .utf8),
-                s.trimmingCharacters(in: .whitespacesAndNewlines) == signal
-            {
-                return
+    func testCancelledStreamDeliversEventsUntilSkillmExits() async throws {
+        let c = client(mode: "stream_hang", cancelDelay: 0.5)
+        let task = Task { () -> [EventType] in
+            var kinds: [EventType] = []
+            do {
+                for try await message in c.stream(["update"], as: UpdateData.self) {
+                    if case .event(let ev) = message {
+                        kinds.append(ev.event)
+                        if kinds.count == 1 { withUnsafeCurrentTask { $0?.cancel() } }
+                    }
+                }
+                XCTFail("a cancelled stream finished normally")
+            } catch is CancellationError {
+            } catch {
+                XCTFail("got \(error)")
             }
-            try await Task.sleep(for: .milliseconds(20))
+            return kinds
         }
-        XCTFail("the fake skillm did not receive SIG\(signal)")
+        let kinds = await task.value
+        XCTAssertEqual(kinds, [.batch, .itemStart], "events reported after SIGINT are delivered")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "finished before the fake exited")
     }
 
     func testLineSplitter() {

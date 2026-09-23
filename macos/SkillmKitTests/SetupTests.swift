@@ -74,10 +74,12 @@ final class SetupTests: XCTestCase {
     func testExtendedPath() {
         XCTAssertEqual(
             ChildEnvironment.extendedPath("/usr/bin:/bin:/usr/sbin:/sbin"),
-            "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin")
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "Homebrew's git comes before Apple's /usr/bin/git")
         XCTAssertEqual(ChildEnvironment.extendedPath(nil), "/opt/homebrew/bin:/usr/local/bin:/usr/bin")
         XCTAssertEqual(
-            ChildEnvironment.extendedPath("/opt/homebrew/bin:/x"), "/opt/homebrew/bin:/x:/usr/local/bin:/usr/bin")
+            ChildEnvironment.extendedPath("/x:/opt/homebrew/bin"), "/usr/local/bin:/x:/opt/homebrew/bin:/usr/bin",
+            "entries already on PATH keep their place")
         XCTAssertEqual(ChildEnvironment.make(from: ["A": "b"])["A"], "b")
     }
 
