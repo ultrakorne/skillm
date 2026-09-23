@@ -253,7 +253,20 @@ func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 			res.Agents = append(res.Agents, ar)
 
 		case lerr == nil:
-			// A real file or directory occupies the link path. Never clobber it.
+			// A real file or directory occupies the link path. This is not
+			// necessarily foreign: if some ancestor of linkPath is itself a
+			// symlink into the canonical store (e.g. an agent's whole skill
+			// folder pointed at .agents/skills by hand), Lstat follows that
+			// ancestor and lands on the canonical copy itself — which must
+			// never be treated as an entry to replace or delete. Rule that
+			// out by comparing resolved (real) paths before deciding kind.
+			if real, rerr := filepath.EvalSymlinks(linkPath); rerr == nil {
+				if realTarget, terr := filepath.EvalSymlinks(resolved); terr == nil && real == realTarget {
+					ar.Action = ActionAlreadyLinked
+					res.Agents = append(res.Agents, ar)
+					continue
+				}
+			}
 			kind := "file"
 			if info.IsDir() {
 				kind = "directory"
@@ -263,11 +276,22 @@ func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 					"refusing to overwrite %s: a %s already exists there and was %w",
 					linkPath, kind, ErrNotManaged)
 			}
+			// Stage the replacement link before touching the existing entry:
+			// create it at a temp sibling name first, so a symlink-creation
+			// failure (e.g. a missing privilege on Windows) is caught before
+			// anything is destroyed, then remove the foreign entry and move
+			// the staged link into place.
+			tmp := linkPath + ".skillm-tmp"
+			_ = os.RemoveAll(tmp)
+			if err := os.Symlink(target, tmp); err != nil {
+				return res, fmt.Errorf("create link %s -> %s: %w", linkPath, target, symlinkHint(err))
+			}
 			if err := os.RemoveAll(linkPath); err != nil {
+				_ = os.RemoveAll(tmp)
 				return res, fmt.Errorf("remove %s %s: %w", kind, linkPath, err)
 			}
-			if err := os.Symlink(target, linkPath); err != nil {
-				return res, fmt.Errorf("create link %s -> %s: %w", linkPath, target, symlinkHint(err))
+			if err := os.Rename(tmp, linkPath); err != nil {
+				return res, fmt.Errorf("move link into place %s: %w", linkPath, err)
 			}
 			ar.Action = ActionReplaced
 			res.Agents = append(res.Agents, ar)

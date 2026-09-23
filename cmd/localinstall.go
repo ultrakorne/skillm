@@ -98,12 +98,18 @@ func vendorConflict(home, id string, scope agentdir.Scope, base string, recorded
 // canonical copy elsewhere), then a link for every supplied agent that needs
 // one. recorded says whether the install is already recorded for this skill (so
 // a directory at the canonical slot is skillm's own copy); force permits
-// overwriting a foreign entry there; label names the scope in per-link report
-// lines. It returns what happened to the canonical slot; vendorBlocked means
-// nothing was written at all. Link refusals (a foreign entry at an agent's
-// link path) are warned about, never fatal: the copy is the unit that is
-// recorded, links are re-derivable from disk.
-func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force bool, label string) (vendorAction, error) {
+// overwriting a foreign entry at the canonical slot; label names the scope in
+// per-link report lines. It returns what happened to the canonical slot;
+// vendorBlocked means nothing was written at all. Link refusals (a foreign
+// entry at an agent's link path) are warned about, never fatal: the copy is
+// the unit that is recorded, links are re-derivable from disk.
+//
+// agentTakeover is deliberately separate from force: force may come from an
+// interactive "yes" to a prompt that only ever lists canonical-slot
+// conflicts (confirmVendorOverwritePrompt), so it must not also authorize
+// deleting unrelated foreign entries at agent link paths that prompt never
+// showed. Only the explicit --force/--yes flags set agentTakeover.
+func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force, agentTakeover bool, label string) (vendorAction, error) {
 	src := srcDir
 	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 
@@ -147,10 +153,10 @@ func vendorOne(home, id, srcDir string, agents []agentdir.Agent, scope agentdir.
 	}
 
 	hint := ""
-	if !force {
+	if !agentTakeover {
 		hint = "--force"
 	}
-	linkVendorAgents(home, id, agents, scope, base, label, force, hint)
+	linkVendorAgents(home, id, agents, scope, base, label, agentTakeover, hint)
 	return action, nil
 }
 

@@ -203,6 +203,12 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 // converted to a copy without asking.
 func installVendored(home string, st *state.State, items []stagedSkill, agents []agentdir.Agent, scope agentdir.Scope, base, label string) error {
 	force := flagForce || flagYes
+	// agentTakeover gates deleting foreign entries at agent link paths.
+	// It is fixed to the explicit flags and never widened by the interactive
+	// confirmation below, which only ever asks about canonical-slot conflicts
+	// (see vendorOne's doc comment) — a "yes" there must not also authorize
+	// taking over unrelated agent-folder copies it never showed the user.
+	agentTakeover := force
 
 	// Pre-scan every canonical slot for foreign entries that would be
 	// overwritten, so the question (or the refusal) covers the whole batch once.
@@ -235,7 +241,7 @@ func installVendored(home string, st *state.State, items []stagedSkill, agents [
 	var runErr error
 	for _, it := range items {
 		id := it.entry.ID
-		action, err := vendorOne(home, id, it.dir, agents, scope, base, recorded[id], force, label)
+		action, err := vendorOne(home, id, it.dir, agents, scope, base, recorded[id], force, agentTakeover, label)
 		if err != nil {
 			runErr = err
 			break

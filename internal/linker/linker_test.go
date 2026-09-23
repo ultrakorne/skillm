@@ -701,3 +701,47 @@ func TestLinkForce_TakesOverForeignEntries(t *testing.T) {
 		})
 	}
 }
+
+// TestLink_AncestorSymlinkAliasedToCanonicalIsNeverDeleted: an agent's whole
+// skill folder can itself be a symlink into the canonical store (a manual
+// merge, not something skillm creates) rather than the individual skill
+// entries under it. Lstat on the skill's link path then follows that ancestor
+// symlink and lands on the canonical copy itself, which is a real directory,
+// not a symlink — both Link and LinkForce must recognize this as
+// already-correct and must never delete or replace it.
+func TestLink_AncestorSymlinkAliasedToCanonicalIsNeverDeleted(t *testing.T) {
+	const id = "demo"
+	fx := newFixture(t, id)
+	ag := []agentdir.Agent{claude(t)}
+
+	folder, _ := agentdir.SkillsFolder(ag[0], agentdir.Local, fx.cwd)
+	if err := os.MkdirAll(filepath.Dir(folder), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(agentdir.CanonicalLocalDir(fx.cwd), folder); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(agentdir.CanonicalSkillDir(fx.cwd, id), "SKILL.md")
+
+	res, err := Link(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].Action != ActionAlreadyLinked {
+		t.Fatalf("want ActionAlreadyLinked, got %+v", res.Agents)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("canonical copy must survive Link: %v", err)
+	}
+
+	res, err = LinkForce(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if err != nil {
+		t.Fatalf("LinkForce: %v", err)
+	}
+	if len(res.Agents) != 1 || res.Agents[0].Action != ActionAlreadyLinked {
+		t.Fatalf("want ActionAlreadyLinked, got %+v", res.Agents)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("canonical copy must survive LinkForce: %v", err)
+	}
+}
