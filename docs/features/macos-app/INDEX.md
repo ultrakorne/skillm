@@ -1,10 +1,11 @@
 # macOS App
 
-The macOS menu bar app (`macos/`) is a thin SwiftUI view over skillm: it carries its own version-matched **Bundled CLI** and drives it only through the [JSON API](../json-api/INDEX.md), so every behaviour stays in Go. Today it is a status item that finds and checks the Bundled CLI at launch, shows a problem with its fix when the CLI cannot be used, and quits; `SkillmKit` holds the client every later menu item runs commands through.
+The macOS menu bar app (`macos/`) is a thin SwiftUI view over skillm: it carries its own version-matched **Bundled CLI** and drives it only through the [JSON API](../json-api/INDEX.md), so every behaviour stays in Go. Its status item shows the update Badge as a red dot; its menu shows what the last Refresh found and runs Refresh, the Auto refresh toggle and Update all skills, with Stop and Quit waiting for skillm to exit. It asks for a scheduled Refresh at launch, hourly and after a wake, and leaves whether one is Due to the CLI.
 
 ## Documents
 | Document | Purpose |
 |----------|---------|
-| [DESIGN.md](DESIGN.md) | What the user sees, the launch checks, and the decisions that shape the app and its bundle |
-| [TECHNICAL.md](TECHNICAL.md) | The XcodeGen targets, how the client runs and cancels skillm, where things live, the invariants |
+| [DESIGN.md](DESIGN.md) | The menu, the launch checks, the scheduled check, and the decisions that shape the app and its bundle |
+| [TECHNICAL.md](TECHNICAL.md) | The XcodeGen targets, the model and its scheduler, the badge icon, quitting, where things live |
+| [client.md](client.md) | How the client runs, cancels and decodes skillm, and where it finds the CLI and git |
 | [FLOW.mermaid](FLOW.mermaid) | Cancelling a command: SIGINT, the `cancelled` answer, and the grace before SIGTERM |

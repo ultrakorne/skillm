@@ -1,12 +1,12 @@
 sequenceDiagram
-    participant V as App (a view's task)
+    participant V as App (Stop, Quit)
     participant C as Client
     participant S as skillm --json
 
     V->>C: run a command
     C->>S: start (arguments as an array, stdin closed)
     S-->>C: stdout (read to EOF whatever happens)
-    V->>C: cancel the task
+    V->>C: cancel the command
     C->>S: SIGINT
     alt skillm stops within the grace (60 s)
         S-->>C: envelope, error "cancelled" (with its warnings)
