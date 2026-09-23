@@ -17,7 +17,9 @@ the two always speak the same protocol version.
   to date", skills that could not be checked, a newer skillm, and "Last checked at 10:00"); a
   notice with the last command's outcome or failure; the running command ("Updating skills… 2 of
   5"); then **Refresh** (⌘R), **Auto refresh** ✓, **Update all skills** (⌘U), **Stop** while a
-  check or an update runs, and always **Quit skillm** (⌘Q).
+  check or an update runs, the windows, and always **Quit skillm** (⌘Q).
+- **Windows** — **View skills…** (Update, Uninstall), **Add skill…** from a repository or folder,
+  and **Settings…** (⌘,) with Start at login and the command-line tool ([windows.md](windows.md)).
 
 ## Flows
 

@@ -14,9 +14,9 @@ Layering is one-way: `SkillmClient` (process and decoding, [client.md](client.md
 views in `macos/Skillm/`, which read the model and call its methods. The model runs at most one
 command, its `operation`, and publishes it as `activity`; `RefreshScheduler` calls its scheduled
 refresh, and `AppDelegate` owns the model, starts it after launch and holds a quit until it has
-shut down. The status item's image comes from `StatusIcon`, and the menu's words from
-`StatusSummary` and `UpdateProgress`, pure functions of decoded data the tests check without a
-process. Where the app looks for the CLI is the client's job ([client.md](client.md)).
+shut down; the windows' reads run beside it ([windows.md](windows.md)). `StatusIcon` draws the
+status item, and `StatusSummary` and `UpdateProgress` word the menu: pure functions of decoded
+data the tests check without a process. Where the app looks for the CLI is [client.md](client.md).
 
 ## Where things live
 
@@ -24,9 +24,9 @@ process. Where the app looks for the CLI is the client's job ([client.md](client
 |------|------|
 | `macos/project.yml` | Targets, macOS 14 deployment, `LSUIElement`, hardened runtime without sandbox, team `6LH2JMGD3J`, `SKILLM_VERSION` |
 | `macos/scripts/build-cli.sh` | The build phase: universal, version-stamped, signed CLI into `Contents/Helpers` |
-| `macos/Skillm/SkillmApp.swift` | The `MenuBarExtra` scene, the status item's label, and the delegate: launch, quit |
-| `macos/Skillm/MenuContent.swift` | The menu: status lines, notice, activity, the commands, Stop, Quit |
-| `macos/SkillmKit/AppModel.swift` | App state and every command: launch, status, refresh, update, settings, cancel, shutdown |
+| `macos/Skillm/SkillmApp.swift` | The `MenuBarExtra`, window and `Settings` scenes, the status item's label, and the delegate |
+| `macos/Skillm/MenuContent.swift` | The menu: status lines, notice, activity, the commands, the windows, Stop, Quit |
+| `macos/SkillmKit/AppModel.swift` | App state and the one command: launch, status, refresh, update, settings, the windows' reads and changes, shutdown |
 | `macos/SkillmKit/RefreshScheduler.swift` | The launch, hourly and wake ticks |
 | `macos/SkillmKit/StatusIcon.swift` | The glyph, as a template, and the badged glyph with its red dot |
 | `macos/SkillmKit/StatusSummary.swift` | The status lines for the Refresh cache and the notice for an update's outcome |

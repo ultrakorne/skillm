@@ -64,12 +64,13 @@ nothing installed succeeds with no skills. With `--events`: a `batch` of the fin
 `item_start` as each skill's content is staged and an `item_done` coded `installed`,
 `install_blocked` or `install_failed`.
 
-Files skillm did not create fail the install with `foreign_files`, listing them in `paths`,
-before anything is written. The GUI asks the user, then retries with one of three answers:
-`--yes` overwrites the canonical copies listed; `--force` also takes over agent link paths held
-by another tool; `--skip-foreign` installs the rest and reports each left-out skill as `skipped`
-with an `install_blocked` warning. `--skip-foreign` together with `--yes` or `--force` is
-`usage`. Other refusals: `source_collision` (retry with `--as`), `as_multiple`,
+Files skillm did not create at the canonical slots fail the install with `foreign_files`, listing
+them in `paths`, before anything is written. The GUI asks, then retries the same command with
+`--yes` (overwrite the copies listed) or `--skip-foreign` (install the rest; each left-out skill
+is `skipped` with an `install_blocked` warning). An agent link path held by another tool is left
+alone and reported, once the copy landed, as a `link_refused` warning on the result, never with
+`foreign_files`; `--force` takes such links over as well. `--skip-foreign` together with `--yes`
+or `--force` is `usage`. Other refusals: `source_collision` (retry with `--as`), `as_multiple`,
 `local_scope_aliased` and `not_installed` for an unknown id.
 
 `--commit <sha>` installs from a git Source only if it is still at the commit `source inspect`
