@@ -287,4 +287,42 @@ final class AppModelTests: XCTestCase {
             ["config set refresh.enabled true --json", "config get --json", "refresh --if-due --json"])
         XCTAssertEqual(m.settings?.enabled, true)
     }
+
+    // MARK: - Upgrade and restart
+
+    func testLaunchStatusWithANewerSkillmAsksTheUpdater() async throws {
+        let m = model()
+        let updater = FakeUpdater()
+        m.upgrade.attach(updater)
+        await m.start()
+        await m.waitUntilIdle()
+        // status.json has a newer skillm; the tick's refresh.json has none.
+        XCTAssertEqual(updater.probes, 1)
+        XCTAssertFalse(m.upgrade.isAvailable)
+        m.upgrade.found(version: "0.5.0")
+        XCTAssertTrue(m.upgrade.isAvailable)
+    }
+
+    func testRelaunchWaitsForTheRunningCommandThenStartsNothing() async throws {
+        let m = model(["FAKE_SKILLM_HANG_ON": "refresh"])
+        await m.start()
+        try await eventually("the launch tick") { commands().last == "refresh --if-due --json" }
+        // Let the fake reach its traps.
+        try await Task.sleep(for: .milliseconds(300))
+        var relaunched = false
+        XCTAssertTrue(m.postponeRelaunch { relaunched = true })
+        XCTAssertFalse(relaunched, "relaunched while skillm runs")
+        try await eventually("the relaunch") { relaunched }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "relaunched before skillm exited")
+        XCTAssertFalse(m.hasRunningCommands)
+        XCTAssertNil(m.refresh(), "a command started after the relaunch began")
+    }
+
+    func testRelaunchWithNothingRunningGoesOnAtOnce() async throws {
+        let m = await started()
+        var relaunched = false
+        XCTAssertTrue(m.postponeRelaunch { relaunched = true })
+        try await eventually("the relaunch") { relaunched }
+        XCTAssertNil(m.updateAll(), "a command started after the relaunch began")
+    }
 }

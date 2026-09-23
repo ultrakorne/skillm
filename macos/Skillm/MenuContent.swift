@@ -66,6 +66,11 @@ struct MenuContent: View {
             Button(model.isStopping ? "Stopping…" : "Stop") { model.cancel() }
                 .disabled(model.isStopping)
         }
+        if model.upgrade.isAvailable {
+            // Sparkle's window shows the new version and installs it; the
+            // app waits for skillm to exit before it relaunches.
+            Button("Upgrade and restart") { model.upgrade.upgrade() }
+        }
         Divider()
         Button("View skills…") { show(WindowID.skills) }
         Button("Add skill…") { show(WindowID.addSkill) }

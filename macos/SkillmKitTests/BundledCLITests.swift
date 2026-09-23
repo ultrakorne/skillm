@@ -19,6 +19,26 @@ final class BundledCLITests: XCTestCase {
         return url
     }
 
+    /// The app built next to this test bundle embeds Sparkle, and its
+    /// Info.plist carries the updater's key (merged from Skillm/Info.plist).
+    /// A debug build names no feed, so it never updates itself.
+    func testAppEmbedsSparkleWithItsKey() throws {
+        let app = Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appending(path: "skillm.app")
+        guard let bundle = Bundle(url: app), let info = bundle.infoDictionary else {
+            throw XCTSkip("no app at \(app.path)")
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: app.appending(path: "Contents/Frameworks/Sparkle.framework").path))
+        var withFeed = info
+        withFeed["SUFeedURL"] = "https://example.com/appcast.xml"
+        XCTAssertNotNil(UpdateFeed(info: withFeed), "SUPublicEDKey: \(String(describing: info["SUPublicEDKey"]))")
+        XCTAssertEqual(info["SUEnableAutomaticChecks"] as? Bool, false)
+        if info["SUFeedURL"] as? String == "" {
+            XCTAssertNil(UpdateFeed(info: info), "a debug build updates itself")
+        }
+    }
+
     func testVersionAndStatus() async throws {
         let home = FileManager.default.temporaryDirectory.appending(path: "skillm-home-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }

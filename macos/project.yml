@@ -8,6 +8,14 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
 
+packages:
+  # The app's updater (C4): it replaces the whole bundle, the bundled CLI
+  # included. Pinned, since the generated project (and its Package.resolved)
+  # is not checked in.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
+
 settings:
   base:
     # Starberry Games GmbH; the app is signed with this team so it can be
@@ -28,6 +36,7 @@ targets:
     sources: [Skillm]
     dependencies:
       - target: SkillmKit
+      - package: Sparkle
     settings:
       base:
         PRODUCT_NAME: skillm
@@ -43,6 +52,20 @@ targets:
         # The version stamped into the bundled CLI (scripts/build-cli.sh);
         # a release build sets it to the release version.
         SKILLM_VERSION: dev
+        # Sparkle's keys (SUFeedURL, SUPublicEDKey) come from these two
+        # settings through Skillm/Info.plist, which is merged into the
+        # generated one. The appcast is uploaded to every GitHub release
+        # (C5); the public key is the one `generate_keys --account skillm`
+        # printed (its private key is in the release machine's keychain).
+        INFOPLIST_FILE: Skillm/Info.plist
+        SKILLM_UPDATE_FEED_URL: https://github.com/ultrakorne/skillm/releases/latest/download/appcast.xml
+        SKILLM_UPDATE_PUBLIC_KEY: uTHz68XFQQC6eZzgApyAH2h81t9nSgMxWLms3hxI4BE=
+      configs:
+        # A debug build never updates itself: that would replace the
+        # developer's build with the latest release. To try Sparkle, pass
+        # SKILLM_UPDATE_FEED_URL=<url> to xcodebuild.
+        Debug:
+          SKILLM_UPDATE_FEED_URL: ""
     postBuildScripts:
       - name: Embed skillm CLI
         script: '"$SRCROOT/scripts/build-cli.sh"'

@@ -58,8 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) lazy var skills = SkillsModel(app: model)
     private(set) lazy var addSkill = AddSkillModel(app: model)
     private(set) lazy var settings = SettingsModel(app: model)
+    /// Sparkle; nil in a build that does not update itself (a debug build).
+    private var updater: SparkleUpdater?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before the model starts, so the launch's status read can ask it.
+        updater = SparkleUpdater.start(model: model)
         Task { await model.start() }
     }
 

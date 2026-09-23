@@ -66,7 +66,11 @@ public final class AppModel {
     public private(set) var cli: CLIState = .starting
     /// The Refresh cache as `status`/`refresh` last reported it; nil until
     /// it was read once.
-    public private(set) var status: StatusData?
+    public private(set) var status: StatusData? {
+        didSet { upgrade.statusChanged(status) }
+    }
+    /// "Upgrade and restart": the app's updater and what it found.
+    public let upgrade = AppUpgrade()
     /// The refresh settings from config.toml; nil until read. Read again
     /// on every scheduled tick, so a `config set` in a terminal shows.
     public private(set) var settings: RefreshSettings?
@@ -303,6 +307,19 @@ public final class AppModel {
             await operation.value
         }
         for r in running { await r.done.value }
+    }
+
+    /// The app's updater is about to quit the app to install an update and
+    /// relaunch it. Always postpones: stops the schedule and interrupts the
+    /// running commands, as a quit does, then calls `relaunch` once every
+    /// skillm has exited. No command starts after this, so the updater's
+    /// own quit never meets a running one (see `AppDelegate.quit()`).
+    public func postponeRelaunch(_ relaunch: @escaping @MainActor () -> Void) -> Bool {
+        Task { @MainActor in
+            await self.shutdown()
+            relaunch()
+        }
+        return true
     }
 
     /// Returns when no command is running (including one a finished command
