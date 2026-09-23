@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -286,6 +287,29 @@ func TestDisableAgentUnlinksButKeepsHome(t *testing.T) {
 	assertResolvesGlobal(t, linkPath(t, codex, agentdir.Global, cwd, "beta"), "beta")
 }
 
+// TestDisableAgentRecordsScanFailure: an agent folder that cannot be read is
+// skipped with a scan_failed warning, which the change records as well.
+func TestDisableAgentRecordsScanFailure(t *testing.T) {
+	home := t.TempDir()
+	globalRoot := sandboxGlobalRoot(t)
+	cwd := t.TempDir()
+	claude, _ := testAgents(globalRoot)
+	// A file where claude's global skill folder should be cannot be listed.
+	if err := os.MkdirAll(filepath.Dir(claude.Global), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claude.Global, []byte("not a folder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := &recorder{}
+	change := disableAgent(rep, home, claude, &state.State{}, cwd)
+	ev := eventsWith(rep, CodeScanFailed)
+	if len(ev) != 1 || len(change.Warnings) != 1 || change.Warnings[0].Error() != ev[0].Text {
+		t.Fatalf("warnings = %v, scan_failed events = %+v; want one of each, same text", change.Warnings, ev)
+	}
+}
+
 // TestAgentSwapTransfersFootprint reproduces the one-shot swap (disable claude +
 // enable codex) at the helper level in the order SetAgents applies it — enable
 // pass first, then disable pass — proving codex inherits claude's footprint
@@ -342,7 +366,10 @@ func TestEnableSkipsForeignObstruction(t *testing.T) {
 	}
 
 	st := &state.State{LocalRoots: nil}
-	enableAgent(nil, home, codex, []agentdir.Agent{claude}, st, cwd)
+	change, _ := enableAgent(nil, home, codex, []agentdir.Agent{claude}, st, cwd)
+	if len(change.Warnings) != 1 || !errors.Is(change.Warnings[0], linker.ErrNotManaged) {
+		t.Fatalf("change warnings = %v, want the one refusal at %s", change.Warnings, obstruction)
+	}
 
 	// The obstruction is untouched (still a real directory with its file).
 	fi, err := os.Lstat(obstruction)

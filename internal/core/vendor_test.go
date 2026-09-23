@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
+	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -208,7 +210,7 @@ func TestLocalRemove(t *testing.T) {
 		t.Fatalf("seed install: %v", err)
 	}
 
-	removed, err := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local")
+	removed, _, err := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local")
 	if err != nil {
 		t.Fatalf("VendorRemove: %v", err)
 	}
@@ -222,7 +224,7 @@ func TestLocalRemove(t *testing.T) {
 		t.Fatalf("claude link should be gone; err = %v", err)
 	}
 	// Idempotent.
-	if again, _ := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local"); again {
+	if again, _, _ := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local"); again {
 		t.Fatal("second VendorRemove removed something")
 	}
 }
@@ -313,7 +315,7 @@ func TestVendorOneReportsLinks(t *testing.T) {
 
 	// A foreign file at claude's link path is refused (code link_refused);
 	// the "(pass --force …)" advice is the CLI's to add.
-	if _, err := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
+	if _, _, err := VendorRemove(nil, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
 		t.Fatalf("VendorRemove: %v", err)
 	}
 	if err := os.WriteFile(claudeLink(base), []byte("mine\n"), 0o644); err != nil {
@@ -358,7 +360,7 @@ func TestLinkAndUnlinkFailuresAreNotRefusals(t *testing.T) {
 		return
 	}
 	rep = &recorder{}
-	if _, err := VendorRemove(rep, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
+	if _, _, err := VendorRemove(rep, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
 		t.Fatalf("VendorRemove: %v", err)
 	}
 	if refused := eventsWith(rep, CodeUnlinkRefused); len(refused) != 0 {
@@ -386,8 +388,8 @@ func TestUnlinkRefusalIsReported(t *testing.T) {
 	}
 
 	rep := &recorder{}
-	if _, err := VendorRemove(rep, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
-		t.Fatalf("VendorRemove: %v", err)
+	if _, unlinkErr, err := VendorRemove(rep, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil || !errors.Is(unlinkErr, linker.ErrNotManaged) {
+		t.Fatalf("VendorRemove: unlinkErr = %v, err = %v; want the refusal as unlinkErr only", unlinkErr, err)
 	}
 	refused := eventsWith(rep, CodeUnlinkRefused)
 	want := "refusing to remove " + link + ": it is a file, not a skillm-managed link"

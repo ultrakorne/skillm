@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
@@ -32,9 +34,27 @@ type UninstalledSkill struct {
 	RemovedCopies []string
 	// Warnings are the removals that failed but did not stop the skill's
 	// uninstall: the failures Options.Force stepped past (the entry in the
-	// way is left in place) and the skills-lock.json entries that could not
-	// be removed. Each was also reported as a warning event.
+	// way is left in place), the Global agent links that could not be removed
+	// (such an entry stays in place, as before; it never blocks), and the
+	// skills-lock.json entries that could not be removed. Each was also
+	// reported as a warning event.
 	Warnings []error
+}
+
+// UninstallRequest is what Uninstall removes.
+type UninstallRequest struct {
+	// IDs are the skills to uninstall, in the order to report them.
+	IDs []string
+	// CheckRoots holds the uninstall to the projects the caller's
+	// confirmation named: when set, Uninstall refuses with an
+	// *UninstallScopeChangedError, before removing anything, if the skills
+	// now have Local installs (committed copies to delete) in a project not in
+	// ConfirmedRoots. Unset, every recorded project is cleared, as for a run
+	// that asked no question (--yes, --force, or off a terminal).
+	CheckRoots bool
+	// ConfirmedRoots are the project roots the confirmation named, as
+	// UninstallRoots returned them.
+	ConfirmedRoots []string
 }
 
 // UninstallResult is Uninstall's outcome: one entry per uninstalled skill, in
@@ -53,13 +73,33 @@ func (e *NotInstalledError) Error() string {
 	return fmt.Sprintf("not installed: %s; nothing to uninstall", strings.Join(e.IDs, ", "))
 }
 
+// UninstallScopeChangedError means the skills to uninstall now have Local
+// installs in projects the caller's confirmation did not name: another
+// process installed or adopted one while the question was open. Nothing was
+// removed. Roots is the full, sorted set of projects whose committed copies
+// the uninstall would now delete; once that list is confirmed, retrying with
+// it as UninstallRequest.ConfirmedRoots proceeds. It matches ErrNeedsConfirm.
+type UninstallScopeChangedError struct {
+	Roots []string
+}
+
+func (e *UninstallScopeChangedError) Error() string {
+	return "the projects whose committed copies would be deleted changed since the confirmation: " +
+		strings.Join(e.Roots, ", ")
+}
+
+// Unwrap lets errors.Is match ErrNeedsConfirm.
+func (e *UninstallScopeChangedError) Unwrap() error { return ErrNeedsConfirm }
+
 // UninstallBlockedError means removing part of skill ID's installs failed —
 // a link path holds an entry skillm did not create, or a removal hit an I/O
-// error — so its Registry entry was kept. It matches ErrNeedsConfirm: a retry
-// with Options.Force reports such failures as warnings, leaves the entries
-// in place and drops the Registry entry anyway. The skills before ID were
+// error — so its Registry entry was kept. The skills before ID were
 // uninstalled and saved, and ID's removals up to the failure stay done (an
-// uninstall is safe to repeat).
+// uninstall is safe to repeat). A retry with Options.Force reports such
+// failures as warnings, leaves the entries in place and drops the Registry
+// entry anyway. Only a foreign entry (Err matches linker.ErrNotManaged) makes
+// it match ErrNeedsForce; an I/O failure is a plain error, which Force still
+// steps past but which a caller should not offer "force" for.
 type UninstallBlockedError struct {
 	ID  string
 	Err error
@@ -68,9 +108,30 @@ type UninstallBlockedError struct {
 // Error is the underlying failure's text.
 func (e *UninstallBlockedError) Error() string { return e.Err.Error() }
 
-// Unwrap lets errors.Is match both ErrNeedsConfirm and the underlying error
-// (e.g. linker.ErrNotManaged).
-func (e *UninstallBlockedError) Unwrap() []error { return []error{ErrNeedsConfirm, e.Err} }
+// Unwrap lets errors.Is match the underlying error (e.g.
+// linker.ErrNotManaged) and, for a foreign entry, ErrNeedsForce.
+func (e *UninstallBlockedError) Unwrap() []error {
+	if errors.Is(e.Err, linker.ErrNotManaged) {
+		return []error{ErrNeedsForce, e.Err}
+	}
+	return []error{e.Err}
+}
+
+// UninstallRoots returns the sorted, de-duplicated project roots where any of
+// ids has a Local install in st: the projects whose committed copies an
+// uninstall of ids deletes, which its confirmation names.
+func UninstallRoots(st *state.State, ids []string) []string {
+	var roots []string
+	for _, id := range ids {
+		for _, d := range st.VendoredRoots(id) {
+			if !slices.Contains(roots, d) {
+				roots = append(roots, d)
+			}
+		}
+	}
+	sort.Strings(roots)
+	return roots
+}
 
 // CheckInstalled returns a *NotInstalledError naming every id in ids that is
 // not in st's Registry, or nil when all are.
@@ -87,7 +148,7 @@ func CheckInstalled(st *state.State, ids []string) error {
 	return nil
 }
 
-// Uninstall removes each skill in ids entirely: its Global install (agent
+// Uninstall removes each skill in req.IDs entirely: its Global install (agent
 // links and the ~/.agents/skills copy) and its Local installs in every
 // recorded project (agent links, canonical copy and skills-lock.json entry),
 // sweeping every defined agent (enabled or not, so nothing is left dangling),
@@ -96,12 +157,15 @@ func CheckInstalled(st *state.State, ids []string) error {
 // local root that no longer holds anything is forgotten.
 //
 // The caller holds Home's lock for the whole call and has already confirmed
-// the removal with the user; Uninstall re-reads config and the Registry, and
-// an id that is not installed (any more) is a *NotInstalledError before
-// anything is removed. A removal failure is an *UninstallBlockedError unless
-// opts.Force is set. Options.Cwd labels the report lines and is scanned for
+// the removal with the user; Uninstall re-reads config and the Registry. Before
+// anything is removed, an id that is not installed (any more) is a
+// *NotInstalledError, and with req.CheckRoots a project the confirmation did
+// not name is an *UninstallScopeChangedError. A removal failure is an
+// *UninstallBlockedError unless opts.Force is set. A cancelled ctx stops the
+// batch between skills with ctx's error; the skills already done are in the
+// result and saved. Options.Cwd labels the report lines and is scanned for
 // stray links as well.
-func Uninstall(ctx context.Context, opts Options, rep Reporter, ids []string) (UninstallResult, error) {
+func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallRequest) (UninstallResult, error) {
 	rep = nopIfNil(rep)
 	var res UninstallResult
 	cfg, err := config.Load(opts.Home)
@@ -112,8 +176,17 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, ids []string) (U
 	if err != nil {
 		return res, err
 	}
+	ids := req.IDs
 	if err := CheckInstalled(st, ids); err != nil {
 		return res, err
+	}
+	if req.CheckRoots {
+		roots := UninstallRoots(st, ids)
+		for _, r := range roots {
+			if !slices.Contains(req.ConfirmedRoots, r) {
+				return res, &UninstallScopeChangedError{Roots: roots}
+			}
+		}
 	}
 
 	// Clear links for EVERY defined agent (not just the enabled ones): a link
@@ -178,7 +251,12 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 	// edit the user's git working tree; the caller's confirmation already
 	// named those directories. A missing copy (project moved/deleted) is
 	// silently skipped.
-	removedGlobal, err := VendorRemove(rep, home, id, agents, agentdir.Global, cwd, st.IsGlobal(id), agentdir.Global.String())
+	removedGlobal, unlinkErr, err := VendorRemove(rep, home, id, agents, agentdir.Global, cwd, st.IsGlobal(id), agentdir.Global.String())
+	if unlinkErr != nil {
+		// Nothing revisits the global link paths, so a link left behind is
+		// recorded here. It never blocked the uninstall, and still does not.
+		done.Warnings = append(done.Warnings, unlinkErr)
+	}
 	if err != nil {
 		if err := blocked(CodeRemoveFailed, err); err != nil {
 			return done, err
@@ -193,7 +271,9 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 	for _, dir := range st.VendoredRoots(id) {
 		localAgents, _ := SplitLocalAliased(agents, dir)
 		label := ScopeLabel(agentdir.Local, dir, cwd)
-		removed, err := VendorRemove(rep, home, id, localAgents, agentdir.Local, dir, true, label)
+		// An unlink failure here is not recorded: the sweep below revisits
+		// the same link paths and blocks (or, under Force, warns) on it.
+		removed, _, err := VendorRemove(rep, home, id, localAgents, agentdir.Local, dir, true, label)
 		if err != nil {
 			if err := blocked(CodeRemoveFailed, err); err != nil {
 				return done, err

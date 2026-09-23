@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -70,25 +69,46 @@ func runUninstall(ctx context.Context, args []string, all bool) error {
 	// One confirmation covers the whole batch. As with the rest of skillm, the
 	// prompt only appears on a TTY; a non-interactive run proceeds (pass --yes
 	// to be explicit), so scripts are not blocked. The prompt names any project
-	// where committed copies will be deleted, since that edits the user's repo.
-	if ui.IsTTY() && !opts.Yes && !opts.Force {
-		ok, err := ui.Confirm(confirmUninstallPrompt(ids, vendoredDirsForIDs(st, ids)))
-		if err != nil {
-			return err
+	// where committed copies will be deleted, since that edits the user's repo,
+	// and core holds the uninstall to exactly those projects: if another
+	// process added one while the question was open, the lock is released and
+	// the question asked again with the new list.
+	req := core.UninstallRequest{IDs: ids}
+	ask := ui.IsTTY() && !opts.Yes && !opts.Force
+	roots := core.UninstallRoots(st, ids)
+	for {
+		if ask {
+			ok, err := ui.Confirm(confirmUninstallPrompt(ids, roots))
+			if err != nil {
+				return err
+			}
+			if !ok {
+				ui.Warnf("aborted; nothing was removed")
+				return nil
+			}
+			req.CheckRoots, req.ConfirmedRoots = true, roots
 		}
-		if !ok {
-			ui.Warnf("aborted; nothing was removed")
-			return nil
+		res, err := uninstallLocked(ctx, opts, req)
+		var changed *core.UninstallScopeChangedError
+		if ask && errors.As(err, &changed) {
+			roots = changed.Roots
+			continue
 		}
-	}
-
-	unlock, err := lockHome(ctx, opts.Home, "skillm uninstall")
-	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("uninstall interrupted; %d of %d skills removed", len(res.Skills), len(ids))
+		}
 		return err
 	}
+}
+
+// uninstallLocked runs core.Uninstall under Home's lock.
+func uninstallLocked(ctx context.Context, opts core.Options, req core.UninstallRequest) (core.UninstallResult, error) {
+	unlock, err := lockHome(ctx, opts.Home, "skillm uninstall")
+	if err != nil {
+		return core.UninstallResult{}, err
+	}
 	defer unlock()
-	_, err = core.Uninstall(ctx, opts, termLog, ids)
-	return err
+	return core.Uninstall(ctx, opts, termLog, req)
 }
 
 // selectUninstallIDs resolves which skills `uninstall` should act on. Explicit
@@ -130,24 +150,6 @@ func selectUninstallIDs(st *state.State, args []string, all bool) ([]string, err
 		return nil, nil
 	}
 	return ids, nil
-}
-
-// vendoredDirsForIDs returns the sorted, de-duplicated set of project roots
-// where any of the named skills has a Vendored copy — the directories an
-// uninstall will delete committed files from, named in the confirmation.
-func vendoredDirsForIDs(st *state.State, ids []string) []string {
-	seen := make(map[string]bool)
-	var dirs []string
-	for _, id := range ids {
-		for _, d := range st.VendoredRoots(id) {
-			if !seen[d] {
-				seen[d] = true
-				dirs = append(dirs, d)
-			}
-		}
-	}
-	sort.Strings(dirs)
-	return dirs
 }
 
 // confirmUninstallPrompt builds the single confirmation shown before a batch

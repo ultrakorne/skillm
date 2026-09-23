@@ -215,9 +215,10 @@ func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, sc
 // the canonical slot itself, and — when removeCopy is true, i.e. the install
 // is recorded so the directory there is skillm's own — the copy. Foreign
 // entries are never touched (a refusal is reported as unlink_refused, an I/O
-// failure as unlink_failed); a missing copy is a no-op. It returns whether a
-// copy was removed.
-func VendorRemove(rep Reporter, home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string, removeCopy bool, label string) (removedCopy bool, err error) {
+// failure as unlink_failed) and also returned as unlinkErr, which does not
+// stop the removal; a missing copy is a no-op. It returns whether a copy was
+// removed, and err when removing the canonical slot failed.
+func VendorRemove(rep Reporter, home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string, removeCopy bool, label string) (removedCopy bool, unlinkErr, err error) {
 	rep = nopIfNil(rep)
 	res, lerr := linker.Unlink(home, id, agents, scope, base)
 	if lerr != nil {
@@ -237,7 +238,7 @@ func VendorRemove(rep Reporter, home, id string, agents []agentdir.Agent, scope 
 	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 	kind, _, cerr := linker.Classify(home, slot)
 	if cerr != nil {
-		return false, cerr
+		return false, lerr, cerr
 	}
 	switch kind {
 	case linker.TargetOurLink:
@@ -245,19 +246,19 @@ func VendorRemove(rep Reporter, home, id string, agents []agentdir.Agent, scope 
 		// Home: it is skillm's, and Unlink skipped it (the canonical agent
 		// holds no separate link), so clear it here.
 		if rerr := os.Remove(slot); rerr != nil && !os.IsNotExist(rerr) {
-			return false, fmt.Errorf("remove legacy symlink %s: %w", slot, rerr)
+			return false, lerr, fmt.Errorf("remove legacy symlink %s: %w", slot, rerr)
 		}
-		return false, nil
+		return false, lerr, nil
 	case linker.TargetDir:
 		if !removeCopy {
-			return false, nil
+			return false, lerr, nil
 		}
 		if rerr := os.RemoveAll(slot); rerr != nil {
-			return false, fmt.Errorf("remove copy %s: %w", slot, rerr)
+			return false, lerr, fmt.Errorf("remove copy %s: %w", slot, rerr)
 		}
-		return true, nil
+		return true, lerr, nil
 	}
-	return false, nil
+	return false, lerr, nil
 }
 
 // RefreshCopy overwrites the canonical copy at target from src when it is due:

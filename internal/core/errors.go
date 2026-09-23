@@ -21,9 +21,18 @@ func (e *ForeignFilesError) Error() string {
 	return "refusing to overwrite files skillm did not create: " + strings.Join(e.Paths, ", ")
 }
 
-// ErrNeedsConfirm means an operation needs the caller's confirmation before
-// it changes anything; retrying with Options.Yes (or Options.Force) confirms.
+// ErrNeedsConfirm means an operation stopped before changing anything because
+// it needs the caller's (fresh) confirmation. The matching error's type says
+// what to confirm and how the retry carries the answer: for
+// *UninstallScopeChangedError, the new ConfirmedRoots.
 var ErrNeedsConfirm = errors.New("confirmation required")
+
+// ErrNeedsForce means an operation stopped at an entry skillm did not create
+// (a foreign file or symlink where it would remove or write). Unlike
+// ErrNeedsConfirm it may come after partial progress; the matching error's
+// type says what is already done. Options.Yes does not step past it: a retry
+// with Options.Force does, leaving the foreign entry in place.
+var ErrNeedsForce = errors.New("blocked by an entry skillm did not create")
 
 // SourceCollisionError means skill ID is already installed from a different
 // Source, so installing this one under the same id would replace an unrelated

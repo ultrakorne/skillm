@@ -76,6 +76,11 @@ type AgentChange struct {
 	// Places label where that happened: "global", "local" (Options.Cwd) or
 	// "local: <root>".
 	Places []string
+	// Warnings are the spots the sweep skipped: a link that could not be
+	// created (link_skipped for a foreign entry in the way, link_failed) or
+	// removed (unlink_refused, unlink_failed), and an agent folder that could
+	// not be read (scan_failed). Each was also reported as a warning event.
+	Warnings []error
 }
 
 // AgentsResult is SetAgents' outcome.
@@ -250,6 +255,7 @@ func enableAgent(rep Reporter, home string, a agentdir.Agent, beforeEnabled []ag
 	skills := map[string]bool{}
 	stateChanged := false
 	var places []string
+	var warnings []error
 
 	warn := func(id string, err error) {
 		code := CodeLinkFailed
@@ -257,6 +263,7 @@ func enableAgent(rep Reporter, home string, a agentdir.Agent, beforeEnabled []ag
 			code = CodeLinkSkipped
 		}
 		rep.Event(logEvent(LevelWarn, id, code, err.Error()))
+		warnings = append(warnings, err)
 	}
 
 	linkAt := func(scope agentdir.Scope, base string) {
@@ -349,7 +356,7 @@ func enableAgent(rep Reporter, home string, a agentdir.Agent, beforeEnabled []ag
 		}
 	}
 
-	change := AgentChange{Name: a.Name, Enabled: true, Skills: sortedKeys(skills), Places: dedupe(places)}
+	change := AgentChange{Name: a.Name, Enabled: true, Skills: sortedKeys(skills), Places: dedupe(places), Warnings: warnings}
 	if len(skills) == 0 {
 		rep.Event(Event{Type: EventLog, Level: LevelSuccess, Code: CodeAgentEnabledEmpty,
 			Text: fmt.Sprintf("enabled %s — nothing to install yet", a.Name)})
@@ -371,12 +378,14 @@ func disableAgent(rep Reporter, home string, a agentdir.Agent, st *state.State, 
 	one := []agentdir.Agent{a}
 	skills := map[string]bool{}
 	var places []string
+	var warnings []error
 
 	unlinkAt := func(scope agentdir.Scope, base string) {
 		infos, err := linker.ScanAll(home, one, scope, base)
 		if err != nil {
-			rep.Event(Event{Type: EventLog, Level: LevelWarn, Code: CodeScanFailed,
-				Text: fmt.Sprintf("scan %s (%s): %v", a.Name, ScopeLabel(scope, base, cwd), err)})
+			err = fmt.Errorf("scan %s (%s): %w", a.Name, ScopeLabel(scope, base, cwd), err)
+			rep.Event(Event{Type: EventLog, Level: LevelWarn, Code: CodeScanFailed, Text: err.Error()})
+			warnings = append(warnings, err)
 			return
 		}
 		got := false
@@ -388,6 +397,7 @@ func disableAgent(rep Reporter, home string, a agentdir.Agent, st *state.State, 
 					code = CodeUnlinkRefused
 				}
 				rep.Event(logEvent(LevelWarn, li.ID, code, err.Error()))
+				warnings = append(warnings, err)
 			}
 			for _, ar := range res.Agents {
 				if ar.Action == linker.ActionRemoved {
@@ -428,7 +438,7 @@ func disableAgent(rep Reporter, home string, a agentdir.Agent, st *state.State, 
 			Text: fmt.Sprintf("global copies in %s stay in place", CanonicalDisplay(agentdir.Global))})
 	}
 
-	change := AgentChange{Name: a.Name, Enabled: false, Skills: sortedKeys(skills), Places: dedupe(places)}
+	change := AgentChange{Name: a.Name, Enabled: false, Skills: sortedKeys(skills), Places: dedupe(places), Warnings: warnings}
 	text := fmt.Sprintf("disabled %s — nothing to remove", a.Name)
 	if len(skills) > 0 {
 		text = fmt.Sprintf("disabled %s — removed %d skill%s (%s)", a.Name, len(skills), plural(len(skills)), strings.Join(change.Places, ", "))

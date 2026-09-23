@@ -185,18 +185,24 @@ func uninstallFixture(t *testing.T) (home, cwd, foreign string) {
 }
 
 // TestUninstallBlockedNeedsForce: a foreign entry at a link path stops the
-// uninstall with an error that matches ErrNeedsConfirm (and the refusal),
-// keeping the Registry entry; with Force it is a warning, the entry stays on
-// disk, and the skill is uninstalled.
+// uninstall with an error that matches ErrNeedsForce (and the refusal), not
+// ErrNeedsConfirm, keeping the Registry entry; Yes does not step past it. With
+// Force it is a warning, the entry stays on disk, and the skill is
+// uninstalled.
 func TestUninstallBlockedNeedsForce(t *testing.T) {
 	home, cwd, foreign := uninstallFixture(t)
 	ctx := context.Background()
+	req := UninstallRequest{IDs: []string{"alpha"}}
 
-	_, err := Uninstall(ctx, Options{Home: home, Cwd: cwd}, nil, []string{"alpha"})
-	var blocked *UninstallBlockedError
-	if !errors.As(err, &blocked) || blocked.ID != "alpha" || !errors.Is(err, ErrNeedsConfirm) || !errors.Is(err, linker.ErrNotManaged) {
-		t.Fatalf("err = %v, want an *UninstallBlockedError for alpha matching ErrNeedsConfirm and ErrNotManaged", err)
+	for _, opts := range []Options{{Home: home, Cwd: cwd}, {Home: home, Cwd: cwd, Yes: true}} {
+		_, err := Uninstall(ctx, opts, nil, req)
+		var blocked *UninstallBlockedError
+		if !errors.As(err, &blocked) || blocked.ID != "alpha" || !errors.Is(err, ErrNeedsForce) ||
+			errors.Is(err, ErrNeedsConfirm) || !errors.Is(err, linker.ErrNotManaged) {
+			t.Fatalf("Yes=%v: err = %v, want an *UninstallBlockedError for alpha matching ErrNeedsForce and ErrNotManaged only", opts.Yes, err)
+		}
 	}
+	_, err := Uninstall(ctx, Options{Home: home, Cwd: cwd}, nil, req)
 	if !strings.HasPrefix(err.Error(), "refusing to remove "+foreign) {
 		t.Fatalf("err text = %q, want the linker's refusal", err.Error())
 	}
@@ -206,7 +212,7 @@ func TestUninstallBlockedNeedsForce(t *testing.T) {
 	}
 
 	rep := &recorder{}
-	res, err := Uninstall(ctx, Options{Home: home, Cwd: cwd, Force: true}, rep, []string{"alpha"})
+	res, err := Uninstall(ctx, Options{Home: home, Cwd: cwd, Force: true}, rep, req)
 	if err != nil {
 		t.Fatalf("forced Uninstall: %v", err)
 	}
@@ -235,7 +241,7 @@ func TestUninstallBlockedNeedsForce(t *testing.T) {
 // before anything is removed.
 func TestUninstallNotInstalled(t *testing.T) {
 	home, cwd, _ := uninstallFixture(t)
-	_, err := Uninstall(context.Background(), Options{Home: home, Cwd: cwd, Force: true}, nil, []string{"alpha", "nope"})
+	_, err := Uninstall(context.Background(), Options{Home: home, Cwd: cwd, Force: true}, nil, UninstallRequest{IDs: []string{"alpha", "nope"}})
 	var missing *NotInstalledError
 	if !errors.As(err, &missing) || strings.Join(missing.IDs, ",") != "nope" {
 		t.Fatalf("err = %v, want *NotInstalledError naming nope", err)
@@ -245,5 +251,105 @@ func TestUninstallNotInstalled(t *testing.T) {
 	}
 	if !CopyExists(home, "alpha", agentdir.Global, "") {
 		t.Fatal("alpha's copy was removed although the call failed")
+	}
+}
+
+// TestUninstallIOFailureIsNotNeedsForce: a blocked uninstall whose cause is
+// an I/O failure, not a foreign entry, is a plain error: it matches neither
+// ErrNeedsForce nor ErrNeedsConfirm, only its cause.
+func TestUninstallIOFailureIsNotNeedsForce(t *testing.T) {
+	cause := os.ErrPermission
+	err := error(&UninstallBlockedError{ID: "alpha", Err: cause})
+	if errors.Is(err, ErrNeedsForce) || errors.Is(err, ErrNeedsConfirm) || !errors.Is(err, cause) {
+		t.Fatalf("err = %v matches the wrong sentinels", err)
+	}
+}
+
+// localInstallFixture registers skill alpha with a Local install (committed
+// copy and claude link) in each of projects, and returns Home and cwd.
+func localInstallFixture(t *testing.T, projects ...string) (home, cwd string) {
+	t.Helper()
+	home, claude, _ := agentsHome(t)
+	cwd = t.TempDir()
+	for _, p := range projects {
+		mustLink(t, home, "alpha", claude, agentdir.Local, p)
+	}
+	st := &state.State{LocalRoots: projects}
+	st.Upsert(state.SkillEntry{ID: "alpha", Kind: state.KindLocal, Source: t.TempDir(), VendoredAt: projects})
+	if err := state.Save(home, st); err != nil {
+		t.Fatal(err)
+	}
+	return home, cwd
+}
+
+// TestUninstallScopeChanged: a project that gained a Local install after the
+// confirmation (here: the Registry now records B, the confirmation named only
+// A) stops the uninstall before anything is removed, naming the new set; a
+// retry that confirms it proceeds.
+func TestUninstallScopeChanged(t *testing.T) {
+	projA, projB := t.TempDir(), t.TempDir()
+	home, cwd := localInstallFixture(t, projA, projB)
+	opts := Options{Home: home, Cwd: cwd}
+	req := UninstallRequest{IDs: []string{"alpha"}, CheckRoots: true, ConfirmedRoots: []string{projA}}
+
+	_, err := Uninstall(context.Background(), opts, nil, req)
+	var changed *UninstallScopeChangedError
+	if !errors.As(err, &changed) || !errors.Is(err, ErrNeedsConfirm) {
+		t.Fatalf("err = %v, want an *UninstallScopeChangedError matching ErrNeedsConfirm", err)
+	}
+	want := UninstallRoots(&state.State{Skills: []state.SkillEntry{{ID: "alpha", VendoredAt: []string{projA, projB}}}}, []string{"alpha"})
+	if strings.Join(changed.Roots, ",") != strings.Join(want, ",") {
+		t.Fatalf("roots = %v, want %v", changed.Roots, want)
+	}
+	for _, p := range []string{projA, projB} {
+		if !CopyExists(home, "alpha", agentdir.Local, p) {
+			t.Fatalf("the copy in %s was removed although the scope changed", p)
+		}
+	}
+
+	req.ConfirmedRoots = changed.Roots
+	res, err := Uninstall(context.Background(), opts, nil, req)
+	if err != nil {
+		t.Fatalf("confirmed retry: %v", err)
+	}
+	if len(res.Skills) != 1 || len(res.Skills[0].RemovedCopies) != 2 {
+		t.Fatalf("result = %+v, want both copies removed", res)
+	}
+	for _, p := range []string{projA, projB} {
+		if CopyExists(home, "alpha", agentdir.Local, p) {
+			t.Fatalf("the copy in %s was not removed", p)
+		}
+	}
+}
+
+// TestUninstallRecordsGlobalUnlinkWarning: an entry skillm did not create at
+// an agent's global link path does not block the uninstall (it never did),
+// but is left in place and recorded in the skill's Warnings.
+func TestUninstallRecordsGlobalUnlinkWarning(t *testing.T) {
+	home, claude, codex := agentsHome(t)
+	cwd := t.TempDir()
+	mustLink(t, home, "alpha", claude, agentdir.Global, cwd)
+	foreign := linkPath(t, codex, agentdir.Global, cwd, "alpha")
+	if err := os.MkdirAll(filepath.Dir(foreign), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(foreign, []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := &state.State{}
+	st.Upsert(state.SkillEntry{ID: "alpha", Kind: state.KindLocal, Source: t.TempDir(), Global: true})
+	if err := state.Save(home, st); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Uninstall(context.Background(), Options{Home: home, Cwd: cwd}, nil, UninstallRequest{IDs: []string{"alpha"}})
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if len(res.Skills) != 1 || len(res.Skills[0].Warnings) != 1 || !errors.Is(res.Skills[0].Warnings[0], linker.ErrNotManaged) {
+		t.Fatalf("result = %+v, want alpha with the refusal at %s as its warning", res, foreign)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("the foreign file was touched: %v", err)
 	}
 }
