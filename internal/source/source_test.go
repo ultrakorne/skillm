@@ -3,6 +3,7 @@ package source
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"testing"
 )
@@ -298,6 +299,77 @@ func TestDiscoverSkills_Many(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
+	}
+}
+
+// A repo that ships one skill per agent (as pbakaus/impeccable does) commits a
+// copy of the same skill under every agent folder; discovery must report it
+// once, from the conventional location, not once per copy.
+func TestDiscoverSkills_DedupesPerAgentCopies(t *testing.T) {
+	cases := []struct {
+		name    string
+		dirs    []string
+		wantDir string
+	}{
+		{
+			name: "agents folder wins over agent-specific copies",
+			dirs: []string{
+				".agents/skills/impeccable",
+				".claude/skills/impeccable",
+				".cursor/skills/impeccable",
+				"cursor-plugin/skills/impeccable",
+				"plugin/skills/impeccable",
+				"tests/ws/.claude/skills/impeccable",
+			},
+			wantDir: ".agents/skills/impeccable",
+		},
+		{
+			name: "top-level skills folder wins over agents folder",
+			dirs: []string{
+				".agents/skills/impeccable",
+				".claude/skills/impeccable",
+				"skills/impeccable",
+			},
+			wantDir: "skills/impeccable",
+		},
+		{
+			name: "shallowest wins without a conventional folder",
+			dirs: []string{
+				"a/b/impeccable",
+				"z/impeccable",
+			},
+			wantDir: "z/impeccable",
+		},
+		{
+			name: "walk order breaks a tie",
+			dirs: []string{
+				"plugin/skills/impeccable",
+				"cursor-plugin/skills/impeccable",
+			},
+			wantDir: "cursor-plugin/skills/impeccable",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, d := range tc.dirs {
+				writeSkill(t, filepath.Join(root, filepath.FromSlash(d)), "impeccable")
+			}
+			writeSkill(t, filepath.Join(root, "other"), "other")
+
+			found, err := DiscoverSkills(root)
+			if err != nil {
+				t.Fatalf("DiscoverSkills: %v", err)
+			}
+			if got, want := ids(found), []string{"impeccable", "other"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("ids = %v, want %v", got, want)
+			}
+			for _, f := range found {
+				if f.Id == "impeccable" && f.Dir != filepath.Join(root, filepath.FromSlash(tc.wantDir)) {
+					t.Errorf("Dir = %q, want %q", f.Dir, tc.wantDir)
+				}
+			}
+		})
 	}
 }
 
