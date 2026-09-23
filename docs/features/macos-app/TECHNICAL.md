@@ -86,5 +86,5 @@ row `error` or `untracked` is a problem line, never counted as current.
 
 ### The bundled CLI's version comes from a build setting
 
-`build-cli.sh` stamps `SKILLM_VERSION` as `.goreleaser.yaml` does. A release sets it and
-`MARKETING_VERSION` (the bundle version follows it) from the tag; a Release build at `dev` warns.
+`build-cli.sh` stamps `SKILLM_VERSION` as `.goreleaser.yaml` does; `release.sh` sets it and
+`MARKETING_VERSION` from the tag ([release.md](release.md)); a Release build at `dev` warns.

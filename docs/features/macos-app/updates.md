@@ -7,7 +7,7 @@ included (the CLI's own `skillm upgrade` refuses inside a bundle). Sparkle never
 own: the app asks it after a Refresh that found a newer skillm, and the menu's **Upgrade and
 restart** item appears once Sparkle has found the update, then opens Sparkle's standard window,
 which installs it and relaunches the app. It is documented apart because it ties the app to the
-release pipeline: the appcast, its signing key and the bundle version.
+release pipeline ([release.md](release.md)): the appcast, its signing key and the bundle version.
 
 ## Where things live
 
@@ -72,7 +72,8 @@ which settings a debug build needs to try Sparkle.
 
 The appcast is `releases/latest/download/appcast.xml` of the GitHub repository, so every release
 must upload one. The public key in `project.yml` is the one `generate_keys --account skillm`
-printed; its private key stays in the release machine's login keychain.
+printed; its private key stays in the release Mac's login keychain and, for CI, in the
+`SPARKLE_ED_PRIVATE_KEY` secret. Losing it means no signed update reaches installed apps.
 
 ## Integration
 

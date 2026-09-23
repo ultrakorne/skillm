@@ -8,5 +8,5 @@ The macOS menu bar app (`macos/`) is a thin SwiftUI view over skillm: it carries
 | [TECHNICAL.md](TECHNICAL.md) | The XcodeGen targets, the model and its scheduler, the badge icon, quitting, where things live |
 | [windows.md](windows.md) | The Skills, Add Skill and Settings windows: their questions, Start at login, the command-line tool |
 | [updates.md](updates.md) | Upgrade and restart: Sparkle, when it is asked, the postponed relaunch, the feed, key and bundle version |
-| [client.md](client.md) | How the client runs, cancels and decodes skillm, and where it finds the CLI and git |
-| [FLOW.mermaid](FLOW.mermaid) | Cancelling a command: SIGINT, the `cancelled` answer, and the grace before SIGTERM |
+| [release.md](release.md) | The release pipeline: the local script and CI job that sign, notarize and upload the app and its appcast |
+| [client.md](client.md) | How the client runs, cancels ([FLOW.mermaid](FLOW.mermaid): SIGINT, `cancelled`, the grace before SIGTERM) and decodes skillm, and where it finds the CLI and git |
