@@ -4,7 +4,7 @@
 ## Features
 | Feature | Description |
 |---------|-------------|
-| [Core](features/core/INDEX.md) | The commands, Home persistence, atomic saves and the cross-process Home lock |
+| [Core](features/core/INDEX.md) | The commands, inspect-then-install, Home persistence, atomic saves and the cross-process Home lock |
 
 ## Quick Links
 - [CONTEXT.md](CONTEXT.md) — ubiquitous language (read first)

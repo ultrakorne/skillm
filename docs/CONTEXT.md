@@ -39,8 +39,15 @@ shorthand** (the form `npx skills add` takes — and the form the Lockfile recor
 GitHub HTTPS source, so both tools read the same identity). A shorthand is expanded to its
 HTTPS clone URL, so `owner/repo` and `https://github.com/owner/repo` are one Source; being
 path-shaped too, it loses to an existing local directory of that name. Also supported: a
-**local path** to a skill directory. A Source is remembered for every installed skill so it
-can be re-checked and updated.
+**local path** to a skill directory, recorded as its absolute directory however it was typed.
+A Source is remembered for every installed skill so it can be re-checked and updated.
+
+### Inspection
+A Source read once, ahead of an Install: a git repository cloned and pinned to one commit, or a
+local directory, together with the skills found in it (Skill ID, name, description, location).
+Inspecting prompts for nothing and installs nothing; an Install from it copies exactly the
+inspected commit, while the recorded ref stays the branch or tag so Update keeps following it.
+_Avoid_: preview
 
 ### Skill ID
 The stable name used to refer to and select a skill — by convention its directory name
@@ -123,11 +130,11 @@ a chosen Scope and link each Enabled agent's skill folder to it. Install is the 
 point — there is no separate fetch-into-a-library step. It always targets **every Enabled
 agent** at the chosen Scope (there is no per-command agent choice), and a single Install command
 applies one Scope to every skill it acts on. The first argument may be a **Source** (a git repo
-or local path) — skillm fetches it (treelessly for git), lets the user pick which skills when
-it is a catalog of several, and installs the result straight into the chosen Scope — or a bare
-**Skill ID** of an already-installed skill, to add another Scope/project. Installing a bare id
-copies the skill from its existing Global Canonical copy when there is one (no network),
-otherwise re-fetches it from its recorded Source@ref (which may advance the recorded Revision).
+or local path) — skillm takes an **Inspection** of it (treelessly for git), lets the user pick
+which skills when it is a catalog of several, and installs the inspected content straight into
+the chosen Scope — or a bare **Skill ID** of an already-installed skill, to add another
+Scope/project. Installing a bare id copies the skill from its existing Global Canonical copy
+when there is one (no network), otherwise re-fetches it from its recorded Source@ref (which may advance the recorded Revision).
 Installing from the **same** Source refreshes the skill to the freshly fetched content; the
 same Skill ID arriving from a **different** Source is a collision the user resolves by renaming.
 A skill installed **only globally** is globally active — that is the accepted meaning of a
@@ -221,8 +228,9 @@ lockfiles alone cannot provide.
 ### Home lock
 The exclusive, cross-process lock on Home that serializes skillm processes. Every command that
 changes Config, the Registry or any install (Install, Update, Uninstall, Import, and enabling
-or disabling agents) holds it for its whole run, from reading Home to its last save; List,
-Check and Upgrade take none. A command that finds Home locked waits for the holder, then gives
+or disabling agents) holds it from reading Home to its last save; Install takes its Inspection
+and asks its questions before locking, then re-reads Home under the lock. List, Check and
+Upgrade take none. A command that finds Home locked waits for the holder, then gives
 up after a bounded wait with an error naming the holding command. Readers need no lock because
 every save of `config.toml` and `state.toml` replaces the file in one step.
 _Avoid_: Lockfile (that is the per-project `skills-lock.json`)

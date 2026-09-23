@@ -11,7 +11,7 @@ script running in the background) and must never corrupt Home or each other's in
 
 | Command | Changes Home and installs | Holds the Home lock |
 |---------|---------------------------|---------------------|
-| `install` | yes | yes |
+| `install` | yes | yes, while it writes |
 | `update` | yes | yes |
 | `uninstall` | yes | yes |
 | `import` | yes | yes |
@@ -25,6 +25,11 @@ script running in the background) and must never corrupt Home or each other's in
 
 - **A changing command** — takes the Home lock, reads Config and the Registry, does its work
   (fetching, prompting, writing copies and links), saves, and releases the lock when it ends.
+- **Installing from a Source** — skillm reads the Source and asks which skills and where before
+  it takes the Home lock; an overwrite question is also asked with Home free. Once locked, it
+  re-reads Home and re-checks the choice, then installs exactly the commit it read.
+- **A relative local path** — `skillm install ./skills/foo` records the directory's absolute
+  path, so `update` finds the source from any directory.
 - **Home is busy** — the second command prints `waiting for another skillm operation (pid …:
   skillm install) to finish…`, runs as soon as the first ends, or gives up after 30 seconds
   with an error naming the holder. Ctrl-C stops the wait.
@@ -39,9 +44,15 @@ script running in the background) and must never corrupt Home or each other's in
 
 ## Decisions
 
-- **One lock for the whole command, not per file** — a command reads, decides and writes
+- **One lock over read, decide and write, not per file** — a command reads, decides and writes
   across Config, the Registry, Canonical copies and Lockfiles; locking only the saves would
   still let two commands act on the same stale read.
+- **Install asks before it locks** — a question can stay open indefinitely, and holding Home
+  through it would make every other command wait and then fail. Re-reading Home under the
+  lock keeps the decision fresh.
+- **A relative path is resolved where the user typed it, then recorded absolute** — a GUI
+  runs from `/`, so the caller always names the directory to resolve against, and the
+  recorded Source then works from anywhere.
 - **Read-only commands take no lock** — every save replaces its file in one step, so readers
   are safe without waiting, and `list`/`check` stay instant while a long update runs.
 - **Wait, then fail with a name** — a bounded wait keeps scripts from hanging forever, and

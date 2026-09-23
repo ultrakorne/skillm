@@ -9,7 +9,8 @@ entry in step (`internal/core/locksync.go`), and deciding Source identity
 (`internal/core/source.go`). They are presentation-free: each reports what it did as a log
 Event with a stable `Code` and a human `Text`, and returns its failures. The commands keep the
 loops, prompts and Home lock, and pass `termLog` (`cmd/reporter.go`), which prints each Text
-through the `ui` helper for its level the moment it is reported.
+through the `ui` helper for its level the moment it is reported. A Text never names a CLI flag:
+`termLog` appends the `--force` advice for the codes a flag resolves.
 
 ## Noteworthy
 
