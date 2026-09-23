@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -107,11 +108,43 @@ func Load(homeDir string) (*Config, error) {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
 
-	var c Config
-	if err := toml.Unmarshal(data, &c); err != nil {
+	var f fileConfig
+	if err := toml.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	return &c, nil
+	return &Config{Agents: f.Agents, Refresh: decodeRefresh(f.Refresh)}, nil
+}
+
+// fileConfig is the shape Load decodes: Config, except that the [refresh]
+// table is read loosely (see decodeRefresh), so a hand edit that gives a
+// setting the wrong type cannot make every command fail, including the
+// `skillm config set` that would repair it.
+type fileConfig struct {
+	Agents  map[string]AgentDef `toml:"agents"`
+	Refresh any                 `toml:"refresh"`
+}
+
+// decodeRefresh builds the [refresh] table from its loosely decoded form. A
+// key holding a value of the wrong type (interval_hours = "12" or 1.5,
+// enabled = "yes") counts as absent and so reads as its default; the next
+// Save writes the typed value back. A missing or non-table [refresh] is nil.
+func decodeRefresh(v any) *Refresh {
+	t, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	r := &Refresh{}
+	if b, ok := t["enabled"].(bool); ok {
+		r.Enabled = boolPtr(b)
+	}
+	if h, ok := t["interval_hours"].(int64); ok {
+		// Out-of-int-range values fall back to the default like any other
+		// out-of-bounds hand edit (see RefreshIntervalHours).
+		if h >= math.MinInt32 && h <= math.MaxInt32 {
+			r.IntervalHours = intPtr(int(h))
+		}
+	}
+	return r
 }
 
 // Save writes c to the config file in homeDir, creating homeDir if necessary.

@@ -62,8 +62,13 @@ func TestJSONSourceInspectThenInstall(t *testing.T) {
 		t.Fatalf("a commit_mismatch install wrote beta: %v", err)
 	}
 
-	// --commit needs a git Source.
+	// --commit needs a git Source and a commit SHA; a malformed value is a
+	// usage error, not a commit_mismatch that would send a GUI re-inspecting.
 	for _, args := range [][]string{
+		{"install", url, "alpha", "--commit", "main", "--global", "--json"},
+		{"install", url, "alpha", "--commit", "abc", "--global", "--json"},
+		{"install", url, "alpha", "--commit", "  " + insp.Commit[:8], "--global", "--json"},
+		{"install", url, "alpha", "--commit", insp.Commit[:8] + "XYZ", "--global", "--json"},
 		{"install", "alpha", "--commit", head, "--global", "--json"},
 		{"install", filepath.Join(repo, "gamma"), "gamma", "--commit", head, "--global", "--json"},
 	} {
@@ -253,7 +258,7 @@ func TestJSONConfigGetSet(t *testing.T) {
 // help, so JSON mode refuses it; the new commands are capabilities.
 func TestJSONGroupCommandsRefused(t *testing.T) {
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
-	for _, args := range [][]string{{"source", "--json"}, {"config", "--json"}, {"agent", "--json"}} {
+	for _, args := range [][]string{{"source", "--json"}, {"config", "--json"}, {"agent", "--json"}, {"completion", "--json"}} {
 		if perr := e.jsonFail(t, e.userDir, args...); perr.Code != protocol.CodeJSONUnsupported {
 			t.Errorf("skillm %v = %+v, want json_unsupported", args, perr)
 		}

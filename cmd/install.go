@@ -119,6 +119,11 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 	if installFlagSkipForeign && (flagYes || flagForce) {
 		return usageError("pass either --skip-foreign or --yes/--force, not both")
 	}
+	// A malformed --commit is the caller's mistake, not a Source that moved:
+	// refuse it before any clone rather than report commit_mismatch after one.
+	if installFlagCommit != "" && !core.IsCommitSHA(installFlagCommit) {
+		return usageError("--commit needs a commit SHA (7 to 64 hex characters, as `source inspect` reported it)")
+	}
 	if flagJSON {
 		// JSON mode never prompts, so it needs everything a question would
 		// have asked for.

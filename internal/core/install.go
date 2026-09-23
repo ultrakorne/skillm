@@ -314,7 +314,8 @@ func ValidateIDSelection(opts Options, ids []string) error {
 
 // CheckCommit reports a *CommitMismatchError when want is set and the
 // Inspection is not pinned to it (want may be an abbreviated SHA of at least
-// 7 characters), and an error when want is set for a local Source. It is the
+// 7 characters), and a plain error when want is not a commit SHA at all (see
+// IsCommitSHA) or is set for a local Source. It is the
 // check InstallSkills makes for InstallRequest.Commit, for a caller that
 // wants to fail before asking any question.
 func (i *Inspection) CheckCommit(want string) error { return checkCommit(i, want) }
@@ -327,10 +328,29 @@ func checkCommit(insp *Inspection, want string) error {
 	if insp.Kind != state.KindGit {
 		return errors.New("an expected commit applies only when installing from a git source")
 	}
-	if len(want) < 7 || !strings.HasPrefix(insp.Commit, strings.ToLower(want)) {
+	if !IsCommitSHA(want) {
+		// Not a mismatch: no inspection could ever match it, so reporting
+		// "the source changed" would send a caller round a re-inspect loop.
+		return fmt.Errorf("expected commit %q is not a commit SHA (7 to 64 hex characters)", want)
+	}
+	if !strings.HasPrefix(insp.Commit, strings.ToLower(want)) {
 		return &CommitMismatchError{Want: want, Got: insp.Commit}
 	}
 	return nil
+}
+
+// IsCommitSHA reports whether s is a full or abbreviated commit SHA as an
+// expected commit accepts it: 7 to 64 hex characters, nothing else.
+func IsCommitSHA(s string) bool {
+	if len(s) < 7 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
 
 // planSource resolves the selected inspected skills to install items with

@@ -168,6 +168,17 @@ func runAgentSet(ctx context.Context, enable, disable []string) error {
 			before = append(before, a.Name)
 		}
 	}
+	// A change that would leave no agent enabled is refused before the
+	// confirmation, as the picker refuses an empty selection; core re-checks
+	// it under the lock.
+	if !slices.ContainsFunc(append(slices.Clone(before), enable...), func(n string) bool {
+		return !slices.Contains(disable, n)
+	}) {
+		if flagJSON {
+			return core.ErrNoAgentEnabled
+		}
+		return errNoAgentEnabled
+	}
 	// Only a disable of an agent enabled now removes links, so only that asks.
 	var removing []string
 	for _, n := range disable {

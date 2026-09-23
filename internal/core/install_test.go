@@ -480,6 +480,14 @@ func TestInstallExpectedCommit(t *testing.T) {
 		t.Fatalf("nothing may be installed on a commit mismatch: %v", err)
 	}
 
+	// A value that is no commit SHA is a plain error, never a mismatch.
+	for _, bad := range []string{"main", insp.Commit[:6], " " + insp.Commit[:8], insp.Commit[:8] + "XYZ"} {
+		req.Commit = bad
+		if _, err := InstallSkills(context.Background(), opts, nil, req); err == nil || errors.As(err, &mismatch) {
+			t.Fatalf("commit %q: err = %v, want a plain error", bad, err)
+		}
+	}
+
 	req.Commit = insp.Commit[:7]
 	if _, err := InstallSkills(context.Background(), opts, nil, req); err != nil {
 		t.Fatalf("abbreviated matching commit: %v", err)

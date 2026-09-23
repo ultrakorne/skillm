@@ -122,3 +122,61 @@ func TestRefreshIntervalOutOfRange(t *testing.T) {
 		}
 	}
 }
+
+// A hand edit that gives a [refresh] key the wrong type does not break Load
+// (and so every command): the key reads as its default, and the next Set and
+// Save writes a valid file.
+func TestRefreshWrongTypeReadsAsDefault(t *testing.T) {
+	agents := "[agents.claude]\nenabled = true\nglobal = \"~/.claude/skills\"\nlocal = \".claude/skills\"\n"
+	cases := map[string]string{
+		"interval string": "[refresh]\nenabled = false\ninterval_hours = \"12\"\n",
+		"interval float":  "[refresh]\nenabled = false\ninterval_hours = 1.5\n",
+		"enabled string":  "[refresh]\nenabled = \"yes\"\ninterval_hours = 6\n",
+		"refresh scalar":  "refresh = 5\n",
+	}
+	for name, refresh := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.WriteFile(Path(home), []byte(refresh+agents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			c, err := Load(home)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if _, ok := c.Agents["claude"]; !ok {
+				t.Fatalf("agents lost: %+v", c.Agents)
+			}
+			switch name {
+			case "enabled string":
+				if !c.RefreshEnabled() || c.RefreshIntervalHours() != 6 {
+					t.Fatalf("got %v, %d; want true (default), 6", c.RefreshEnabled(), c.RefreshIntervalHours())
+				}
+			case "refresh scalar":
+				if !c.RefreshEnabled() || c.RefreshIntervalHours() != 24 {
+					t.Fatalf("got %v, %d; want defaults", c.RefreshEnabled(), c.RefreshIntervalHours())
+				}
+			default:
+				if c.RefreshEnabled() || c.RefreshIntervalHours() != 24 {
+					t.Fatalf("got %v, %d; want false, 24 (default)", c.RefreshEnabled(), c.RefreshIntervalHours())
+				}
+			}
+			if err := c.Set(KeyRefreshIntervalHours, "12"); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Set(KeyRefreshEnabled, "true"); err != nil {
+				t.Fatal(err)
+			}
+			if err := Save(home, c); err != nil {
+				t.Fatal(err)
+			}
+			again, err := Load(home)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if !again.RefreshEnabled() || again.RefreshIntervalHours() != 12 {
+				t.Fatalf("after Set+Save got %v, %d; want true, 12", again.RefreshEnabled(), again.RefreshIntervalHours())
+			}
+		})
+	}
+}
