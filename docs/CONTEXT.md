@@ -116,6 +116,13 @@ is still skillm-managed: skillm records which installs hold one (in the Registry
 roots per skill, and the Global flag) so Update can refresh it and Uninstall can clear it. A
 Local copy and a Global install can coexist for the same skill.
 
+### Foreign entry
+A file, directory or link at a path skillm would write (a canonical slot or an agent's link
+path) that skillm did not create: a skill copied in by hand or by another tool. skillm never
+overwrites one silently; the user overwrites it (**yes**, canonical slots only), takes it over
+(**force**, link paths too) or skips that skill (**skip foreign**).
+_Avoid_: conflict, unmanaged file
+
 ### Lockfile
 `skills-lock.json` at a project root — the committable, per-project record of where each
 locally installed skill came from (source, ref, path of its `SKILL.md`) and a content hash of
@@ -145,8 +152,8 @@ folders for skillm-owned symlinks, so they never drift; only the Canonical copie
 (in the Registry), and a skill's Registry entry is written the moment its first install lands.
 An Install at either Scope is a **Canonical copy** plus agent Links (a Local one adds a Lockfile
 entry); re-installing over a recorded copy refreshes it in place, a legacy absolute symlink into
-the old Home skills subtree at the canonical slot is converted to a copy, and skillm refuses to
-overwrite files it did not create unless forced.
+the old Home skills subtree at the canonical slot is converted to a copy, and a **Foreign
+entry** in the way stops the install until the user decides what to do with it.
 
 ### Uninstall
 Remove a skill entirely. Uninstall removes the skill's Global install (agent links and the
@@ -156,8 +163,9 @@ the confirmation names those projects) — the only copies there are — sweepin
 Scope across all defined Agents (even ones now disabled, so nothing is left dangling), then
 drops its Registry entry. There is **no per-scope uninstall**: it always clears every reference.
 Safe by default — on a terminal it confirms first (skip with `--yes`/`--force`), and asks again
-if another process added a project to delete from while the question was open. Acts on one or
-more named skills, or interactively on a multiselect of every installed skill.
+if another process added a project to delete from while the question was open; a GUI asks its
+own question and names the projects it confirmed. Acts on one or more named skills, or
+interactively on a multiselect of every installed skill.
 
 ### Import
 Adopt a project's **Lockfile** into skillm's tracking — the bridge from a repo someone else
@@ -225,7 +233,9 @@ immediately rather than only affecting future installs.
 ### JSON mode
 A run of a skillm command with `--json`: stdout carries only protocol output (one **Envelope**,
 or an **Event stream** with `--events`), and skillm never prompts or draws terminal UI. Only
-commands that declare a JSON mode accept it; the rest refuse with `json_unsupported`.
+commands that declare a JSON mode accept it; the rest refuse with `json_unsupported`. A
+question the terminal would ask becomes a flag the run must carry, or a refusal whose error
+code tells the GUI what to ask before running the command again with the answer.
 _Avoid_: machine mode, API mode
 
 ### Envelope

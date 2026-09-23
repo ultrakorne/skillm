@@ -20,8 +20,16 @@ The question names every project whose committed copies the uninstall deletes
 `*UninstallScopeChangedError` before removing anything when the skills now have Local installs
 in a project the confirmation did not name, because another process installed or adopted one
 while the question was open. `cmd` releases the lock, asks again with the new list and
-retries. A run that asked nothing (`--yes`, `--force`, no terminal) clears every recorded
-project.
+retries. A caller that asked its own question passes the projects it named with
+`--confirmed-root`, which sets both fields. A run that asked nothing (`--yes`, `--force`, no
+terminal, and no `--confirmed-root`) clears every recorded project.
+
+### Missing ids refuse the batch, unless the caller asks to skip them
+
+An id that is not installed (any more) is a `*NotInstalledError` before anything is removed, so a
+typo removes nothing. With `UninstallRequest.SkipMissing`, which JSON mode sets, each such id is
+a `not_installed` warning instead and the rest are removed, so a batch that stopped part-way can
+be retried with the same ids.
 
 ### `ErrNeedsConfirm` and `ErrNeedsForce` mean different retries
 

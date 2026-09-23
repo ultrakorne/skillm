@@ -20,36 +20,38 @@ question or read terminal text where it expects JSON.
 | Exit code | 0 on success, non-zero on error; the error envelope still goes to stdout and stderr stays empty |
 | Encoding | `snake_case` keys; times are RFC 3339 in UTC, whole seconds |
 
-Error codes are stable: a code is never renamed or given a second meaning. `version`, `list`
-and `check` can fail with `usage` (a bad command line), `json_unsupported`, `git_missing`,
-`cancelled` (retryable), and `error` for anything without a more specific code (a broken
-`config.toml`, say). The code table also covers every typed error of the changing commands (`home_locked`,
-`foreign_files`, `needs_force`, `needs_confirm`, …); see [TECHNICAL.md](TECHNICAL.md).
+Error codes are stable: a code is never renamed or given a second meaning. Every command can
+fail with `usage` (a bad command line, including a flag JSON mode requires), `json_unsupported`,
+`git_missing`, `cancelled` (retryable), `home_locked` (retryable, changing commands only) and
+`error` for anything without a more specific code (a broken `config.toml`, say). The codes a
+changing command adds, and the retry each one calls for, are listed per command.
 
 ## Commands
 
-### `version`
+| Command | Returns | Refusals the GUI answers |
+|---------|---------|--------------------------|
+| `version` | CLI version, `api_version`, `capabilities` | — |
+| `list` | Every skill and its installs, offline | — |
+| `check` | Each skill's upstream status and the update count | — |
+| `install` | The scope and what happened to each skill | `foreign_files` → retry with `--yes`, `--force` or `--skip-foreign` |
+| `update` | Each skill's outcome and the adoption sweep's imports | `update_failed` (the others were written) |
+| `import` | The project's Lockfile entries and what happened to each | — |
+| `uninstall` | Each removed skill's deleted copies | `needs_confirm` → confirm the new projects; `needs_force` → retry with `--force` |
+| `upgrade` | The Self status (`--check`), or what was replaced | `managed_by_app` → use the app's Upgrade |
 
-`{version, api_version, capabilities}`. `api_version` is the command-and-data contract a GUI
-was built against; a GUI refuses a CLI whose `api_version` it does not know. `capabilities` lists
-the commands with a JSON mode plus `events`, so a GUI can hide a control the CLI cannot serve.
-It works without git on the PATH, so a GUI can run it before anything else.
+[commands.md](commands.md) has each command's arguments, data, event stream and error codes.
 
-### `list`
+## Flows
 
-`{skills: [...]}` in Registry order, offline. Each skill carries its id, kind (`git`/`local`),
-Source, subpath, the Source as the CLI shows it, ref, Revision and install time, and its
-installs: scope, project root (Local only), the Canonical copy's path, the enabled agents it
-serves, whether the Registry records it, and whether that recorded copy is on disk.
-
-### `check`
-
-`{skills: [...], updates}`: each skill's status (`up_to_date`, `update_available`, `untracked`,
-`local` or `error`), its installed and upstream Revision, and the lookup failure behind
-`untracked`/`error`; `updates` counts `update_available`. A skill that could not be checked is
-an `error` row, not a failed command. With `--events`, one row per skill streams as it resolves.
-A cancelled run fails with `cancelled` and returns no partial data. SIGINT is the cancel signal:
-a GUI cancels by sending it. SIGTERM is not handled and kills the process with no result line.
+- **Answering a refusal** — a changing command that would have asked the user fails instead,
+  before it changes anything, with a code and the facts the question needs (`paths` of the
+  foreign files, or of the projects to confirm). The GUI asks, then runs the same command again
+  with the flag that carries the answer.
+- **Retrying after a stop part-way** — an uninstall stopped by a blocked entry or by
+  cancellation is run again with the same ids; the skills it already removed are skipped with a
+  warning.
+- **Cancelling** — SIGINT is the cancel signal: the run fails with `cancelled` and no partial
+  data. SIGTERM is not handled and kills the process with no result line.
 
 ## Decisions
 
@@ -59,6 +61,9 @@ a GUI cancels by sending it. SIGTERM is not handled and kills the process with n
   `api_version` changes when a command's arguments or data break, so the two evolve apart.
 - **Opt-in per command** — `--json` on a command without a JSON mode fails loudly rather than
   printing terminal output a GUI would misread.
+- **A question becomes a flag, never a default** — JSON mode refuses a missing scope or
+  confirmation with `usage` instead of picking one, so a GUI bug can never install into the
+  wrong place or delete a project's committed copies unasked.
 - **Git stays quiet** — a JSON run asks git for no credentials and runs ssh in batch mode, so an
   expired token shows as a check `error`, never as a process waiting on an invisible prompt.
 - **Waiting for Home is an event** — the "waiting for …" notice becomes an info event

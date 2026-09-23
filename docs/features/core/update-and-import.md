@@ -49,9 +49,17 @@ next update retries the stale installs because their content no longer matches u
 ### One save after every skill; failures come back afterwards
 
 Update saves the Registry once, after every skill is written, so a failure part-way keeps the
-Revisions already advanced. Failed skills come back as `*UpdateFailedError` after the others
-are written. Only enabled agents get their links remade: a disabled agent's links stay gone.
-With `Force`, every surviving install is relinked.
+Revisions already advanced. Failed skills come back as `*UpdateFailedError`, with their ids,
+after the others are written; each is also a log Event naming it (`update_failed` for a failed
+fetch, `update_skipped` for one changed meanwhile), which the terminal drops for a fetch whose
+row already shows the error. Only enabled agents get their links remade: a disabled agent's
+links stay gone. With `Force`, every surviving install is relinked.
+
+### Import refuses a missing directory, not a missing Lockfile
+
+A directory without `skills-lock.json` imports nothing and succeeds with 0 entries. A
+directory that is missing or is a file is a `*ProjectDirError`, because a stale or mistyped path
+must not read as an empty project.
 
 ### Import decides twice and fetches once
 

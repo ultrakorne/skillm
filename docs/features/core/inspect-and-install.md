@@ -33,8 +33,17 @@ writing, so `cmd` reports them before asking where to install.
 `Options.Force` overwrites foreign canonical slots and takes over foreign agent link paths.
 `Options.Yes`, the terminal's "yes" to the overwrite question, overwrites the canonical slots
 only, because the question never listed link paths. `InstallRequest.SkipForeign`, the "no",
-installs the rest and reports each skipped skill as `install_blocked`. See
-[install-primitives.md](install-primitives.md) for the underlying `force`/`forceLinks` split.
+installs the rest and reports each skipped skill as `install_blocked`; the CLI spells it
+`--skip-foreign` and refuses it together with `--yes` or `--force`, which would overwrite what it
+leaves alone. See [install-primitives.md](install-primitives.md) for the underlying
+`force`/`forceLinks` split.
+
+### Items are reported only once the batch is accepted
+
+`InstallSkills` reports its `batch` (the final ids, after `--as`) only after every selection
+check and the foreign-entry check pass, so a refused install streams no items. Each skill then
+gets an `item_start` as its content is staged and one `item_done`: `installed`,
+`install_blocked`, or `install_failed`, after which the install stops.
 
 ### `install` asks before it locks
 
@@ -50,7 +59,10 @@ Every relative path is resolved against `Options.Cwd` through `core.ResolvePath`
 `internal/core/arch_test.go` forbids `os.Getwd` and `filepath.Abs` in core. With no `Cwd`, a
 relative Source (a local directory or a git repository path) is refused, and id mode refuses a
 local skill whose recorded source is relative. A GUI runs with cwd `/`, where an implicit
-lookup would silently resolve to the wrong place.
+lookup would silently resolve to the wrong place. `cmd` needs the working directory only for
+`--local`, the scope question, a relative `--project` or a relative Source, so a run naming its
+target absolutely (`--global`, or `--project` with an absolute path) works without one.
+`--project` must name an existing directory, so a typo never starts a project somewhere new.
 
 ### A local Source is recorded absolute
 
