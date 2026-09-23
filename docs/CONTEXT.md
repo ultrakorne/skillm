@@ -220,6 +220,31 @@ Enabled set is changed interactively via `skillm agent` (a multiselect over the 
 agents); changing it Enables or Disables the affected agents, reconciling their Links
 immediately rather than only affecting future installs.
 
+## JSON protocol
+
+### JSON mode
+A run of a skillm command with `--json`: stdout carries only protocol output (one **Envelope**,
+or an **Event stream** with `--events`), and skillm never prompts or draws terminal UI. Only
+commands that declare a JSON mode accept it; the rest refuse with `json_unsupported`.
+_Avoid_: machine mode, API mode
+
+### Envelope
+The one JSON document that is a command's outcome in JSON mode: its data on success or its
+error (a stable **error code**, a message and whether a plain retry may succeed) on failure,
+plus the warnings it reported either way. A failed command still writes one.
+_Avoid_: response, payload
+
+### Event stream
+The NDJSON form of JSON mode (`--events`): one line per core event as the work happens, ending
+in exactly one line that holds the Envelope.
+_Avoid_: progress feed
+
+### API version
+The number `skillm version --json` reports for the commands' arguments and data; a GUI refuses a
+CLI whose API version it does not know. Distinct from the **schema version** every document and
+event line carries, which covers only the Envelope and event-line shape. The **capabilities**
+reported alongside it name the commands that have a JSON mode.
+
 ## Persistence
 
 ### Config

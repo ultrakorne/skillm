@@ -40,6 +40,8 @@ meaningful only for a recorded install (always false otherwise).
 ## Integration
 
 `cmd/check.go` and `cmd/list.go` build `core.Options` through `coreOptions` in
-`cmd/reporter.go`; `check` renders through `termReporter` and `list` prints one table.
+`cmd/reporter.go`; `check` renders through `termReporter` and `list` prints one table. With
+`--json` both write their typed result through `internal/protocol` instead
+([json-api](../json-api/TECHNICAL.md)).
 `cmd/golden_test.go` pins the printed output, `internal/core/check_test.go` and
 `internal/core/list_test.go` the typed results, and `internal/gitx/gitx_test.go` the cancelled clone against a stalled HTTP server.

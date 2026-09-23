@@ -15,8 +15,9 @@ Links, Lockfile entries, Source identity; see [install-primitives.md](install-pr
 `check` and `list` call `core.Check` and `core.List`, which read Home with no lock. Every core
 operation takes a `core.Options` and reports through a `Reporter`'s `Event`: `cmd`'s
 `termReporter` turns Events into the terminal checklist (`check`, and `update`'s fetches with a
-progress bar) and the `ui` print helpers, and `termLog` prints log Events. Prompts and every
-other presentation concern stay in `cmd`: `internal/core` imports neither `internal/ui` nor
+progress bar) and the `ui` print helpers, and `termLog` prints log Events; with `--json` the
+Reporter is the protocol writer ([json-api](../json-api/TECHNICAL.md)). Prompts and every other
+presentation concern stay in `cmd`: `internal/core` imports neither `internal/ui` nor
 cobra/bubbletea/huh/lipgloss, never touches the standard streams, and never reads the process
 working directory (`os.Getwd` or `filepath.Abs`); it resolves relative paths against
 `Options.Cwd`. `internal/core/arch_test.go` enforces all of it.
@@ -85,6 +86,4 @@ caller holds the Home lock.
 ### Sub-component rules live on topic pages
 
 Each core operation's result semantics, refusals and cancellation rules live on its own page,
-listed in [INDEX.md](INDEX.md): check and list, the install primitives, inspect and install,
-update and import, uninstall and agents, and self-upgrade (the Upgrade method and the app-bundle
-guard).
+listed in [INDEX.md](INDEX.md), from check and list through self-upgrade and the bundle guard.

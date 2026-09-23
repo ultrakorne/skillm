@@ -5,8 +5,8 @@
 | Feature | Description |
 |---------|-------------|
 | [Core](features/core/INDEX.md) | The commands, inspect-then-install, self-upgrade, Home persistence, atomic saves and the cross-process Home lock |
+| [JSON API](features/json-api/INDEX.md) | `--json`/`--events`: the machine-readable protocol GUIs run skillm through |
 
 ## Quick Links
 - [CONTEXT.md](CONTEXT.md) — ubiquitous language (read first)
-- [vercel-skills-comparison.md](vercel-skills-comparison.md) — comparison with vercel-labs/skills and the interop decisions
-- [known-issues.md](known-issues.md) — confirmed defects that are deferred, including a plaintext credential leak into `state.toml`
+- [vercel-skills-comparison.md](vercel-skills-comparison.md) — comparison with vercel-labs/skills and the interop decisions; [known-issues.md](known-issues.md) — deferred defects, including a plaintext credential leak into `state.toml`

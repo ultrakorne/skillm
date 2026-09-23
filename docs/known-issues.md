@@ -42,6 +42,8 @@ Consequences, all confirmed in code:
   world-readable (`internal/state/state.go`).
 - `core.SourceLabel` (`internal/core/check.go`) renders `e.Source` as the Source column, so
   `skillm list` **prints the token** to the terminal, into scrollback, and into any CI log.
+  `skillm list --json` hands it to the GUI too, in both `source` and `source_label`
+  (`internal/protocol/data.go`).
 - `update`, `check` and a re-fetch by Skill ID hand `e.Source` back to `gitx.TreelessClone`
   (`internal/core/update.go`, `internal/core/check.go`, `core.RefetchSkill` in
   `internal/core/source.go`), so the stored credential keeps being used.

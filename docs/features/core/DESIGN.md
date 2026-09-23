@@ -16,7 +16,7 @@ and must never corrupt Home or each other's installs.
 | `uninstall` | yes | yes, while it writes |
 | `import` | yes | yes, while it writes |
 | `agent` | yes | yes, while it writes |
-| `list`, `check` | no | no |
+| `list`, `check`, `version` | no | no |
 | `upgrade` | no (replaces the skillm binary only) | no |
 
 `--home` or `$SKILLM_HOME` points any command at a different Home; the default is `~/.skillm`.
