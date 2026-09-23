@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "data": {
+    "source": "/Users/me/skills/notes",
+    "kind": "local",
+    "skills": [
+      {
+        "id": "notes",
+        "name": "notes",
+        "description": "Take notes",
+        "path": "/Users/me/skills/notes"
+      }
+    ]
+  },
+  "warnings": [],
+  "error": null
+}

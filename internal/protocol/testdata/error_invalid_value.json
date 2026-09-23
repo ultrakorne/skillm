@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "data": null,
+  "warnings": [],
+  "error": {
+    "code": "invalid_value",
+    "message": "invalid value \"0\" for refresh.interval_hours: want a whole number of hours from 1 to 720",
+    "retryable": false
+  }
+}

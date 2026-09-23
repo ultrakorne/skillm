@@ -5,7 +5,8 @@
 // Home is created (see EnsureExists); when the file is absent, callers get
 // those same defaults rather than an error, so "what is written" equals "what
 // you fall back to". skillm otherwise avoids rewriting the file — only
-// `skillm agent` does, to toggle the per-agent enabled flags.
+// `skillm agent` (the per-agent enabled flags) and `skillm config set` (the
+// settings in settings.go) do, and each rewrites the whole file.
 package config
 
 import (
@@ -53,13 +54,18 @@ type Config struct {
 	// Agents is the set of defined agents keyed by name (the [agents.<name>]
 	// tables in config.toml).
 	Agents map[string]AgentDef `toml:"agents"`
+	// Refresh is the [refresh] table: the GUIs' scheduled update check. Nil
+	// (or a missing key) means the default (see RefreshEnabled and
+	// RefreshIntervalHours).
+	Refresh *Refresh `toml:"refresh,omitempty"`
 }
 
 // boolPtr returns a pointer to b, for setting AgentDef.Enabled.
 func boolPtr(b bool) *bool { return &b }
 
 // Default returns a freshly allocated Config holding skillm's built-in
-// defaults, both enabled: "claude", which reads its own ~/.claude/skills
+// defaults: two agents, both enabled, and the default [refresh] settings.
+// The agents are "claude", which reads its own ~/.claude/skills
 // folders, and "agents", which points at the cross-agent .agents/skills
 // convention read by Codex, Cursor, Amp, Gemini CLI and others (Codex does
 // not read .codex/skills). That entry is named for the folder rather than any
@@ -71,6 +77,10 @@ func Default() *Config {
 		Agents: map[string]AgentDef{
 			"claude": {Enabled: boolPtr(true), Global: "~/.claude/skills", Local: ".claude/skills"},
 			"agents": {Enabled: boolPtr(true), Global: "~/.agents/skills", Local: ".agents/skills"},
+		},
+		Refresh: &Refresh{
+			Enabled:       boolPtr(DefaultRefreshEnabled),
+			IntervalHours: intPtr(DefaultRefreshIntervalHours),
 		},
 	}
 }
@@ -107,7 +117,7 @@ func Load(homeDir string) (*Config, error) {
 // Save writes c to the config file in homeDir, creating homeDir if necessary.
 // It writes the whole file (overwriting any existing one and dropping any
 // hand-written comments), so callers should only invoke it in response to an
-// explicit user action such as `skillm agent`.
+// explicit user action such as `skillm agent` or `skillm config set`.
 func Save(homeDir string, c *Config) error {
 	if c == nil {
 		return errors.New("config: cannot save nil config")

@@ -52,8 +52,9 @@ func Execute(ctx context.Context) error {
 
 // refuseTerminalOnly refuses, in JSON mode, the invocations cobra answers
 // itself before any hook runs, with terminal output on stdout and exit 0:
-// --help/-h anywhere before "--", and no subcommand at all (bare `skillm
-// --json`, `skillm --version --json`). A command line cobra cannot resolve is
+// --help/-h anywhere before "--", and a command that only groups others
+// (bare `skillm --json`, `skillm --version --json`, `skillm config --json`),
+// for which cobra prints its help. A command line cobra cannot resolve is
 // left to cobra, which reports it as a usage error.
 func refuseTerminalOnly(args []string) error {
 	for _, a := range args {
@@ -64,10 +65,10 @@ func refuseTerminalOnly(args []string) error {
 			return &protocol.Error{Code: protocol.CodeJSONUnsupported, Message: "--help has no JSON mode"}
 		}
 	}
-	if c, _, err := rootCmd.Find(args); err == nil && c == rootCmd {
+	if c, _, err := rootCmd.Find(args); err == nil && !c.Runnable() {
 		return &protocol.Error{
 			Code:    protocol.CodeJSONUnsupported,
-			Message: "`" + rootCmd.Name() + "` has no JSON mode; name a command",
+			Message: "`" + c.CommandPath() + "` has no JSON mode; name a command",
 		}
 	}
 	return nil

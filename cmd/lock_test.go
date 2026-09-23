@@ -90,7 +90,10 @@ func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 		"agent": func(t *testing.T) error {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("USERPROFILE", t.TempDir())
-			return setAgents(context.Background(), nil, []string{"claude"})
+			return runAgentSet(context.Background(), nil, []string{"claude"})
+		},
+		"config set": func(*testing.T) error {
+			return runConfigSet(context.Background(), "refresh.enabled", "false")
 		},
 	}
 	const hold = 300 * time.Millisecond
@@ -108,8 +111,10 @@ func TestMutatingCommandsWaitForHomeLock(t *testing.T) {
 // Read-only commands take no lock, so a long-running mutation never blocks them.
 func TestReadOnlyCommandsIgnoreHomeLock(t *testing.T) {
 	cmds := map[string]func() error{
-		"list":  runList,
-		"check": func() error { return runCheck(context.Background()) },
+		"list":       runList,
+		"check":      func() error { return runCheck(context.Background()) },
+		"agent ls":   runAgentLs,
+		"config get": func() error { return runConfigGet(nil) },
 	}
 	const hold = 5 * time.Second
 	for name, run := range cmds {

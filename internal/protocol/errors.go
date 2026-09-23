@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/store"
 )
@@ -70,6 +71,12 @@ const (
 	CodeSourceBuild = "source_build"
 	// CodeNoUpgrade: skillm is already the latest release.
 	CodeNoUpgrade = "no_upgrade"
+	// CodeUnknownKey: `config get/set` was given a setting key it does not
+	// know (the message lists the known keys).
+	CodeUnknownKey = "unknown_key"
+	// CodeInvalidValue: `config set` was given a value its key does not
+	// accept; nothing was written.
+	CodeInvalidValue = "invalid_value"
 )
 
 // ErrorFrom maps err to its protocol Error: an *Error is returned as is, a
@@ -95,6 +102,8 @@ func ErrorFrom(err error) *Error {
 		updFailed *core.UpdateFailedError
 		badAgent  *core.UnknownAgentError
 		dirErr    *core.ProjectDirError
+		badKey    *config.UnknownKeyError
+		badValue  *config.InvalidValueError
 	)
 	switch {
 	case errors.As(err, &pe):
@@ -150,6 +159,10 @@ func ErrorFrom(err error) *Error {
 		out.Code = CodeNoUpgrade
 	case errors.As(err, &dirErr):
 		out.Path = dirErr.Path
+	case errors.As(err, &badKey):
+		out.Code = CodeUnknownKey
+	case errors.As(err, &badValue):
+		out.Code = CodeInvalidValue
 	}
 	return out
 }

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/store"
@@ -52,6 +53,8 @@ func TestErrorFrom(t *testing.T) {
 		{"managed by app", core.ErrManagedByApp, CodeManagedByApp, "", "", nil, false},
 		{"source build", core.ErrSourceBuild, CodeSourceBuild, "", "", nil, false},
 		{"no upgrade", core.ErrNoUpgrade, CodeNoUpgrade, "", "", nil, false},
+		{"unknown key", &config.UnknownKeyError{Key: "x"}, CodeUnknownKey, "", "", nil, false},
+		{"invalid value", &config.InvalidValueError{Key: "refresh.enabled", Value: "maybe", Want: "true or false"}, CodeInvalidValue, "", "", nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

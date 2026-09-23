@@ -29,6 +29,7 @@ var (
 	installFlagAll         bool
 	installFlagAs          string
 	installFlagRef         string
+	installFlagCommit      string
 	installFlagSkipForeign bool
 )
 
@@ -84,7 +85,13 @@ func newInstallCmd() *cobra.Command {
 			"With --json it never prompts: pass skill ids (or --all) and --global, " +
 			"--local or --project <dir>. Files skillm did not create fail the install " +
 			"with code foreign_files, listing them, before anything is written; retry " +
-			"with --yes, --force or --skip-foreign.",
+			"with --yes, --force or --skip-foreign.\n\n" +
+			"--commit <sha> (a git Source only) installs only if the Source is still at " +
+			"that commit (the full SHA or at least 7 characters of it): pass the commit " +
+			"`skillm source inspect` reported, with the same --ref, to install exactly " +
+			"what it showed while still recording the branch or tag for updates. A " +
+			"Source that has moved on fails with code commit_mismatch before anything " +
+			"is written; inspect it again.",
 		Args:        cobra.ArbitraryArgs,
 		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -98,6 +105,7 @@ func newInstallCmd() *cobra.Command {
 	f.BoolVar(&installFlagAll, "all", false, "install every skill (in Home, or in a source catalog); no interactive picker")
 	f.StringVar(&installFlagAs, "as", "", "override the Skill ID when installing from a source (resolves a collision; single skill only)")
 	f.StringVar(&installFlagRef, "ref", "", "pin a branch, tag, or commit when installing from a git source")
+	f.StringVar(&installFlagCommit, "commit", "", "install only if the git source is at this commit (as `source inspect` reported it); the ref stays recorded for updates")
 	f.BoolVar(&installFlagSkipForeign, "skip-foreign", false, "skip the skills whose copy would overwrite files skillm did not create, and install the rest (not with --yes or --force)")
 	c.MarkFlagsMutuallyExclusive("global", "local", "project")
 	return c
@@ -184,6 +192,14 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 			return err
 		}
 		defer insp.Close()
+		if installFlagCommit != "" && insp.Kind != state.KindGit {
+			return usageError("the --commit flag only applies when installing from a git source")
+		}
+		// A Source that moved since the caller inspected it fails before the
+		// pickers; InstallSkills checks it again under the lock.
+		if err := insp.CheckCommit(installFlagCommit); err != nil {
+			return err
+		}
 		ids, err := selectFound(insp, args[1:], all)
 		if err != nil {
 			return err
@@ -197,7 +213,7 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		if err := core.ValidateSourceSelection(opts, insp, ids, installFlagAs); err != nil {
 			return installError(err)
 		}
-		req.Inspection, req.IDs, req.As = insp, ids, installFlagAs
+		req.Inspection, req.IDs, req.As, req.Commit = insp, ids, installFlagAs, installFlagCommit
 	} else {
 		// --as/--ref only make sense when fetching a source.
 		if installFlagAs != "" {
@@ -205,6 +221,9 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		}
 		if installFlagRef != "" {
 			return usageError("the --ref flag only applies when installing from a git source")
+		}
+		if installFlagCommit != "" {
+			return usageError("the --commit flag only applies when installing from a git source")
 		}
 		ids, err := selectInstallIDs(opts.Home, st, agents, cwd, args, all)
 		if err != nil {

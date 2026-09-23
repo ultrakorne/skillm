@@ -312,8 +312,14 @@ func ValidateIDSelection(opts Options, ids []string) error {
 	return nil
 }
 
-// checkCommit reports a *CommitMismatchError when want is set and insp is not
-// pinned to it (want may be an abbreviated SHA of at least 7 characters).
+// CheckCommit reports a *CommitMismatchError when want is set and the
+// Inspection is not pinned to it (want may be an abbreviated SHA of at least
+// 7 characters), and an error when want is set for a local Source. It is the
+// check InstallSkills makes for InstallRequest.Commit, for a caller that
+// wants to fail before asking any question.
+func (i *Inspection) CheckCommit(want string) error { return checkCommit(i, want) }
+
+// checkCommit is CheckCommit.
 func checkCommit(insp *Inspection, want string) error {
 	if want == "" {
 		return nil

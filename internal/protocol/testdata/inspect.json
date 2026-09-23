@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "data": {
+    "source": "https://github.com/acme/skills",
+    "kind": "git",
+    "ref": "main",
+    "commit": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+    "skills": [
+      {
+        "id": "grill-with-docs",
+        "name": "grill-with-docs",
+        "description": "Interview the user against the docs",
+        "path": "skills/grill-with-docs"
+      },
+      {
+        "id": "notes",
+        "name": "",
+        "description": "",
+        "path": "notes"
+      }
+    ]
+  },
+  "warnings": [],
+  "error": null
+}

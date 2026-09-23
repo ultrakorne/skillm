@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/store"
 )
@@ -99,7 +100,8 @@ func TestGoldenFixtures(t *testing.T) {
 	}{
 		{"version.json", func(w *Writer) error {
 			return w.Result(VersionData{Version: "0.4.0", APIVersion: APIVersion,
-				Capabilities: []string{"check", "events", "list", "version"}})
+				Capabilities: []string{"agent ls", "agent set", "check", "config get", "config set", "events",
+					"import", "install", "list", "source inspect", "uninstall", "update", "upgrade", "version"}})
 		}},
 		{"list.json", func(w *Writer) error { return w.Result(NewListData(list)) }},
 		{"list_empty.json", func(w *Writer) error { return w.Result(NewListData(core.ListResult{})) }},
@@ -159,6 +161,56 @@ func TestGoldenFixtures(t *testing.T) {
 				Code: core.CodeUpdateFailed, Text: "beta: git fetch failed"})
 			return w.Fail(&core.UpdateFailedError{IDs: []string{"alpha", "beta"},
 				Failures: []string{"alpha: git fetch failed", "beta: git fetch failed"}})
+		}},
+		{"inspect.json", func(w *Writer) error {
+			return w.Result(NewInspectData(&core.Inspection{
+				Source: "https://github.com/acme/skills", Kind: "git", Ref: "main",
+				Commit: "9fceb02d0ae598e95dc970b74767f19372d61af8",
+				Skills: []core.InspectedSkill{
+					{ID: "grill-with-docs", Name: "grill-with-docs", Description: "Interview the user against the docs", Path: "skills/grill-with-docs"},
+					{ID: "notes", Path: "notes"},
+				},
+			}))
+		}},
+		{"inspect_local.json", func(w *Writer) error {
+			return w.Result(NewInspectData(&core.Inspection{
+				Source: "/Users/me/skills/notes", Kind: "local",
+				Skills: []core.InspectedSkill{{ID: "notes", Name: "notes", Description: "Take notes", Path: "/Users/me/skills/notes"}},
+			}))
+		}},
+		{"agents.json", func(w *Writer) error {
+			return w.Result(NewAgentsData([]core.AgentInfo{
+				{Name: "agents", Enabled: true, Global: "~/.agents/skills", Local: ".agents/skills"},
+				{Name: "claude", Enabled: true, Global: "~/.claude/skills", Local: ".claude/skills"},
+				{Name: "opencode", Enabled: false, Global: "~/.config/opencode/skill"},
+			}))
+		}},
+		{"agents_set.json", func(w *Writer) error {
+			w.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn, Code: core.CodeLinkSkipped,
+				Text: "opencode: /Users/me/.config/opencode/skill/notes is not a skillm link; skipped"})
+			return w.Result(NewAgentsSetData(core.AgentsResult{
+				Enabled: []string{"agents", "opencode"},
+				Changes: []core.AgentChange{
+					{Name: "opencode", Enabled: true, Skills: []string{"grill-with-docs", "notes"},
+						Places:   []string{"global", "local: /Users/me/src/app"},
+						Warnings: []error{errors.New("opencode: /Users/me/.config/opencode/skill/notes is not a skillm link; skipped")}},
+					{Name: "claude", Enabled: false, Skills: []string{"grill-with-docs"}, Places: []string{"global"}},
+				},
+			}))
+		}},
+		{"agents_set_unchanged.json", func(w *Writer) error {
+			return w.Result(NewAgentsSetData(core.AgentsResult{Enabled: []string{"agents", "claude"}}))
+		}},
+		{"config.json", func(w *Writer) error {
+			c := config.Default()
+			if err := c.Set(config.KeyRefreshIntervalHours, "12"); err != nil {
+				return err
+			}
+			return w.Result(NewConfigData(c))
+		}},
+		{"error_invalid_value.json", func(w *Writer) error {
+			return w.Fail(&config.InvalidValueError{Key: config.KeyRefreshIntervalHours, Value: "0",
+				Want: "a whole number of hours from 1 to 720"})
 		}},
 		{"check_events.ndjson", func(w *Writer) error {
 			w.Event(core.Event{Type: core.EventBatch, Items: []string{"alpha", "beta"}})
@@ -292,6 +344,14 @@ func decodeStrict(file string, doc []byte, last bool) error {
 		return strictUnmarshal(env.Data, &SelfStatusData{})
 	case base == "upgrade.json":
 		return strictUnmarshal(env.Data, &UpgradeData{})
+	case strings.HasPrefix(base, "inspect"):
+		return strictUnmarshal(env.Data, &InspectData{})
+	case base == "agents.json":
+		return strictUnmarshal(env.Data, &AgentsData{})
+	case strings.HasPrefix(base, "agents_set"):
+		return strictUnmarshal(env.Data, &AgentsSetData{})
+	case base == "config.json":
+		return strictUnmarshal(env.Data, &ConfigData{})
 	}
 	return errors.New("fixture with no known data type")
 }
