@@ -10,7 +10,7 @@ the write phase then takes the Home lock and re-reads Config and the Registry un
 and `import` take it through the `Options.Lock` hook after their fetches; the others take it in
 `cmd` around the core call. Core writes through its install primitives (Canonical copies, agent
 Links, Lockfile entries, Source identity; see [install-primitives.md](install-primitives.md)).
-`upgrade` never touches Home.
+`upgrade` runs over `core.CheckSelf`/`core.UpgradeSelf` and never touches Home.
 
 `check` and `list` call `core.Check` and `core.List`, which read Home with no lock. Every core
 operation takes a `core.Options` and reports through a `Reporter`'s `Event`: `cmd`'s
@@ -36,6 +36,7 @@ nothing but the current holder's description.
 | `cmd/update.go`, `cmd/import.go` | Build `core.Options` with the lock hook, render Events, print the summary line |
 | `cmd/uninstall.go`, `cmd/agent.go` | The skill and agent pickers and confirmations, then the core call under the Home lock |
 | `cmd/check.go` | `check` over `core.Check`, with `checkReporter` restoring the CLI's "untracked" line |
+| `cmd/upgrade.go` | `upgrade`'s confirmation and output over `core.SelfMethod`/`CheckSelf`/`UpgradeSelf` |
 | `internal/store/store.go` | Home resolution (`--home`, `$SKILLM_HOME`, `~/.skillm`) and the directory-copy primitives |
 | `internal/store/atomic.go` | Atomic file replace used by every Config and Registry save |
 | `internal/store/lock.go` | The cross-process Home lock (`flock`/`LockFileEx` in its `_unix`/`_windows` files) |
@@ -53,6 +54,7 @@ nothing but the current holder's description.
 | `internal/core/update.go`, `internal/core/import.go` | `Update` with its per-skill outcomes; `Import` and the all-skills adoption sweep |
 | `internal/core/uninstall.go`, `internal/core/agents.go`, `internal/core/roots.go` | `Uninstall`; `Agents` and `SetAgents` with their link sweeps; pruning tracked roots and vanished installs |
 | `internal/core/source.go` | Source identity (same-source refresh or collision), the entry to record, git re-fetch, `ResolvePath` |
+| `internal/core/selfstatus.go`, `internal/selfupdate/` | The Upgrade method and `SelfStatus`; release lookup, checksum, swap and the app-bundle guard |
 | `internal/ui/checklist.go` | `Checklist`: one row per label for work the caller runs, resolved via `Done`/`Wait` |
 
 ## Noteworthy
@@ -82,9 +84,7 @@ caller holds the Home lock.
 
 ### Sub-component rules live on topic pages
 
-[check-and-list.md](check-and-list.md) covers result semantics and cancellation;
-[install-primitives.md](install-primitives.md) refusal codes, `force`/`forceLinks` and Lockfile
-writes; [inspect-and-install.md](inspect-and-install.md) the pinned commit, batch checks and
-`Options.Cwd`; [update-and-import.md](update-and-import.md) the unlocked fetch and per-skill
-outcomes; [uninstall-and-agents.md](uninstall-and-agents.md) confirmed roots, `ErrNeedsForce`
-and the agent sweeps.
+Each core operation's result semantics, refusals and cancellation rules live on its own page,
+listed in [INDEX.md](INDEX.md): check and list, the install primitives, inspect and install,
+update and import, uninstall and agents, and self-upgrade (the Upgrade method and the app-bundle
+guard).

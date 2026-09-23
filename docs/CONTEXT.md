@@ -196,9 +196,22 @@ running build's version against the latest release tag; when the release is newe
 downloads this platform's archive, verifies it against the release's published SHA256
 manifest, and swaps the new binary into the path skillm is running from (a symlinked
 install is resolved to the real file first). Nothing is written until the checksum
-verifies, and the previous binary is restored if the swap fails. Only **release builds**
-are upgraded: a binary whose version is not a clean release tag corresponds to no
-published release, so it is reported and left alone rather than overwritten.
+verifies, and the previous binary is restored if the swap fails. Only a skillm whose
+**Upgrade method** is binary is upgraded this way.
+
+### Upgrade method
+How the running skillm gets upgraded, judged from its version and its executable's resolved
+path alone, with no network request. **binary**: a release build installed on its own, which
+Upgrade replaces in place. **bundled**: a release build inside a macOS app bundle; the app
+upgrades its whole bundle, so Upgrade refuses it ("managed by the skillm app") and only reports
+a newer release. **dev**: a build whose version is not a clean release tag; it corresponds to no
+published release, so it is reported and left alone, even inside a bundle.
+_Avoid_: install method, channel
+
+### Self status
+The running skillm measured against the latest release: its current and latest versions,
+whether a newer release is **available**, and whether Upgrade is **eligible** to install it
+(available and binary). A bundled skillm can be available yet not eligible: its app upgrades it.
 
 ### Enabled agents
 The Agents that Links are applied to: the subset of agents **defined** in Config whose
