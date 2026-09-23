@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -324,6 +325,79 @@ func TestVendorOneReportsLinks(t *testing.T) {
 	refused := eventsWith(rep, CodeLinkRefused)
 	if len(refused) != 1 || refused[0].Level != LevelWarn || !strings.HasSuffix(refused[0].Text, "(pass --force to take it over)") {
 		t.Fatalf("refused events = %+v", rep.events)
+	}
+}
+
+// TestLinkAndUnlinkFailuresAreNotRefusals: link_refused / unlink_refused are
+// only for an entry skillm does not own (which --force could take over); an
+// I/O failure — here, claude's skill folder cannot exist because .claude is a
+// file — is link_failed / unlink_failed, with the linker's text unchanged.
+func TestLinkAndUnlinkFailuresAreNotRefusals(t *testing.T) {
+	home, base, src, agents := localTestSetup(t)
+	if err := os.WriteFile(filepath.Join(base, ".claude"), []byte("not a dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := &recorder{}
+	if _, err := VendorOne(rep, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
+		t.Fatalf("VendorOne: %v", err)
+	}
+	if refused := eventsWith(rep, CodeLinkRefused); len(refused) != 0 {
+		t.Fatalf("an I/O failure was reported as a refusal: %+v", refused)
+	}
+	failed := eventsWith(rep, CodeLinkFailed)
+	if len(failed) != 1 || failed[0].Level != LevelWarn || failed[0].Skill != "demo" ||
+		!strings.Contains(failed[0].Text, claudeLink(base)) || strings.Contains(failed[0].Text, "--force") {
+		t.Fatalf("link_failed events = %+v", rep.events)
+	}
+
+	if runtime.GOOS == "windows" {
+		// Windows reports a path under a file as not found, which Unlink
+		// treats as an absent link rather than a failure.
+		return
+	}
+	rep = &recorder{}
+	if _, err := VendorRemove(rep, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
+		t.Fatalf("VendorRemove: %v", err)
+	}
+	if refused := eventsWith(rep, CodeUnlinkRefused); len(refused) != 0 {
+		t.Fatalf("an I/O failure was reported as a refusal: %+v", refused)
+	}
+	if failed := eventsWith(rep, CodeUnlinkFailed); len(failed) != 1 || !strings.Contains(failed[0].Text, claudeLink(base)) {
+		t.Fatalf("unlink_failed events = %+v", rep.events)
+	}
+}
+
+// TestUnlinkRefusalIsReported: a file skillm did not create at an agent's
+// link path is left alone and reported as unlink_refused with the linker's
+// sentence.
+func TestUnlinkRefusalIsReported(t *testing.T) {
+	home, base, src, agents := localTestSetup(t)
+	if _, err := VendorOne(nil, home, "demo", src, agents, agentdir.Local, base, false, false, false, "local"); err != nil {
+		t.Fatalf("VendorOne: %v", err)
+	}
+	link := claudeLink(base)
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := &recorder{}
+	if _, err := VendorRemove(rep, home, "demo", agents, agentdir.Local, base, true, "local"); err != nil {
+		t.Fatalf("VendorRemove: %v", err)
+	}
+	refused := eventsWith(rep, CodeUnlinkRefused)
+	want := "refusing to remove " + link + ": it is a file, not a skillm-managed link"
+	if len(refused) != 1 || refused[0].Level != LevelWarn || refused[0].Text != want {
+		t.Fatalf("unlink_refused events = %+v, want one with %q", rep.events, want)
+	}
+	if failed := eventsWith(rep, CodeUnlinkFailed); len(failed) != 0 {
+		t.Fatalf("a refusal was reported as a failure: %+v", failed)
+	}
+	if _, err := os.Stat(link); err != nil {
+		t.Fatalf("user file wrongly removed: %v", err)
 	}
 }
 

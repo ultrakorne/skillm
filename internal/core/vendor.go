@@ -36,9 +36,11 @@ import (
 const (
 	CodeLinked         = "linked"
 	CodeLinkTakenOver  = "link_taken_over"
-	CodeLinkRefused    = "link_refused"
+	CodeLinkRefused    = "link_refused" // a foreign entry is in the way; force would take it over
+	CodeLinkFailed     = "link_failed"  // an I/O failure (permissions, no symlink privilege, …)
 	CodeUnlinked       = "unlinked"
-	CodeUnlinkRefused  = "unlink_refused"
+	CodeUnlinkRefused  = "unlink_refused" // the entry is not skillm's; it is left alone
+	CodeUnlinkFailed   = "unlink_failed"  // an I/O failure removing or inspecting the link
 	CodeCopyRefreshed  = "copy_refreshed"
 	CodeCopySynced     = "copy_synced"
 	CodeCopyFailed     = "copy_failed"
@@ -173,8 +175,10 @@ func VendorOne(rep Reporter, home, id, srcDir string, agents []agentdir.Agent, s
 // copy of id at (scope, base) for every supplied agent, reporting refusals
 // instead of failing — a foreign file at one agent's link path must not block
 // the others. With force, such a foreign entry is replaced by the link
-// instead (taking the skill over); without it, the refusal points at
-// --force. It reports whether any link was created or replaced.
+// instead (taking the skill over); without it, the refusal (code
+// link_refused) points at --force. Any other link error (an I/O failure that
+// force cannot fix) is reported as link_failed. It reports whether any link
+// was created or replaced.
 func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool) (linked bool) {
 	rep = nopIfNil(rep)
 	link := linker.Link
@@ -184,11 +188,11 @@ func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, sc
 	for _, a := range agents {
 		res, err := link(home, id, []agentdir.Agent{a}, scope, base)
 		if err != nil {
-			text := err.Error()
 			if errors.Is(err, linker.ErrNotManaged) {
-				text += " (pass --force to take it over)"
+				rep.Event(logEvent(LevelWarn, id, CodeLinkRefused, err.Error()+" (pass --force to take it over)"))
+			} else {
+				rep.Event(logEvent(LevelWarn, id, CodeLinkFailed, err.Error()))
 			}
-			rep.Event(logEvent(LevelWarn, id, CodeLinkRefused, text))
 		}
 		for _, ar := range res.Agents {
 			switch ar.Action {
@@ -210,13 +214,18 @@ func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, sc
 // agent's link into the canonical copy, any legacy skillm symlink occupying
 // the canonical slot itself, and — when removeCopy is true, i.e. the install
 // is recorded so the directory there is skillm's own — the copy. Foreign
-// entries are never touched (link refusals are reported); a missing copy is a
-// no-op. It returns whether a copy was removed.
+// entries are never touched (a refusal is reported as unlink_refused, an I/O
+// failure as unlink_failed); a missing copy is a no-op. It returns whether a
+// copy was removed.
 func VendorRemove(rep Reporter, home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string, removeCopy bool, label string) (removedCopy bool, err error) {
 	rep = nopIfNil(rep)
 	res, lerr := linker.Unlink(home, id, agents, scope, base)
 	if lerr != nil {
-		rep.Event(logEvent(LevelWarn, id, CodeUnlinkRefused, lerr.Error()))
+		code := CodeUnlinkFailed
+		if errors.Is(lerr, linker.ErrNotManaged) {
+			code = CodeUnlinkRefused
+		}
+		rep.Event(logEvent(LevelWarn, id, code, lerr.Error()))
 	}
 	for _, ar := range res.Agents {
 		if ar.Action == linker.ActionRemoved {
