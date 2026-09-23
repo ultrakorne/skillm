@@ -11,9 +11,17 @@
 #   FAKE_SKILLM_EXITED    if set, created just before a cancelled fake exits
 #   FAKE_SKILLM_CANCEL_DELAY  seconds a cancelled fake keeps working after
 #                         SIGINT before it answers (default 0)
+#   FAKE_SKILLM_LOG       if set, each run appends its arguments to it as one
+#                         line (for tests that run several commands)
+#   FAKE_SKILLM_HANG_ON   a command (e.g. "update") that behaves as mode hang
+#                         (stream_hang with --events); the others answer
+#   FAKE_SKILLM_FAIL_ON   a command that answers a failure fixture instead
+#                         (update: error_update_failed.json, refresh:
+#                         error_home_locked.json)
 set -u
 fx=${FAKE_SKILLM_FIXTURES:?}
 [ -n "${FAKE_SKILLM_ARGS:-}" ] && printf '%s\n' "$@" >"$FAKE_SKILLM_ARGS"
+[ -n "${FAKE_SKILLM_LOG:-}" ] && echo "$*" >>"$FAKE_SKILLM_LOG"
 [ -n "${FAKE_SKILLM_PATH:-}" ] && printf '%s\n' "$PATH" >"$FAKE_SKILLM_PATH"
 
 events=no
@@ -39,7 +47,15 @@ wait_for_interrupt() {
 	exit 3
 }
 
-case "${FAKE_SKILLM_MODE:-}" in
+mode=${FAKE_SKILLM_MODE:-}
+if [ -n "${FAKE_SKILLM_HANG_ON:-}" ] && [ "$1" = "$FAKE_SKILLM_HANG_ON" ]; then
+	if [ $events = yes ]; then mode=stream_hang; else mode=hang; fi
+fi
+
+# as_result FILE: an envelope fixture as the last line of an event stream.
+as_result() { tr -d '\n' <"$1" | sed 's/^{/{"type":"result",/'; echo; }
+
+case "$mode" in
 api99)
 	echo '{"schema_version":1,"data":{"version":"9.0.0","api_version":99,"capabilities":[]},"warnings":[],"error":null}'
 	exit 0
@@ -102,16 +118,33 @@ case "$1" in
 version) cat "$fx/version.json" ;;
 list) cat "$fx/list.json" ;;
 status) cat "$fx/status.json" ;;
-refresh) cat "$fx/refresh.json" ;;
+refresh)
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = refresh ]; then
+		cat "$fx/error_home_locked.json"
+		exit 1
+	fi
+	cat "$fx/refresh.json"
+	;;
 check)
 	if [ $events = yes ]; then cat "$fx/check_events.ndjson"; else cat "$fx/check.json"; fi
 	;;
 update)
-	if [ $events = yes ]; then
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = update ]; then
+		if [ $events = yes ]; then as_result "$fx/error_update_failed.json"; else cat "$fx/error_update_failed.json"; fi
+		exit 1
+	elif [ $events = yes ]; then
 		cat "$fx/update_events.ndjson"
 	else
 		cat "$fx/error_update_failed.json"
 		exit 1
+	fi
+	;;
+config)
+	# `config set refresh.enabled false` answers the fixture with it off.
+	if [ "${2:-}" = set ] && [ "${3:-}" = refresh.enabled ] && [ "${4:-}" = false ]; then
+		sed 's/"enabled": true/"enabled": false/' "$fx/config.json"
+	else
+		cat "$fx/config.json"
 	fi
 	;;
 install)
