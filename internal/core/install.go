@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
@@ -42,6 +43,13 @@ type InstallRequest struct {
 	// As installs the single selected skill under this Skill ID instead of its
 	// own (source mode only).
 	As string
+	// Commit, when set, is the git commit the caller expects the Inspection to
+	// be pinned to (the full SHA, or a prefix of at least 7 characters). It
+	// lets a caller that inspected in another process install exactly what it
+	// showed while Inspection.Ref, the ref recorded for updates, stays a
+	// branch or tag: a mismatch is a *CommitMismatchError before anything is
+	// written. Source mode with a git Source only.
+	Commit string
 	// Scope is where to install.
 	Scope agentdir.Scope
 	// Base is the absolute project directory of a Local install. It is
@@ -98,14 +106,16 @@ type installItem struct {
 //
 // Everything is checked before anything is written: an unknown id, a
 // different-source collision (*SourceCollisionError), an As on several skills
-// (ErrAsMultiple), and foreign entries at the canonical slots. The last is a
+// (ErrAsMultiple), an Inspection not at req.Commit (*CommitMismatchError),
+// and foreign entries at the canonical slots. The last is a
 // *ForeignFilesError unless opts.Force or opts.Yes permits overwriting them, or
 // req.SkipForeign skips them; the caller may ask the user and call again.
 // opts.Force alone also takes over foreign entries at agent link paths.
 //
 // It reports progress to rep and does not take the Home lock: the caller holds
-// it. On a failure part-way it still records the installs that landed and
-// returns them with the error.
+// it. It reloads config and the Registry and re-plans the selection itself, so
+// a caller may inspect and prompt before locking. On a failure part-way it
+// still records the installs that landed and returns them with the error.
 func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallRequest) (InstallResult, error) {
 	rep = nopIfNil(rep)
 	res := InstallResult{Scope: req.Scope, Base: req.Base}
@@ -143,8 +153,14 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 
 	var items []installItem
 	if req.Inspection != nil {
+		if err := checkCommit(req.Inspection, req.Commit); err != nil {
+			return res, err
+		}
 		items, err = planSource(st, opts.Cwd, req.Inspection, req.IDs, req.As)
 	} else {
+		if req.Commit != "" {
+			return res, errors.New("an expected commit applies only when installing from a git source")
+		}
 		items, err = planIDs(st, req.IDs, req.As)
 	}
 	if err != nil {
@@ -251,6 +267,49 @@ func ValidateSourceSelection(opts Options, insp *Inspection, ids []string, as st
 	return err
 }
 
+// ValidateIDSelection checks, without writing anything or touching the
+// network, that installing the registered ids (id mode) would not fail on the
+// selection itself: every id is registered, and a local-path skill with no
+// global copy still has its source directory. InstallSkills checks the same;
+// calling this first lets a caller report it before asking where to install.
+// A git skill that has to be re-fetched can still fail later, in
+// InstallSkills.
+func ValidateIDSelection(opts Options, ids []string) error {
+	st, err := state.Load(opts.Home)
+	if err != nil {
+		return err
+	}
+	items, err := planIDs(st, ids, "")
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		e := it.entry
+		if e.Kind != state.KindLocal || (e.Global && CopyExists(opts.Home, e.ID, agentdir.Global, "")) {
+			continue
+		}
+		if _, err := localSourceDir(e, opts.Cwd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkCommit reports a *CommitMismatchError when want is set and insp is not
+// pinned to it (want may be an abbreviated SHA of at least 7 characters).
+func checkCommit(insp *Inspection, want string) error {
+	if want == "" {
+		return nil
+	}
+	if insp.Kind != state.KindGit {
+		return errors.New("an expected commit applies only when installing from a git source")
+	}
+	if len(want) < 7 || !strings.HasPrefix(insp.Commit, strings.ToLower(want)) {
+		return &CommitMismatchError{Want: want, Got: insp.Commit}
+	}
+	return nil
+}
+
 // planSource resolves the selected inspected skills to install items with
 // their Registry entries (Revision filled in by stageItems), refusing the
 // whole selection on the first different-source collision.
@@ -351,10 +410,8 @@ func idModeSource(ctx context.Context, home, cwd string, e *state.SkillEntry) (s
 		return agentdir.CanonicalSkillDirAt(agentdir.Global, "", e.ID), nil, nil
 	}
 	if e.Kind == state.KindLocal {
-		if src := ResolvePath(e.Source, cwd); isDir(src) {
-			return src, nil, nil
-		}
-		return "", nil, fmt.Errorf("local skill %q has no global copy and its source %s is gone; reinstall it from a source", e.ID, e.Source)
+		src, err := localSourceDir(*e, cwd)
+		return src, nil, err
 	}
 	// Git skill with no reusable global copy: re-fetch from the pinned source.
 	dir, rev, clean, err := RefetchSkill(ctx, *e)
@@ -366,6 +423,20 @@ func idModeSource(ctx context.Context, home, cwd string, e *state.SkillEntry) (s
 		e.InstalledAt = time.Now().UTC()
 	}
 	return dir, clean, nil
+}
+
+// localSourceDir returns the recorded source directory of the local-path
+// skill e when it still exists. A legacy relative Source is resolved against
+// cwd; with no cwd it is refused rather than looked up in the process's
+// working directory.
+func localSourceDir(e state.SkillEntry, cwd string) (string, error) {
+	if !filepath.IsAbs(e.Source) && cwd == "" {
+		return "", fmt.Errorf("local skill %q has no global copy and its recorded source %s is relative, with no working directory to resolve it against; reinstall it from a source", e.ID, e.Source)
+	}
+	if src := ResolvePath(e.Source, cwd); isDir(src) {
+		return src, nil
+	}
+	return "", fmt.Errorf("local skill %q has no global copy and its source %s is gone; reinstall it from a source", e.ID, e.Source)
 }
 
 // installAgents returns the enabled agents an install at (scope, base) links

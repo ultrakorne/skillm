@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/state"
 )
 
@@ -157,6 +158,15 @@ func TestInspectRelativeLocalSource(t *testing.T) {
 	if e, ok := st.Get("rel"); !ok || e.Source != want {
 		t.Fatalf("recorded source = %q, want %q", e.Source, want)
 	}
+	// The committed lockfile gets the absolute path too — what vercel's
+	// `npx skills` writes for a local source (it path.resolve()s it).
+	lf, err := lockfile.Load(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := lf.Skills["rel"]; e == nil || e.Source != want || e.SourceType != lockfile.SourceLocal {
+		t.Fatalf("lockfile entry = %+v, want local source %s", e, want)
+	}
 
 	if _, err := Inspect(context.Background(), Options{Home: home}, "./skills/rel", ""); err == nil {
 		t.Fatal("a relative local source with no Cwd must be refused")
@@ -275,5 +285,155 @@ func TestSrcIdentityResolvesRelativeAgainstBase(t *testing.T) {
 	}
 	if (SrcIdentity{Kind: state.KindLocal, Source: abs}).Matches(legacy) {
 		t.Error("with no Base a relative source must not match an absolute one")
+	}
+}
+
+// gitRepo makes dir a git repository on branch main and returns a runner for
+// git commands in it (skipping the test when git is not installed).
+func gitRepo(t *testing.T, dir string) func(args ...string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "test@example.com")
+	git("config", "user.name", "test")
+	return git
+}
+
+// TestInspectSymlinkedLocalSource: a local Source that is a symlink to a
+// directory is discovered with or without the trailing slash tab-completion
+// adds, and recorded as the clean symlink path.
+func TestInspectSymlinkedLocalSource(t *testing.T) {
+	project := t.TempDir()
+	writeSkill(t, filepath.Join(project, "real"), "linked", "body")
+	link := filepath.Join(project, "linked")
+	if err := os.Symlink(filepath.Join(project, "real", "linked"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	opts := Options{Home: t.TempDir(), Cwd: project}
+	for _, src := range []string{"./linked/", "./linked", link + "/"} {
+		insp, err := Inspect(context.Background(), opts, src, "")
+		if err != nil {
+			t.Fatalf("Inspect(%q): %v", src, err)
+		}
+		insp.Close()
+		if insp.Source != link || len(insp.Skills) != 1 || insp.Skills[0].ID != "linked" || insp.Skills[0].Path != link {
+			t.Fatalf("Inspect(%q) = %+v, want skill linked at %s", src, insp, link)
+		}
+	}
+}
+
+// TestInspectRelativeGitPath: a git repository named by a relative path is
+// resolved against Options.Cwd (not the process's working directory) and
+// recorded absolute; with no Cwd it is refused.
+func TestInspectRelativeGitPath(t *testing.T) {
+	work := t.TempDir()
+	writeSkill(t, work, "alpha", "alpha body")
+	git := gitRepo(t, work)
+	git("add", "-A")
+	git("commit", "-q", "-m", "v1")
+	project := t.TempDir()
+	git("clone", "-q", "--bare", work, filepath.Join(project, "catalog.git"))
+
+	insp, err := Inspect(context.Background(), Options{Home: t.TempDir(), Cwd: project}, "./catalog.git", "")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	defer insp.Close()
+	if want := filepath.Join(project, "catalog.git"); insp.Kind != state.KindGit || insp.Source != want {
+		t.Fatalf("inspection = %+v, want git source %s", insp, want)
+	}
+	if len(insp.Skills) != 1 || insp.Skills[0].ID != "alpha" {
+		t.Fatalf("skills = %+v", insp.Skills)
+	}
+
+	for _, src := range []string{"./catalog.git", "catalog.git", "./skills/foo", "foo"} {
+		if _, err := Inspect(context.Background(), Options{Home: t.TempDir()}, src, ""); err == nil || !strings.Contains(err.Error(), "no working directory") {
+			t.Errorf("Inspect(%q) with no Cwd: err = %v, want a refusal", src, err)
+		}
+	}
+}
+
+// TestValidateIDSelection: id mode's cheap checks run before the scope
+// question — an unknown id, and a local skill with no global copy whose
+// source is gone (or relative with no Cwd to resolve it).
+func TestValidateIDSelection(t *testing.T) {
+	home, _, _, _ := localTestSetup(t)
+	srcDir := t.TempDir()
+	st := &state.State{}
+	st.Upsert(state.SkillEntry{ID: "here", Kind: state.KindLocal, Source: srcDir})
+	st.Upsert(state.SkillEntry{ID: "gone", Kind: state.KindLocal, Source: filepath.Join(srcDir, "missing")})
+	st.Upsert(state.SkillEntry{ID: "legacy", Kind: state.KindLocal, Source: "./skills/legacy"})
+	st.Upsert(state.SkillEntry{ID: "remote", Kind: state.KindGit, Source: "https://example.invalid/x.git"})
+	if err := state.Save(home, st); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Home: home, Cwd: t.TempDir()}
+
+	if err := ValidateIDSelection(opts, []string{"here", "remote"}); err != nil {
+		t.Fatalf("valid selection: %v", err)
+	}
+	if err := ValidateIDSelection(opts, []string{"nope"}); err == nil {
+		t.Fatal("an unregistered id must be refused")
+	}
+	if err := ValidateIDSelection(opts, []string{"here", "gone"}); err == nil || !strings.Contains(err.Error(), "is gone") {
+		t.Fatalf("gone source: err = %v", err)
+	}
+	if err := ValidateIDSelection(Options{Home: home}, []string{"legacy"}); err == nil || !strings.Contains(err.Error(), "relative") {
+		t.Fatalf("relative source with no Cwd: err = %v", err)
+	}
+}
+
+// TestInstallExpectedCommit: InstallRequest.Commit refuses an Inspection
+// pinned to another commit before writing anything, and accepts the full SHA
+// or an abbreviation of it while still recording the branch as the Ref.
+func TestInstallExpectedCommit(t *testing.T) {
+	home, _, _, _ := localTestSetup(t)
+	repo := t.TempDir()
+	writeSkill(t, repo, "alpha", "alpha v1")
+	git := gitRepo(t, repo)
+	git("add", "-A")
+	git("commit", "-q", "-m", "v1")
+	v1 := git("rev-parse", "HEAD")
+	writeSkill(t, repo, "alpha", "alpha v2")
+	git("commit", "-q", "-am", "v2")
+
+	opts := Options{Home: home, Cwd: t.TempDir()}
+	insp, err := Inspect(context.Background(), opts, "file://"+filepath.ToSlash(repo), "")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	defer insp.Close()
+	req := InstallRequest{Inspection: insp, IDs: []string{"alpha"}, Scope: agentdir.Global, Commit: v1}
+
+	var mismatch *CommitMismatchError
+	if _, err := InstallSkills(context.Background(), opts, nil, req); !errors.As(err, &mismatch) || mismatch.Got != insp.Commit {
+		t.Fatalf("stale commit: err = %v, want a CommitMismatchError", err)
+	}
+	if _, err := os.Stat(agentdir.CanonicalSkillDirAt(agentdir.Global, "", "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be installed on a commit mismatch: %v", err)
+	}
+
+	req.Commit = insp.Commit[:7]
+	if _, err := InstallSkills(context.Background(), opts, nil, req); err != nil {
+		t.Fatalf("abbreviated matching commit: %v", err)
+	}
+	st, err := state.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := st.Get("alpha"); e.Ref != "main" {
+		t.Fatalf("recorded ref = %q, want the branch main", e.Ref)
 	}
 }

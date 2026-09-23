@@ -50,3 +50,15 @@ type LocalScopeAliasedError struct {
 func (e *LocalScopeAliasedError) Error() string {
 	return fmt.Sprintf("local scope resolves to the global skill folder here (%s)", e.Base)
 }
+
+// CommitMismatchError means an install asked for a specific commit
+// (InstallRequest.Commit) but the Inspection is pinned to another one: the
+// ref moved on between the caller's inspection and this one. Nothing has been
+// written; the caller re-inspects and asks again.
+type CommitMismatchError struct {
+	Want, Got string
+}
+
+func (e *CommitMismatchError) Error() string {
+	return fmt.Sprintf("the source is at commit %s, not the expected %s (it changed since it was inspected)", e.Got, e.Want)
+}

@@ -145,7 +145,7 @@ func importLockEntries(ctx context.Context, home string, st *state.State, agents
 		}
 
 		if existing, ok := st.Get(name); ok {
-			if !lockEntryMatches(existing, entry) {
+			if !lockEntryMatches(existing, entry, root) {
 				ui.Warnf("skipping %s: already in Home from a different source (%s)", name, existing.Source)
 				continue
 			}
@@ -350,10 +350,14 @@ func resolveCopySource(ctx context.Context, home string, st *state.State, e stat
 // as an existing registry entry — same remote (compared leniently: scheme and
 // a trailing ".git" ignored) and same subdirectory — so import can tell
 // "already managed" from a genuine name collision.
-func lockEntryMatches(existing state.SkillEntry, entry *lockfile.Entry) bool {
+func lockEntryMatches(existing state.SkillEntry, entry *lockfile.Entry, root string) bool {
 	if existing.Kind != state.KindGit {
-		// Local-kind skills carry no remote; match on the recorded source path.
-		return entry.SourceType == lockfile.SourceLocal && entry.Source == existing.Source
+		// Local-kind skills carry no remote; match on the recorded source
+		// path. Older installs wrote it relative (to the project root they ran
+		// in) while the Registry now records it absolute, so resolve both
+		// against the lockfile's root before comparing.
+		return entry.SourceType == lockfile.SourceLocal &&
+			core.ResolvePath(entry.Source, root) == core.ResolvePath(existing.Source, root)
 	}
 	url, err := entry.CloneURL()
 	if err != nil {

@@ -96,14 +96,11 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 	if err != nil {
 		return err
 	}
-	// Hold Home's lock from load to save so a concurrent skillm process cannot
-	// interleave its writes with ours.
-	unlock, err := lockHome(ctx, opts.Home, "skillm install")
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
+	// Everything up to the install itself — the clone, the pickers, the scope
+	// question — runs without Home's lock, so a slow fetch or an open prompt
+	// never blocks another skillm process. It only reads config and the
+	// Registry; core.InstallSkills reloads and re-checks both under the lock
+	// (see installLocked).
 	cfg, err := config.Load(opts.Home)
 	if err != nil {
 		return err
@@ -166,6 +163,11 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 		if err != nil || len(ids) == 0 {
 			return err // on none, the selection step already reported why
 		}
+		// Report a local skill whose source is gone before asking where to
+		// install (a git skill's re-fetch still runs after).
+		if err := core.ValidateIDSelection(opts, ids); err != nil {
+			return err
+		}
 		req = core.InstallRequest{IDs: ids}
 	}
 
@@ -186,9 +188,10 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 // skillm did not create, it asks once for the whole batch on a TTY — "yes"
 // retries with Yes (which, unlike --force, never takes over agent link paths:
 // the question only listed the canonical slots), "no" retries skipping those
-// skills — or refuses on a non-TTY. --force/--yes never get here.
+// skills — or refuses on a non-TTY. --force/--yes never get here. Home's lock
+// is held for each install attempt but not while the question is open.
 func installConfirmingOverwrite(ctx context.Context, opts core.Options, req core.InstallRequest) (core.InstallResult, error) {
-	res, err := core.InstallSkills(ctx, opts, termLog, req)
+	res, err := installLocked(ctx, opts, termLog, req)
 	var foreign *core.ForeignFilesError
 	if !errors.As(err, &foreign) {
 		return res, err
@@ -205,8 +208,23 @@ func installConfirmingOverwrite(ctx context.Context, opts core.Options, req core
 	} else {
 		req.SkipForeign = true // leave foreign entries untouched, install the rest
 	}
-	// The skipped-agent notices were printed before the question.
-	return core.InstallSkills(ctx, opts, dropCodes{rep: termLog, codes: []string{core.CodeAgentSkipped}}, req)
+	// The skipped-agent notices were printed before the question. The retry
+	// re-scans the slots, so a change made while the question was open is
+	// caught.
+	return installLocked(ctx, opts, dropCodes{rep: termLog, codes: []string{core.CodeAgentSkipped}}, req)
+}
+
+// installLocked runs core.InstallSkills under Home's lock, so a concurrent
+// skillm process cannot interleave its writes with ours. InstallSkills reloads
+// config and the Registry and re-plans the selection, so choices made before
+// the lock was taken are checked again under it.
+func installLocked(ctx context.Context, opts core.Options, rep core.Reporter, req core.InstallRequest) (core.InstallResult, error) {
+	unlock, err := lockHome(ctx, opts.Home, "skillm install")
+	if err != nil {
+		return core.InstallResult{}, err
+	}
+	defer unlock()
+	return core.InstallSkills(ctx, opts, rep, req)
 }
 
 // installError adds the CLI's flag advice to the install errors a flag

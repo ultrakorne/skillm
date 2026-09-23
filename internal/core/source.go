@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ultrakorne/skillm/internal/gitx"
+	"github.com/ultrakorne/skillm/internal/source"
 	"github.com/ultrakorne/skillm/internal/state"
 )
 
@@ -24,8 +25,11 @@ type SrcIdentity struct {
 	Path   string // git subpath within the repo ("" for local / repo root)
 	// Base is the directory a relative local path is resolved against. Current
 	// installs record absolute paths, but a legacy entry may hold one relative
-	// to wherever it was installed from. With Base empty, relative paths are
-	// compared as written.
+	// to wherever it was installed from. The CLI passes its working directory,
+	// so reinstalling a legacy entry from the project it was installed from
+	// matches (and MergeEntry rewrites it to the absolute path); from another
+	// project it can falsely match a same-named relative path there. With Base
+	// empty, relative paths are compared as written.
 	Base string
 }
 
@@ -137,12 +141,13 @@ func RepoRelSubpath(repoDir, dir string) string {
 }
 
 // ResolvePath returns p cleaned, and joined onto base first when p is
-// relative and base is set. It is how core makes a path absolute without
+// relative and base is set (see source.JoinPath for a Windows path rooted at a
+// separator with no drive). It is how core makes a path absolute without
 // reading the process's working directory: callers pass Options.Cwd as base.
-// A relative p with no base stays relative.
+// A relative p with no base stays relative; callers must not stat it.
 func ResolvePath(p, base string) string {
 	if base != "" && !filepath.IsAbs(p) {
-		return filepath.Join(base, p)
+		return source.JoinPath(base, p)
 	}
 	return filepath.Clean(p)
 }

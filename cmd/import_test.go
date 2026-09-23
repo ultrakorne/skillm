@@ -209,3 +209,23 @@ func TestImportNameCollisionSkipped(t *testing.T) {
 		t.Fatalf("collision must not record the root: %v", entry.VendoredAt)
 	}
 }
+
+// TestLockEntryMatchesRelativeLocalSource: an older install wrote a local
+// Source relative to the project root, while the Registry now records it
+// absolute; resolved against the lockfile's root they are the same source,
+// so import/update do not warn "different source".
+func TestLockEntryMatchesRelativeLocalSource(t *testing.T) {
+	root := t.TempDir()
+	abs := filepath.Join(root, "skills", "foo")
+	entry := &lockfile.Entry{Source: "./skills/foo", SourceType: lockfile.SourceLocal}
+	if !lockEntryMatches(state.SkillEntry{Kind: state.KindLocal, Source: abs}, entry, root) {
+		t.Error("a relative lockfile source must match the same absolute Registry source")
+	}
+	if !lockEntryMatches(state.SkillEntry{Kind: state.KindLocal, Source: "./skills/foo"}, entry, root) {
+		t.Error("identical relative sources must match")
+	}
+	other := filepath.Join(t.TempDir(), "skills", "foo")
+	if lockEntryMatches(state.SkillEntry{Kind: state.KindLocal, Source: other}, entry, root) {
+		t.Error("a different directory must not match")
+	}
+}

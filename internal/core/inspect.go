@@ -105,13 +105,15 @@ func (i *Inspection) skillIDs() string {
 
 // Inspect reads the Source src and discovers the skills it holds, prompting
 // for nothing and writing nothing outside a temp dir. src is a git remote (a
-// URL or a GitHub owner/repo shorthand) or a local directory; a relative
-// local path is resolved against opts.Cwd, so the recorded Source is absolute.
-// For git, ref pins a branch, tag or commit (default: the default branch) and
-// the clone is pinned to the commit it resolves to. ref is ignored for a local
-// Source. The caller must Close the returned Inspection.
+// URL, a GitHub owner/repo shorthand, or a path to a repository) or a local
+// directory; a relative path of either kind is resolved against opts.Cwd, so
+// the recorded Source is absolute. With no opts.Cwd a relative path is
+// refused, never looked up in the process's working directory. For git, ref
+// pins a branch, tag or commit (default: the default branch) and the clone is
+// pinned to the commit it resolves to. ref is ignored for a local Source. The
+// caller must Close the returned Inspection.
 func Inspect(ctx context.Context, opts Options, src, ref string) (*Inspection, error) {
-	kind, err := source.ClassifyAt(src, opts.Cwd)
+	kind, err := classify(src, opts.Cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -121,16 +123,45 @@ func Inspect(ctx context.Context, opts Options, src, ref string) (*Inspection, e
 		// the same Source as its full HTTPS URL, and canonicalize it before
 		// anything records or compares it (a trailing slash is not part of a
 		// repo's identity).
-		return inspectGit(ctx, CanonicalRemote(source.GitRemote(src)), ref)
-	case source.Local:
-		p := strings.TrimSpace(src)
-		if !filepath.IsAbs(p) && opts.Cwd == "" {
-			return nil, fmt.Errorf("local source %q is relative, and no working directory was given to resolve it against", src)
+		remote := source.GitRemote(src)
+		if source.IsPathRemote(remote) && !filepath.IsAbs(remote) {
+			// A repository named by a relative path ("./catalog.git"): git
+			// would resolve it in the process's working directory.
+			if opts.Cwd == "" {
+				return nil, relativeSourceError(src)
+			}
+			remote = ResolvePath(remote, opts.Cwd)
 		}
-		return inspectLocal(ResolvePath(p, opts.Cwd), src)
+		return inspectGit(ctx, CanonicalRemote(remote), ref)
+	case source.Local:
+		return inspectLocal(ResolvePath(strings.TrimSpace(src), opts.Cwd), src)
 	default:
 		return nil, fmt.Errorf("unsupported source kind %s", kind)
 	}
+}
+
+// classify is source.ClassifyAt that never reads the process's working
+// directory: with no cwd a relative src is not looked up on disk, so it is a
+// git remote by its shape (a URL, an scp-like remote, a *.git path, a GitHub
+// owner/repo shorthand) or an error.
+func classify(src, cwd string) (source.Kind, error) {
+	p := strings.TrimSpace(src)
+	if cwd != "" || p == "" || filepath.IsAbs(p) {
+		return source.ClassifyAt(src, cwd)
+	}
+	if source.LooksLikeGitRemote(p) {
+		return source.Git, nil
+	}
+	if _, ok := source.GitHubShorthand(p); ok {
+		return source.Git, nil
+	}
+	return 0, relativeSourceError(src)
+}
+
+// relativeSourceError refuses a relative path when no working directory was
+// given to resolve it against.
+func relativeSourceError(src string) error {
+	return fmt.Errorf("source %q is a relative path, and no working directory was given to resolve it against", src)
 }
 
 // inspectGit treeless-clones url into a temp dir, pins the commit and default
