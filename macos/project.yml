@@ -1,0 +1,88 @@
+# XcodeGen spec for the skillm menu bar app. The generated Skillm.xcodeproj
+# is not checked in: run `xcodegen generate` in this directory.
+name: Skillm
+
+options:
+  bundleIdPrefix: games.starberry
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    # Starberry Games GmbH; the app is signed with this team so it can be
+    # given to colleagues' Macs (Developer ID + notarization in C5).
+    DEVELOPMENT_TEAM: 6LH2JMGD3J
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MARKETING_VERSION: 0.0.0
+    CURRENT_PROJECT_VERSION: 1
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  Skillm:
+    type: application
+    platform: macOS
+    sources: [Skillm]
+    dependencies:
+      - target: SkillmKit
+    settings:
+      base:
+        PRODUCT_NAME: skillm
+        PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: skillm
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        # A menu bar app: no Dock icon, no main window.
+        INFOPLIST_KEY_LSUIElement: YES
+        # Hardened runtime, and no App Sandbox: skillm writes ~/.claude,
+        # project folders and ~/.skillm, and spawns git.
+        ENABLE_HARDENED_RUNTIME: YES
+        # The version stamped into the bundled CLI (scripts/build-cli.sh);
+        # a release build sets it to the release version.
+        SKILLM_VERSION: dev
+    postBuildScripts:
+      - name: Embed skillm CLI
+        script: '"$SRCROOT/scripts/build-cli.sh"'
+        # Go does its own up-to-date checks; run the phase every build.
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/skillm
+
+  SkillmKit:
+    type: framework.static
+    platform: macOS
+    sources: [SkillmKit]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm.SkillmKit
+        GENERATE_INFOPLIST_FILE: YES
+
+  SkillmKitTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [SkillmKitTests]
+    dependencies:
+      - target: SkillmKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm.SkillmKitTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Skillm:
+    build:
+      targets:
+        Skillm: all
+        SkillmKitTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - SkillmKitTests
+    archive:
+      config: Release

@@ -1,0 +1,84 @@
+#!/bin/sh
+# A fake skillm for SkillmClient's tests: it answers from the protocol's
+# golden fixtures (internal/protocol/testdata) instead of doing anything.
+#
+#   FAKE_SKILLM_FIXTURES  the fixture directory (required)
+#   FAKE_SKILLM_MODE      how to answer (see below); default: by command
+#   FAKE_SKILLM_ARGS      if set, each argument is written to it, one per line
+#   FAKE_SKILLM_PATH      if set, $PATH is written to it
+#   FAKE_SKILLM_SIGNALS   if set, "INT" is written to it when SIGINT arrives
+set -u
+fx=${FAKE_SKILLM_FIXTURES:?}
+[ -n "${FAKE_SKILLM_ARGS:-}" ] && printf '%s\n' "$@" >"$FAKE_SKILLM_ARGS"
+[ -n "${FAKE_SKILLM_PATH:-}" ] && printf '%s\n' "$PATH" >"$FAKE_SKILLM_PATH"
+
+events=no
+for a in "$@"; do [ "$a" = "--events" ] && events=yes; done
+
+# wait_for_interrupt: block until SIGINT, then run `answer` and exit 1, as
+# skillm does when it is cancelled.
+wait_for_interrupt() {
+	trap 'kill "$pid" 2>/dev/null; [ -n "${FAKE_SKILLM_SIGNALS:-}" ] && echo INT >"$FAKE_SKILLM_SIGNALS"; answer; exit 1' INT
+	sleep 30 >/dev/null 2>&1 &
+	pid=$!
+	wait "$pid"
+	echo "fake-skillm: never interrupted" >&2
+	exit 3
+}
+
+case "${FAKE_SKILLM_MODE:-}" in
+api99)
+	echo '{"schema_version":1,"data":{"version":"9.0.0","api_version":99,"capabilities":[]},"warnings":[],"error":null}'
+	exit 0
+	;;
+schema2)
+	echo '{"schema_version":2,"data":null,"warnings":[],"error":null}'
+	exit 0
+	;;
+git_missing)
+	echo '{"schema_version":1,"data":null,"warnings":[],"error":{"code":"git_missing","message":"git was not found on your PATH; skillm requires the system git binary — install git and try again","retryable":false}}'
+	exit 1
+	;;
+garbage)
+	echo "this is not json"
+	echo "panic: something broke" >&2
+	exit 2
+	;;
+hang)
+	answer() { cat "$fx/error_cancelled.json"; }
+	wait_for_interrupt
+	;;
+stream_hang)
+	echo '{"schema_version":1,"type":"event","event":"batch","items":["alpha"]}'
+	answer() {
+		echo '{"schema_version":1,"type":"result","data":null,"warnings":[],"error":{"code":"cancelled","message":"context canceled","retryable":true}}'
+	}
+	wait_for_interrupt
+	;;
+esac
+
+case "$1" in
+version) cat "$fx/version.json" ;;
+list) cat "$fx/list.json" ;;
+status) cat "$fx/status.json" ;;
+refresh) cat "$fx/refresh.json" ;;
+check)
+	if [ $events = yes ]; then cat "$fx/check_events.ndjson"; else cat "$fx/check.json"; fi
+	;;
+update)
+	if [ $events = yes ]; then
+		cat "$fx/update_events.ndjson"
+	else
+		cat "$fx/error_update_failed.json"
+		exit 1
+	fi
+	;;
+install)
+	cat "$fx/error_foreign_files.json"
+	exit 1
+	;;
+*)
+	echo "fake-skillm: unexpected arguments: $*" >&2
+	exit 64
+	;;
+esac
