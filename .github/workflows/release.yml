@@ -38,7 +38,10 @@ jobs:
   # runs), then uploaded to the release goreleaser just made, with the
   # appcast installed apps read (releases/latest/download/appcast.xml).
   # Until this job finishes, the latest release has no appcast: an app asks
-  # Sparkle again on its next status read, at most an hour later.
+  # Sparkle again on its next status read, at most an hour later. If it fails
+  # (missing secrets, a notarization refusal, an Apple outage), the
+  # appcast-fallback job below gives the release the previous one, so apps
+  # keep a working feed; rerun this job to ship the new app.
   macos:
     name: macOS app
     needs: goreleaser
@@ -47,7 +50,10 @@ jobs:
     # pre-release.
     if: ${{ !contains(github.ref_name, '-') }}
     runs-on: macos-latest
-    timeout-minutes: 60
+    # Above release.sh's notarization wait (SKILLM_NOTARY_TIMEOUT, 40m) plus
+    # the build, so a slow notarization fails the script (which keeps the
+    # submission ID and log) rather than being cancelled by GitHub.
+    timeout-minutes: 90
     env:
       KEYCHAIN_NAME: skillm-release.keychain-db
       SKILLM_NOTARY_PROFILE: skillm-notary
@@ -81,6 +87,9 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+
+      - name: Test the release scripts
+        run: macos/scripts/test-find-identity.sh
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -137,7 +146,7 @@ jobs:
         run: macos/scripts/publish-release.sh "$GITHUB_REF_NAME"
 
       - name: Keep the notarization log
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: notarization
@@ -147,3 +156,36 @@ jobs:
       - name: Remove the keychain
         if: always()
         run: security delete-keychain "$RUNNER_TEMP/$KEYCHAIN_NAME" || true
+
+  # A release without appcast.xml breaks the feed of every installed app
+  # (releases/latest/download/appcast.xml), and goreleaser has already made
+  # this release the latest. When the macOS job did not finish, copy the
+  # newest earlier appcast here: it still points at that release's app, so
+  # apps see no update until the macOS job is rerun (its upload replaces
+  # this copy). Nothing to copy before the first app release.
+  appcast-fallback:
+    name: Keep the previous appcast
+    needs: [goreleaser, macos]
+    if: ${{ always() && needs.goreleaser.result == 'success' && (needs.macos.result == 'failure' || needs.macos.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Copy the previous release's appcast
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -qxF appcast.xml; then
+            echo "$GITHUB_REF_NAME already has an appcast.xml"
+            exit 0
+          fi
+          for tag in $(gh release list --exclude-drafts --exclude-pre-releases --limit 50 --json tagName --jq '.[].tagName'); do
+            [ "$tag" != "$GITHUB_REF_NAME" ] || continue
+            dir="$RUNNER_TEMP/appcast-$tag"
+            if gh release download "$tag" --pattern appcast.xml --dir "$dir" 2>/dev/null; then
+              gh release upload "$GITHUB_REF_NAME" "$dir/appcast.xml"
+              echo "::warning::the macOS app job did not finish: $GITHUB_REF_NAME serves $tag's appcast until that job is rerun"
+              exit 0
+            fi
+          done
+          echo "no earlier release has an appcast.xml: no app has shipped yet"

@@ -30,13 +30,48 @@
 #             login keychain item generate_keys made (account
 #             SKILLM_SPARKLE_ACCOUNT, default skillm).
 #
+# One-time setup on a Mac that releases (team 6LH2JMGD3J):
+#   1. Xcode > Settings > Accounts > Starberry Games GmbH > Manage
+#      Certificates > + > Developer ID Application (Account Holder or Admin).
+#   2. xcrun notarytool store-credentials skillm-notary \
+#        --apple-id <apple-id> --team-id 6LH2JMGD3J
+#      (asks for an app-specific password from account.apple.com), or with an
+#      App Store Connect API key: --key AuthKey_<key id>.p8 --key-id <key id>
+#      --issuer <issuer id>.
+#   3. The Sparkle key is already in the login keychain of the Mac that ran
+#      generate_keys (C4); on another Mac, import it with
+#      generate_keys --account skillm -f sparkle_ed_private_key.txt.
+#
+# CI secrets (the macOS job of .github/workflows/release.yml fails without
+# them), set once with the GitHub CLI from the repository checkout:
+#   MACOS_DEVELOPER_ID_P12_BASE64, MACOS_DEVELOPER_ID_P12_PASSWORD
+#       Keychain Access > My Certificates > "Developer ID Application:
+#       Starberry Games GmbH (6LH2JMGD3J)" > Export as developer-id.p12, with
+#       a password; then
+#         base64 -i developer-id.p12 | gh secret set MACOS_DEVELOPER_ID_P12_BASE64
+#         gh secret set MACOS_DEVELOPER_ID_P12_PASSWORD   (prompts for it)
+#       and delete developer-id.p12.
+#   APPLE_NOTARY_KEY_P8, APPLE_NOTARY_KEY_ID, APPLE_NOTARY_ISSUER_ID
+#       App Store Connect > Users and Access > Integrations > Team Keys > +
+#       (role Developer); download AuthKey_<key id>.p8 (only once); then
+#         gh secret set APPLE_NOTARY_KEY_P8 < AuthKey_<key id>.p8
+#         gh secret set APPLE_NOTARY_KEY_ID --body <key id>
+#         gh secret set APPLE_NOTARY_ISSUER_ID --body <issuer id>
+#   SPARKLE_ED_PRIVATE_KEY
+#       <derived data>/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys \
+#         --account skillm -x sparkle_ed_private_key.txt
+#       gh secret set SPARKLE_ED_PRIVATE_KEY < sparkle_ed_private_key.txt
+#       and delete the file (after this script's first run the tool is also
+#       under macos/build/release/DerivedData/).
+#
 # --dry-run tries the pipeline without distribution credentials: any signing
 # identity (the Developer ID one when present, else Apple Development), no
 # notarization or stapling, a dirty or untagged tree allowed, and the appcast
 # only when SPARKLE_ED_PRIVATE_KEY is set. Its output goes to
 # macos/build/release/<version>-dry-run/ and must never be published.
 #
-# SKILLM_RELEASE_DIR overrides macos/build/release.
+# SKILLM_RELEASE_DIR overrides macos/build/release; SKILLM_NOTARY_TIMEOUT the
+# notarization wait (default 40m).
 set -euo pipefail
 
 die() {
@@ -109,23 +144,13 @@ team=$(sed -n 's/^[[:space:]]*DEVELOPMENT_TEAM:[[:space:]]*\([A-Z0-9]\{10\}\).*/
 
 # --- the signing identity --------------------------------------------------
 
-# find_identity <certificate kind> [team]: the SHA-1 of the one valid
-# codesigning identity of that kind (and team, which a Developer ID
-# certificate's name ends with).
-find_identity() {
-	local pattern="\"$1: .*\""
-	[ -n "${2:-}" ] && pattern="\"$1: .* ($2)\""
-	{ security find-identity -v -p codesigning || true; } | { grep -E "$pattern" || true; } |
-		sed -n 's/^ *[0-9][0-9]*) \([0-9A-F]\{40\}\) .*/\1/p' | head -n 1
-}
-
 step "Finding the signing identity"
 identity=${SKILLM_SIGN_IDENTITY:-}
 if [ -z "$identity" ]; then
-	identity=$(find_identity "Developer ID Application" "$team")
+	identity=$("$script_dir/find-identity.sh" "Developer ID Application" "$team")
 fi
 if [ -z "$identity" ] && [ "$dry_run" = 1 ]; then
-	identity=$(find_identity "Apple Development")
+	identity=$("$script_dir/find-identity.sh" "Apple Development")
 	[ -z "$identity" ] || warn "no Developer ID Application identity; signing with Apple Development (dry run)"
 fi
 if [ -z "$identity" ]; then
@@ -244,18 +269,28 @@ if [ "$dry_run" = 0 ]; then
 	step "Notarizing (this can take a few minutes)"
 	mkdir -p "$out/notarize"
 	ditto -c -k --sequesterRsrc --keepParent "$app" "$out/notarize/skillm.zip"
+	# Submit, keep the submission ID, then wait: if the wait is cut short (its
+	# timeout, or the CI job's), submit.json still names the submission, and
+	# `xcrun notarytool info <id>` / `log <id>` find it later. The wait's
+	# timeout stays well inside the CI job's timeout-minutes, so this script
+	# (not GitHub) ends a slow notarization and fetches what it can.
 	xcrun notarytool submit "$out/notarize/skillm.zip" "${notary_args[@]}" \
-		--wait --timeout 1h --output-format json >"$out/notarize/submit.json" || true
+		--output-format json >"$out/notarize/submit.json" || true
 	submission=$(plutil -extract id raw -o - "$out/notarize/submit.json" 2>/dev/null || true)
-	result=$(plutil -extract status raw -o - "$out/notarize/submit.json" 2>/dev/null || true)
-	if [ -n "$submission" ]; then
-		xcrun notarytool log "$submission" "${notary_args[@]}" "$out/notarize/log.json" >/dev/null 2>&1 ||
-			warn "could not fetch the notarization log"
-	fi
-	if [ "$result" != Accepted ]; then
+	if [ -z "$submission" ]; then
 		cat "$out/notarize/submit.json" >&2 || true
+		die "notarytool did not accept the upload"
+	fi
+	printf 'submission %s\n' "$submission" >&2
+	xcrun notarytool wait "$submission" "${notary_args[@]}" \
+		--timeout "${SKILLM_NOTARY_TIMEOUT:-40m}" --output-format json >"$out/notarize/wait.json" || true
+	result=$(plutil -extract status raw -o - "$out/notarize/wait.json" 2>/dev/null || true)
+	xcrun notarytool log "$submission" "${notary_args[@]}" "$out/notarize/log.json" >/dev/null 2>&1 ||
+		warn "could not fetch the notarization log (there is none until Apple finishes)"
+	if [ "$result" != Accepted ]; then
+		cat "$out/notarize/wait.json" >&2 || true
 		[ -f "$out/notarize/log.json" ] && cat "$out/notarize/log.json" >&2
-		die "notarization ended with status \"${result:-unknown}\""
+		die "notarization of submission $submission ended with status \"${result:-unknown}\" (xcrun notarytool info $submission ${notary_args[*]})"
 	fi
 	xcrun stapler staple "$app"
 	xcrun stapler validate "$app"
