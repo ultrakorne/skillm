@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
@@ -26,7 +27,8 @@ func newCheckCmd() *cobra.Command {
 			"and changes nothing. It compares upstream revisions only and never inspects the " +
 			"installed copies, so `skillm update` may still re-sync an install whose copy has " +
 			"drifted from its recorded revision. Local skills have no upstream and are skipped.",
-		Args: cobra.NoArgs,
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCheck(cmd.Context())
 		},
@@ -40,6 +42,9 @@ func runCheck(ctx context.Context) error {
 	opts, err := coreOptions(false)
 	if err != nil {
 		return err
+	}
+	if flagJSON {
+		return runCheckJSON(ctx, opts)
 	}
 
 	// One row per skill, checked concurrently by core with a live per-skill
@@ -88,6 +93,18 @@ func runCheck(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// runCheckJSON is `check --json`: core.Check reports to the protocol writer
+// (events stream with --events), and the result is every skill's status. A
+// cancelled run (SIGINT) fails with code "cancelled" and no partial data.
+func runCheckJSON(ctx context.Context, opts core.Options) error {
+	out := jsonOut()
+	res, err := core.Check(ctx, opts, out)
+	if err != nil {
+		return err
+	}
+	return out.Result(protocol.NewCheckData(res))
 }
 
 // checkReporter renders core.Check's events on a termReporter, keeping the

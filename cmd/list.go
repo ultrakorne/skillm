@@ -12,6 +12,7 @@ import (
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/linker"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -27,7 +28,8 @@ func newListCmd() *cobra.Command {
 			"kind (git or local), and the scopes and agents it is currently linked to " +
 			"(read live from disk). It is fully offline and fast; run `skillm check` to " +
 			"see which git skills have upstream updates.",
-		Args: cobra.NoArgs,
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runList()
 		},
@@ -45,6 +47,9 @@ func runList() error {
 	res, err := core.List(opts)
 	if err != nil {
 		return err
+	}
+	if flagJSON {
+		return jsonOut().Result(protocol.NewListData(res))
 	}
 
 	// list stays fast and offline: it reports each skill's kind (git or local),
