@@ -2,17 +2,17 @@
 
 ## Overview
 
-The operations `install`, `update`, `uninstall`, `import` and `agent` share to write an
-install live in `internal/core`: writing, refreshing and removing a Canonical copy and its
-agent Links (`internal/core/vendor.go`), keeping a Local install root's `skills-lock.json`
-entry in step (`internal/core/locksync.go`), and deciding Source identity
-(`internal/core/source.go`). They are presentation-free: each reports what it did as a log
-Event with a stable `Code` and a human `Text`, and returns its failures. Their callers keep
-the loops and the Home lock. These callers are `uninstall` and `agent` in `cmd`, and core's
-`InstallSkills`, `Update` and `Import`. The prompts stay in `cmd`, which passes `termLog` or
-`termReporter` (`cmd/reporter.go`) to print each Text through the `ui` helper for its level
-the moment it is reported. A Text never names a CLI flag:
-`termLog` appends the `--force` advice for the codes a flag resolves.
+The operations every changing command shares to write an install live in `internal/core`:
+writing, refreshing and removing a Canonical copy and its agent Links
+(`internal/core/vendor.go`), keeping a Local install root's `skills-lock.json` entry in step
+(`internal/core/locksync.go`), and deciding Source identity (`internal/core/source.go`). They
+are presentation-free: each reports what it did as a log Event with a stable `Code` and a
+human `Text`, and returns its failures. Their callers, core's
+`InstallSkills`, `Update`, `Import`, `Uninstall` and `SetAgents`, keep the loops and run under
+the Home lock. The prompts stay in `cmd`, which passes `termLog` or `termReporter`
+(`cmd/reporter.go`) to print each Text through the `ui` helper for its level the moment it is
+reported. A Text never names a CLI flag or command: `termLog` appends the advice (`--force`,
+`skillm install`, `skillm uninstall`) for the codes it resolves.
 
 ## Noteworthy
 
@@ -30,7 +30,8 @@ caller keyed on `Code` can offer "take over" only where it works while the CLI t
 `forceLinks` (replace a foreign entry at an agent's link path). The overwrite prompt lists only
 canonical-slot conflicts, so answering it must not delete entries it never showed; only an
 explicit `--force` sets `forceLinks`. A Link refusal is reported, never fatal: the copy is the
-recorded unit and Links are re-derived from disk.
+recorded unit and Links are re-derived from disk. Likewise `VendorRemove` returns an unlink
+failure apart from a failure to remove the copy, and only the latter stops the removal.
 
 ### A recorded install's slot is skillm's own
 

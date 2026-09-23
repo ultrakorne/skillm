@@ -11,3 +11,4 @@ The Go program behind every skillm command: it runs each operation on Config, th
 | [install-primitives.md](install-primitives.md) | Copy, Link, Lockfile and Source-identity primitives: event codes, force and failure rules |
 | [inspect-and-install.md](inspect-and-install.md) | `core.Inspect`/`core.InstallSkills`: the pinned commit, batch checks, lock hand-off, path resolution |
 | [update-and-import.md](update-and-import.md) | `core.Update`/`core.Import`: the unlocked fetch, stale-fetch judgement, per-skill outcomes |
+| [uninstall-and-agents.md](uninstall-and-agents.md) | `core.Uninstall`/`core.SetAgents`: confirmed roots, `ErrNeedsConfirm` vs `ErrNeedsForce`, agent sweeps |

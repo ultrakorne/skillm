@@ -2,25 +2,24 @@
 
 ## Architecture
 
-Each command in `cmd/` is a cobra command. `uninstall` and `agent` keep their loops and prompts
-in `cmd` and write through core's install primitives (Canonical copies, agent Links, Lockfile
-entries, Source identity; see [install-primitives.md](install-primitives.md)): each resolves
-Home, takes the Home lock, loads Config and the Registry, writes, saves the Registry (and
-Config, when `agent` toggles Enabled flags or a first run seeds the defaults) and releases the
-lock on return. `install`, `update` and `import` run over core operations instead
-(`core.Inspect`/`core.InstallSkills`, `core.Update`, `core.Import`): they fetch into a temp dir
-outside Home, and `install` asks its questions, with Home unlocked, then take the lock for the
-write phase and re-read Home under it (see [inspect-and-install.md](inspect-and-install.md) and
-[update-and-import.md](update-and-import.md)). `upgrade` never touches Home.
+Each command in `cmd/` is a cobra command over one or more core operations: `install` over
+`core.Inspect`/`core.InstallSkills`, `update` over `core.Update`, `import` over `core.Import`,
+`uninstall` over `core.Uninstall`, and `agent` over `core.Agents`/`core.SetAgents`. Every
+question (pickers, scope, overwrite, confirmations) and every fetch runs with Home unlocked;
+the write phase then takes the Home lock and re-reads Config and the Registry under it. `update`
+and `import` take it through the `Options.Lock` hook after their fetches; the others take it in
+`cmd` around the core call. Core writes through its install primitives (Canonical copies, agent
+Links, Lockfile entries, Source identity; see [install-primitives.md](install-primitives.md)).
+`upgrade` never touches Home.
 
-`check` and `list` call `core.Check` and `core.List`, which load Config and the Registry with
-no lock and return a typed result. Every core operation takes a `core.Options` and reports
-through a `Reporter`'s `Event`: `cmd`'s `termReporter` turns Events into the terminal checklist
-(`check`, and `update`'s fetches with a progress bar) and the `ui` print helpers, and `termLog`
-prints log Events. Prompts and every other presentation concern stay in `cmd`: `internal/core`
-imports neither `internal/ui` nor cobra/bubbletea/huh/lipgloss, never touches the standard
-streams, and never reads the process working directory (`os.Getwd` or `filepath.Abs`); it
-resolves relative paths against `Options.Cwd`. `internal/core/arch_test.go` enforces all of it.
+`check` and `list` call `core.Check` and `core.List`, which read Home with no lock. Every core
+operation takes a `core.Options` and reports through a `Reporter`'s `Event`: `cmd`'s
+`termReporter` turns Events into the terminal checklist (`check`, and `update`'s fetches with a
+progress bar) and the `ui` print helpers, and `termLog` prints log Events. Prompts and every
+other presentation concern stay in `cmd`: `internal/core` imports neither `internal/ui` nor
+cobra/bubbletea/huh/lipgloss, never touches the standard streams, and never reads the process
+working directory (`os.Getwd` or `filepath.Abs`); it resolves relative paths against
+`Options.Cwd`. `internal/core/arch_test.go` enforces all of it.
 
 Home holds three files: `config.toml` (Config), `state.toml` (Registry) and `.lock`. Both TOML
 files are replaced whole on every save through one atomic-write primitive; the lock file holds
@@ -35,6 +34,7 @@ nothing but the current holder's description.
 | `cmd/fetch.go` | The skill picker over an Inspection |
 | `cmd/reporter.go` | `coreOptions`, `termReporter` (core Events → checklist and prints), `termLog` with its flag advice |
 | `cmd/update.go`, `cmd/import.go` | Build `core.Options` with the lock hook, render Events, print the summary line |
+| `cmd/uninstall.go`, `cmd/agent.go` | The skill and agent pickers and confirmations, then the core call under the Home lock |
 | `cmd/check.go` | `check` over `core.Check`, with `checkReporter` restoring the CLI's "untracked" line |
 | `internal/store/store.go` | Home resolution (`--home`, `$SKILLM_HOME`, `~/.skillm`) and the directory-copy primitives |
 | `internal/store/atomic.go` | Atomic file replace used by every Config and Registry save |
@@ -51,6 +51,7 @@ nothing but the current holder's description.
 | `internal/core/locksync.go` | Upserts and removes a skill's `skills-lock.json` entry at a Local install root |
 | `internal/core/inspect.go`, `internal/core/install.go` | `Inspect` (a Source read once, pinned to one commit) and `InstallSkills` with its selection checks |
 | `internal/core/update.go`, `internal/core/import.go` | `Update` with its per-skill outcomes; `Import` and the all-skills adoption sweep |
+| `internal/core/uninstall.go`, `internal/core/agents.go`, `internal/core/roots.go` | `Uninstall`; `Agents` and `SetAgents` with their link sweeps; pruning tracked roots and vanished installs |
 | `internal/core/source.go` | Source identity (same-source refresh or collision), the entry to record, git re-fetch, `ResolvePath` |
 | `internal/ui/checklist.go` | `Checklist`: one row per label for work the caller runs, resolved via `Done`/`Wait` |
 
@@ -58,12 +59,11 @@ nothing but the current holder's description.
 
 ### The Home lock spans every read → decide → write, and its file is never deleted
 
-`uninstall` and `agent` take the lock before loading anything and hold it until they return,
-prompts included. `install`, `update` and `import` hold it only around their write phase, which
-re-reads Home under it, so a load → mutate → save cycle never interleaves with another skillm
-process. A second process waits up to 30 seconds, then fails naming the holder.
-Release truncates `.lock` but leaves it in place: the lock is advisory on an open file, so
-recreating it would let two processes each lock a different inode. The lock is per Home.
+Every changing command asks and fetches first, then holds the lock around a write phase that
+re-reads Home, so a load → mutate → save cycle never interleaves with another skillm process and
+an open prompt never blocks one. A waiter gives up after 30 seconds, naming the holder. Release
+truncates `.lock` but leaves it in place: the lock is advisory on an open file, so recreating it
+would let two processes each lock a different inode. The lock is per Home.
 
 ### Reads take no lock because saves are atomic
 
@@ -82,8 +82,9 @@ caller holds the Home lock.
 
 ### Sub-component rules live on topic pages
 
-[check-and-list.md](check-and-list.md) covers `core.Check`/`core.List` results and
-cancellation; [install-primitives.md](install-primitives.md) the refusal codes, `force`/
-`forceLinks` and best-effort Lockfile writes; [inspect-and-install.md](inspect-and-install.md)
-the pinned commit, batch checks and `Options.Cwd`; [update-and-import.md](update-and-import.md)
-the unlocked fetch, stale-fetch judgement and per-skill outcomes.
+[check-and-list.md](check-and-list.md) covers result semantics and cancellation;
+[install-primitives.md](install-primitives.md) refusal codes, `force`/`forceLinks` and Lockfile
+writes; [inspect-and-install.md](inspect-and-install.md) the pinned commit, batch checks and
+`Options.Cwd`; [update-and-import.md](update-and-import.md) the unlocked fetch and per-skill
+outcomes; [uninstall-and-agents.md](uninstall-and-agents.md) confirmed roots, `ErrNeedsForce`
+and the agent sweeps.

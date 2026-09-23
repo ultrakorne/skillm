@@ -13,9 +13,9 @@ script running in the background) and must never corrupt Home or each other's in
 |---------|---------------------------|---------------------|
 | `install` | yes | yes, while it writes |
 | `update` | yes | yes, while it writes |
-| `uninstall` | yes | yes |
+| `uninstall` | yes | yes, while it writes |
 | `import` | yes | yes, while it writes |
-| `agent` | yes | yes |
+| `agent` | yes | yes, while it writes |
 | `list`, `check` | no | no |
 | `upgrade` | no (replaces the skillm binary only) | no |
 
@@ -23,14 +23,17 @@ script running in the background) and must never corrupt Home or each other's in
 
 ## Flows
 
-- **A changing command** — takes the Home lock, reads Config and the Registry, does its work
-  (prompting, writing copies and links), saves, and releases the lock when it ends.
+- **A changing command** — asks its questions and fetches with Home free, then takes the Home
+  lock, re-reads Config and the Registry, writes, saves, and releases the lock when it ends.
 - **Updating and importing** — skillm fetches every source with Home free, then takes the lock,
   re-reads Home and writes. A skill another skillm process reinstalled or updated meanwhile is
   not rolled back: that skill fails with "run update again" and the rest are updated.
 - **Installing from a Source** — skillm reads the Source and asks which skills and where before
   it takes the Home lock; an overwrite question is also asked with Home free. Once locked, it
   re-reads Home and re-checks the choice, then installs exactly the commit it read.
+- **Uninstalling** — the confirmation names every project whose committed copies are deleted. If
+  another skillm process installs one of the skills into a new project meanwhile, skillm asks
+  again with the new list. Ctrl-C stops between skills; those already removed stay removed.
 - **A relative local path** — `skillm install ./skills/foo` records the directory's absolute
   path, so `update` finds the source from any directory.
 - **Home is busy** — the second command prints `waiting for another skillm operation (pid …:

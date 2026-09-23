@@ -155,7 +155,8 @@ links, the Canonical copy, and the Lockfile entry** — committed files in the u
 the confirmation names those projects) — the only copies there are — sweeping every Agent and
 Scope across all defined Agents (even ones now disabled, so nothing is left dangling), then
 drops its Registry entry. There is **no per-scope uninstall**: it always clears every reference.
-Safe by default — on a terminal it confirms first (skip with `--yes`/`--force`). Acts on one or
+Safe by default — on a terminal it confirms first (skip with `--yes`/`--force`), and asks again
+if another process added a project to delete from while the question was open. Acts on one or
 more named skills, or interactively on a multiselect of every installed skill.
 
 ### Import
@@ -230,10 +231,9 @@ lockfiles alone cannot provide.
 ### Home lock
 The exclusive, cross-process lock on Home that serializes skillm processes. Every command that
 changes Config, the Registry or any install (Install, Update, Uninstall, Import, and enabling
-or disabling agents) holds it across its writes. Uninstall and enabling or disabling agents
-hold it from reading Home to their last save. Install, Update and Import fetch (and Install
-asks its questions) before locking, then re-read Home under the lock. List, Check and
-Upgrade take none. A command that finds Home locked waits for the holder, then gives
-up after a bounded wait with an error naming the holding command. Readers need no lock because
-every save of `config.toml` and `state.toml` replaces the file in one step.
+or disabling agents) holds it across its writes. Each asks its questions (and fetches) before
+locking, then re-reads Home under the lock. List, Check and Upgrade take none. A command that
+finds Home locked waits for the holder, then gives up after a bounded wait with an error naming
+the holding command. Readers need no lock because every save of `config.toml` and `state.toml`
+replaces the file in one step.
 _Avoid_: Lockfile (that is the per-project `skills-lock.json`)
