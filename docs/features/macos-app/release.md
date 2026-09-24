@@ -44,6 +44,15 @@ appcast's one item points at this release's zip, with its size and a signature t
 skips notarization, allows a dirty tree and writes to `<version>-dry-run/` with a `DRY-RUN`
 marker that `publish-release.sh` refuses.
 
+### A release can skip notarization
+
+`--no-notarize` builds a publishable release without a Developer ID: it signs with Apple
+Development when no Developer ID identity exists, skips notarization, and leaves a
+`NOT-NOTARIZED` marker, from which `publish-release.sh` adds the Open Anyway steps to the release
+notes. It still needs a clean checkout of the tag and the Sparkle key. macOS blocks such an app on
+its first launch until the user allows it in Privacy & Security; Sparkle's updates carry no
+quarantine, so later versions open without asking.
+
 ### Notarization keeps its submission ID
 
 `notarytool submit` returns at once and its ID is saved in `notarize/submit.json` before the
