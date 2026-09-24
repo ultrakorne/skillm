@@ -105,9 +105,7 @@ public final class AppModel {
     public private(set) var cliProblem: String?
     /// The Refresh cache as `status`/`refresh` last reported it; nil until
     /// it was read once.
-    public private(set) var status: StatusData? {
-        didSet { upgrade.statusChanged(status) }
-    }
+    public private(set) var status: StatusData?
     /// "Upgrade app and restart": the app's updater and what it found.
     public let upgrade = AppUpgrade()
     /// The refresh settings from config.toml; nil until read. Read again
@@ -135,8 +133,9 @@ public final class AppModel {
     /// A command that can change something is running: the items that
     /// start one are greyed out.
     public var isBusy: Bool { activity != .idle }
-    /// Any skillm is running, a read included: a quit waits for it.
-    public var hasRunningCommands: Bool { operation != nil || !reads.isEmpty }
+    /// Any skillm is running, a read, the launch checks or work on the CLI
+    /// included: a quit waits for it.
+    public var hasRunningCommands: Bool { operation != nil || !reads.isEmpty || cliTask != nil }
     /// The launch checks passed: commands can run. Observable, so a window
     /// restored at launch loads once it is true.
     public var isReady: Bool {
@@ -149,6 +148,13 @@ public final class AppModel {
     /// upgrade of a CLI too old for the protocol runs with it).
     @ObservationIgnored private var cliEnvironment: [String: String] = [:]
     @ObservationIgnored private var operation: Task<Void, Never>?
+    /// The launch checks run again (`checkCLIAgain`), or work on the CLI
+    /// (`cliWork`) followed by them.
+    @ObservationIgnored private var cliTask: Task<Void, Never>?
+    /// The CLI file the launch checks found, as it was then: when it changes
+    /// (an upgrade, a reinstall or a removal in a terminal), the launch
+    /// checks run again. Nil when none was found.
+    @ObservationIgnored private var cliFile: CLIFileIdentity?
     /// The reads running beside `operation`.
     @ObservationIgnored private var reads: [UUID: RunningRead] = [:]
     @ObservationIgnored private var scheduler: RefreshScheduler?
@@ -193,15 +199,19 @@ public final class AppModel {
     // MARK: - Launch
 
     /// Runs the launch checks (finds the installed skillm, refuses one with
-    /// an unknown API version, checks for git), reads the cached status, and
-    /// starts the schedule. Its first tick, which reads the settings, runs now
-    /// when the CLI is usable; while it is not, each tick runs the launch
-    /// checks again, so a CLI installed or upgraded in a terminal is found.
+    /// an unknown API version, checks for git), asks the app's updater,
+    /// reads the cached status, and starts the schedule. Its first tick,
+    /// which reads the settings, runs now when the CLI is usable; while it is
+    /// not, each tick runs the launch checks again, so a CLI installed or
+    /// upgraded in a terminal is found. While it is usable, each tick first
+    /// looks at the CLI's file, and runs the launch checks again when it
+    /// changed.
     public func start() async {
         guard !hasStarted else { return }
         hasStarted = true
         await connectCLI()
         guard !isShuttingDown else { return }
+        upgrade.tick(every: appCheckInterval)
         if isReady { await readStatus() }
         guard !isShuttingDown else { return }
         startSchedule(tickNow: isReady)
@@ -217,10 +227,29 @@ public final class AppModel {
         scheduler.start(tickNow: tickNow)
     }
 
-    /// A scheduled tick: a refresh when the CLI is usable, else the launch
-    /// checks again.
+    /// A scheduled tick: the app's updater when a check is due, then a
+    /// refresh when the CLI is usable and unchanged, else the launch checks
+    /// again.
     private func tick() {
-        if isReady { scheduledRefresh() } else { checkCLIAgain() }
+        upgrade.tick(every: appCheckInterval)
+        if isReady, !cliChanged { scheduledRefresh() } else { checkCLIAgain() }
+    }
+
+    /// How often the app's updater is asked: the refresh interval, and not
+    /// at all while auto check is off (the Refresh item still asks). While
+    /// the CLI cannot be used, its Auto check is out of reach, so the
+    /// updater is asked on the last interval known, or daily.
+    private var appCheckInterval: TimeInterval? {
+        guard let settings else { return AppUpgrade.defaultInterval }
+        if isReady, !settings.enabled { return nil }
+        return TimeInterval(max(settings.intervalHours, 1)) * 3600
+    }
+
+    /// The CLI's file is no longer the one the launch checks found: it was
+    /// upgraded, replaced or removed since.
+    var cliChanged: Bool {
+        guard let cliPath else { return false }
+        return CLIFileIdentity(cliPath) != cliFile
     }
 
     /// The launch checks. Only run while no command runs: the client goes
@@ -231,6 +260,7 @@ public final class AppModel {
         do {
             let client = try await makeClient()
             cliPath = client.executable
+            cliFile = CLIFileIdentity(client.executable)
             cliEnvironment = client.environment
             cliVersion = nil
             let version = try await client.connect()
@@ -251,6 +281,7 @@ public final class AppModel {
         switch skillmError {
         case .binaryNotFound:
             cliPath = nil
+            cliFile = nil
             cliVersion = nil
             cli = .missing
         case .incompatibleCLI(let version, _, _):
@@ -275,14 +306,25 @@ public final class AppModel {
         scheduledRefresh()
     }
 
-    /// "Check Again", and every scheduled tick while the CLI cannot be used:
-    /// the launch checks again. Nil when the CLI is usable, or while a
-    /// check, a command or work on the CLI runs.
+    /// "Check Again", Settings, every scheduled tick while the CLI cannot be
+    /// used, and the end of every command: the launch checks again. Nil when
+    /// the CLI is usable and its file unchanged, or while a check, a command
+    /// or work on the CLI runs.
     @discardableResult
     public func checkCLIAgain() -> Task<Void, Never>? {
-        guard hasStarted, !isReady, cli != .starting, cliWork == nil, !hasRunningCommands, !isShuttingDown
+        guard hasStarted, !isReady || cliChanged, cli != .starting, cliWork == nil, !hasRunningCommands,
+            !isShuttingDown
         else { return nil }
-        let task = Task { @MainActor in await self.relaunchChecks() }
+        return runCLITask { await $0.relaunchChecks() }
+    }
+
+    /// Runs `work` as `cliTask`.
+    private func runCLITask(_ work: @escaping @MainActor (AppModel) async -> Void) -> Task<Void, Never> {
+        let task = Task { @MainActor in
+            await work(self)
+            self.cliTask = nil
+        }
+        cliTask = task
         return task
     }
 
@@ -332,21 +374,31 @@ public final class AppModel {
     }
 
     /// Runs `work` on the CLI (nil while other work runs), then the launch
-    /// checks again, whether it failed or not.
+    /// checks again, whether it failed or not. Work that succeeded but left
+    /// a CLI still too old (the latest release is older than this app
+    /// supports) says so.
     private func fixCLI(_ kind: CLIWork, _ work: @escaping @MainActor () async throws -> Void) -> Task<Void, Never>? {
         guard cliWork == nil, cli != .starting, !hasRunningCommands, !isShuttingDown else { return nil }
         cliWork = kind
         cliProblem = nil
-        return Task { @MainActor in
+        return runCLITask { model in
+            var succeeded = false
             do {
                 try await work()
+                succeeded = true
             } catch {
-                self.cliProblem = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                model.cliProblem = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
-            self.cliWork = nil
-            await self.relaunchChecks()
+            model.cliWork = nil
+            await model.relaunchChecks()
+            if succeeded, case .tooOld = model.cli {
+                model.cliProblem = Self.latestTooOld
+            }
         }
     }
+
+    /// Install or upgrade worked, and the CLI is still too old.
+    static let latestTooOld = "The latest skillm release is still too old for this app"
 
     /// The CLI changed under a usable client (an upgrade): reads its version
     /// again, and stops using it when this app no longer supports it.
@@ -354,6 +406,7 @@ public final class AppModel {
         do {
             let version = try await client.connect()
             cliVersion = version.version
+            cliFile = CLIFileIdentity(client.executable)
             cli = .ready(version: version.version)
         } catch is CancellationError {
         } catch {
@@ -373,9 +426,13 @@ public final class AppModel {
                 model.status = data.status
             } catch is CancellationError {
                 model.notice = Notice(text: "Check stopped", isError: false)
+                return
             } catch {
                 model.notice = Self.failure(error)
             }
+            // The Refresh item checks the app too, whether or not the CLI's
+            // check worked.
+            model.upgrade.checkNow()
         }
     }
 
@@ -494,11 +551,28 @@ public final class AppModel {
     }
 
     /// Stops the schedule, interrupts the running commands and returns once
-    /// every skillm has exited, so a quit never cuts a write short.
+    /// every skillm has exited, so a quit never cuts a write short. Work on
+    /// the CLI (`install.sh`, a plain `skillm upgrade`) cannot be
+    /// interrupted: it is waited for, up to `cliWorkLimit`.
     public func shutdown() async {
         isShuttingDown = true
         scheduler?.stop()
         scheduler = nil
+        if let cliTask {
+            // A task group would wait for both: whichever ends first.
+            let done = Latch<Void>()
+            let limit = Self.cliWorkLimit
+            Task { @MainActor in
+                await cliTask.value
+                done.set(())
+            }
+            let timer = Task.detached {
+                try? await Task.sleep(for: limit)
+                done.set(())
+            }
+            await done.wait()
+            timer.cancel()
+        }
         let running = Array(reads.values)
         for r in running { r.cancel() }
         if let operation {
@@ -535,10 +609,21 @@ public final class AppModel {
         startSchedule()
     }
 
-    /// Returns when no command is running (including one a finished command
-    /// started after itself).
+    /// How long a quit waits for work on the CLI.
+    static let cliWorkLimit: Duration = .seconds(120)
+
+    /// Returns when no command and no launch check is running (including
+    /// one a finished one started after itself).
     public func waitUntilIdle() async {
-        while let operation { await operation.value }
+        while true {
+            if let cliTask {
+                await cliTask.value
+            } else if let operation {
+                await operation.value
+            } else {
+                return
+            }
+        }
     }
 
     // MARK: - For the windows
@@ -608,6 +693,9 @@ public final class AppModel {
             self.isStopping = false
             self.operation = nil
             if !self.isShuttingDown { then?(self) }
+            // The CLI may have changed under the command (a terminal
+            // upgrade, a removal): its failures then say little.
+            if !self.isShuttingDown, self.cliChanged { self.checkCLIAgain() }
         }
         operation = task
         return task

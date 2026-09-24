@@ -20,11 +20,6 @@ final class FakeUpdater: AppUpdater {
 /// shows, what it does, and the feed the Info.plist names.
 @MainActor
 final class AppUpgradeTests: XCTestCase {
-    private func status(_ name: String = "status.json") throws -> StatusData {
-        let data = try Data(contentsOf: TestPaths.fixtures.appending(path: name))
-        return try XCTUnwrap(protocolDecoder().decode(Envelope<StatusData>.self, from: data).data)
-    }
-
     // MARK: - UpdateFeed
 
     private let key = Data(repeating: 7, count: 32).base64EncodedString()
@@ -48,47 +43,38 @@ final class AppUpgradeTests: XCTestCase {
 
     // MARK: - AppUpgrade
 
-    func testEveryCheckAsksTheUpdaterOnce() throws {
+    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+    private let day: TimeInterval = 24 * 3600
+
+    func testTheUpdaterIsAskedOncePerInterval() {
         let upgrade = AppUpgrade()
         let updater = FakeUpdater()
         upgrade.attach(updater)
-        var checked = try status()
-        // The app's version is independent of the CLI's: whether a newer
-        // CLI exists says nothing about the app.
-        checked.cache.selfStatus?.available = false
+        XCTAssertEqual(updater.probes, 0, "attaching asks nothing: the model's next tick does")
 
-        upgrade.statusChanged(checked)
-        XCTAssertEqual(updater.probes, 1)
-        upgrade.statusChanged(checked)
-        XCTAssertEqual(updater.probes, 1, "a re-read of the same cache asks again")
+        upgrade.tick(now: start, every: day)
+        XCTAssertEqual(updater.probes, 1, "never asked yet")
+        upgrade.tick(now: start.addingTimeInterval(3600), every: day)
+        XCTAssertEqual(updater.probes, 1, "asked again within the interval")
         XCTAssertFalse(upgrade.isAvailable, "shown before the updater found the update")
 
-        // The next check (the schedule's, or the Refresh item's) asks again.
         upgrade.notFound()
-        var later = checked
-        later.cache.checkedAt = checked.cache.checkedAt?.addingTimeInterval(3600)
-        upgrade.statusChanged(later)
-        XCTAssertEqual(updater.probes, 2)
+        upgrade.tick(now: start.addingTimeInterval(day), every: day)
+        XCTAssertEqual(updater.probes, 2, "the interval passed")
     }
 
-    func testNoCheckAsksNothing() throws {
+    func testAutoCheckOffAsksOnlyForTheRefreshItem() {
         let upgrade = AppUpgrade()
         let updater = FakeUpdater()
         upgrade.attach(updater)
-        upgrade.statusChanged(try status("status_never.json"))
-        upgrade.statusChanged(nil)
+        upgrade.tick(now: start, every: nil)
         XCTAssertEqual(updater.probes, 0)
+        upgrade.checkNow(now: start)
+        upgrade.checkNow(now: start)
+        XCTAssertEqual(updater.probes, 2, "the Refresh item asks every time")
     }
 
-    func testAnUpdaterAttachedLaterIsAskedAboutTheLastStatus() throws {
-        let upgrade = AppUpgrade()
-        upgrade.statusChanged(try status())
-        let updater = FakeUpdater()
-        upgrade.attach(updater)
-        XCTAssertEqual(updater.probes, 1)
-    }
-
-    func testTheItemShowsOnceTheUpdaterFoundAnUpdate() throws {
+    func testTheItemShowsOnceTheUpdaterFoundAnUpdate() {
         let upgrade = AppUpgrade()
         upgrade.found(version: "0.5.0")
         XCTAssertFalse(upgrade.isAvailable, "no updater (a debug build)")
@@ -97,7 +83,8 @@ final class AppUpgradeTests: XCTestCase {
         upgrade.attach(updater)
         XCTAssertTrue(upgrade.isAvailable)
         XCTAssertEqual(upgrade.version, "0.5.0")
-        upgrade.statusChanged(try status())
+        upgrade.tick(now: start, every: day)
+        upgrade.checkNow(now: start)
         XCTAssertEqual(updater.probes, 0, "asked again after it found the update")
 
         upgrade.upgrade()
@@ -106,24 +93,23 @@ final class AppUpgradeTests: XCTestCase {
         XCTAssertTrue(upgrade.isAvailable)
     }
 
-    func testACheckThatDidNotStartOrFailedIsAskedAgain() throws {
+    func testACheckThatDidNotStartOrFailedIsAskedAgainAtTheNextTick() {
         let upgrade = AppUpgrade()
         let updater = FakeUpdater()
         upgrade.attach(updater)
-        let newer = try status()
 
-        // Busy: no check started, so the same cache asks again.
+        // Busy: no check started, so the next tick asks again.
         updater.starts = false
-        upgrade.statusChanged(newer)
+        upgrade.tick(now: start, every: day)
         updater.starts = true
-        upgrade.statusChanged(newer)
+        upgrade.tick(now: start.addingTimeInterval(60), every: day)
         XCTAssertEqual(updater.probes, 2)
-        upgrade.statusChanged(newer)
+        upgrade.tick(now: start.addingTimeInterval(120), every: day)
         XCTAssertEqual(updater.probes, 2, "a check that started is not asked again")
 
         // Offline, or no appcast yet.
         upgrade.probeFailed()
-        upgrade.statusChanged(newer)
+        upgrade.tick(now: start.addingTimeInterval(180), every: day)
         XCTAssertEqual(updater.probes, 3)
     }
 

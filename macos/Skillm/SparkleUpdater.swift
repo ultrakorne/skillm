@@ -7,10 +7,11 @@ import Sparkle
 /// drives is installed and upgraded on its own (`skillm upgrade`).
 ///
 /// It never checks on its own schedule (`SUEnableAutomaticChecks` is off):
-/// `AppUpgrade` asks it silently after every check the app's schedule or the
-/// Refresh item ran, and the "Upgrade app and restart" item (or "Check for
-/// app update", when the CLI is newer than this app supports) shows
-/// Sparkle's standard update window. Before it relaunches the app, every
+/// `AppUpgrade` asks it silently at launch, on the app's refresh interval
+/// (whether or not the CLI works) and after the Refresh item, and the
+/// "Upgrade app and restart" item (or "Check for app update", when the CLI
+/// is newer than this app supports or broken) shows Sparkle's standard
+/// update window. Before it relaunches the app, every
 /// running skillm exits.
 @MainActor
 final class SparkleUpdater: NSObject, AppUpdater, SPUUpdaterDelegate {

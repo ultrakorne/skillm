@@ -155,6 +155,36 @@ final class SetupTests: XCTestCase {
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "waited for the hung shell")
     }
 
+    func testAShellThatClosesStdoutThenHangsIsStopped() async throws {
+        // stdout's EOF comes first: it must not end the timeout.
+        let hang = try fakeShell(
+            """
+            #!/bin/sh
+            exec 1>&-
+            trap '' INT TERM
+            while :; do /bin/sleep 1; done
+            """)
+        let started = ContinuousClock.now
+        let found = await shell(hang, timeout: .milliseconds(300)).find("skillm")
+        XCTAssertNil(found)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "waited for the hung shell")
+    }
+
+    func testAnAnswerIsReadWhileABackgroundProcessHoldsStdout() async throws {
+        let skillm = try makeExecutable("elsewhere/skillm")
+        let shell = try fakeShell(
+            """
+            #!/bin/sh
+            echo "\(skillm.path)"
+            /bin/sleep 8 &
+            exit 0
+            """)
+        let started = ContinuousClock.now
+        let found = await self.shell(shell).find("skillm")
+        XCTAssertEqual(found?.path, skillm.path)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(5), "waited for the background process")
+    }
+
     func testExtendedPath() {
         XCTAssertEqual(
             ChildEnvironment.extendedPath("/usr/bin:/bin:/usr/sbin:/sbin"),

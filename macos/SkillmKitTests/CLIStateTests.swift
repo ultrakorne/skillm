@@ -59,6 +59,17 @@ final class CLIStateTests: XCTestCase {
         try FileManager.default.copyItem(at: TestPaths.fakeSkillm, to: bin.appending(path: "skillm"))
     }
 
+    /// Replaces `bin/skillm` with a script that runs the fake with `env`
+    /// added, as an upgrade in a terminal replaces the file.
+    private func replaceFake(_ env: [String: String]) throws {
+        let vars = env.map { "\($0.key)='\($0.value)'" }.sorted().joined(separator: " ")
+        let body = "#!/bin/sh\nexec env \(vars) '\(TestPaths.fakeSkillm.path)' \"$@\"\n"
+        let target = bin.appending(path: "skillm")
+        try FileManager.default.removeItem(at: target)
+        FileManager.default.createFile(
+            atPath: target.path, contents: Data(body.utf8), attributes: [.posixPermissions: 0o755])
+    }
+
     /// A stand-in for install.sh.
     private func script(_ body: String) -> URL {
         let url = scratch.appending(path: "install.sh")
@@ -126,6 +137,54 @@ final class CLIStateTests: XCTestCase {
         XCTAssertEqual(commands(), launch)
     }
 
+    func testTheUpdaterIsAskedWithoutACLI() async throws {
+        let m = model()
+        let updater = FakeUpdater()
+        m.upgrade.attach(updater)
+        await m.start()
+        XCTAssertEqual(m.cli, .missing)
+        XCTAssertEqual(updater.probes, 1, "an app update is looked for whether or not the CLI works")
+    }
+
+    // MARK: - A CLI changed in a terminal
+
+    func testACLIUpgradedInATerminalToATooNewOneIsNoticedAtTheNextTick() async throws {
+        try installFake()
+        let m = model()
+        await m.start()
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.cli, .ready(version: "0.4.0"))
+        XCTAssertNil(m.checkCLIAgain(), "checked again while the CLI is unchanged")
+
+        try replaceFake(["FAKE_SKILLM_MODE": "api99"])
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the tick's launch check") { m.cli == .tooNew(version: "9.0.0") }
+        XCTAssertEqual(m.cliVersion, "9.0.0")
+    }
+
+    func testACLIRemovedInATerminalIsNoticedAtTheNextTick() async throws {
+        try installFake()
+        let m = model()
+        await m.start()
+        await m.waitUntilIdle()
+        try FileManager.default.removeItem(at: bin.appending(path: "skillm"))
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the tick's launch check") { m.cli == .missing }
+        XCTAssertNil(m.cliPath)
+    }
+
+    func testACLIReplacedUnderACommandIsCheckedWhenItEnds() async throws {
+        try installFake()
+        let m = model()
+        await m.start()
+        await m.waitUntilIdle()
+        try replaceFake(["FAKE_SKILLM_MODE": "api99"])
+        // The Refresh item ends with the new CLI's answer, which it cannot
+        // read; the launch checks follow.
+        await m.refresh()?.value
+        try await eventually("the launch check") { m.cli == .tooNew(version: "9.0.0") }
+    }
+
     func testCheckAgainFindsACLIInstalledMeanwhile() async throws {
         let m = model()
         await m.start()
@@ -177,6 +236,38 @@ final class CLIStateTests: XCTestCase {
         await m.upgradeCLI()?.value
         XCTAssertEqual(m.cliProblem, "Upgrade failed: no release for darwin")
         XCTAssertNil(m.cliWork)
+    }
+
+    func testANewerSchemaAsksForAnAppUpdate() async throws {
+        try installFake()
+        let m = model(["FAKE_SKILLM_MODE": "schema2"])
+        await m.start()
+        XCTAssertEqual(m.cli, .tooNew(version: ""))
+        XCTAssertNil(m.cliVersion)
+    }
+
+    func testAnUpgradeThatLeavesTheCLITooOldSaysSo() async throws {
+        try installFake()
+        // api0 answers `upgrade` with its version document and exits 0: the
+        // latest release is the one installed, still too old.
+        let m = model(["FAKE_SKILLM_MODE": "api0"])
+        await m.start()
+        await m.upgradeCLI()?.value
+        XCTAssertEqual(m.cli, .tooOld(version: "0.3.0"))
+        XCTAssertEqual(m.cliProblem, AppModel.latestTooOld)
+    }
+
+    func testAQuitWaitsForTheInstall() async throws {
+        let done = scratch.appending(path: "installed")
+        let m = model(installScript: script("/bin/sleep 1; : > '\(done.path)'"))
+        await m.start()
+        XCTAssertFalse(m.hasRunningCommands)
+        let install = try XCTUnwrap(m.installCLI())
+        XCTAssertTrue(m.hasRunningCommands, "a quit would not wait for the install")
+        await m.shutdown()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: done.path), "the quit did not wait for the install")
+        await install.value
+        XCTAssertFalse(m.hasRunningCommands)
     }
 
     func testANewerAPIVersionAsksForAnAppUpdate() async throws {

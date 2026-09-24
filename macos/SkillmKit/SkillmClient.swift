@@ -52,7 +52,9 @@ public struct SkillmClient: Sendable {
     /// A skillm from before the JSON API has no `version` command and no
     /// `--json` flag: it answers with a usage error on stderr and nothing on
     /// stdout, and is refused as API version 0 (older than any this app
-    /// supports).
+    /// supports). A skillm whose documents carry a newer `schema_version`
+    /// is refused as newer than any API version this app supports (its
+    /// version is then unknown, ""): only an app update can read it.
     @discardableResult
     public func connect() async throws -> VersionData {
         let v: VersionData
@@ -62,6 +64,9 @@ public struct SkillmClient: Sendable {
             where detail == "no output" && status != 0 && Self.isUsageError(stderr)
         {
             throw SkillmError.incompatibleCLI(version: "", apiVersion: 0, supported: Self.supportedAPIVersions.sorted())
+        } catch SkillmError.unsupportedSchema(let schema) where schema > protocolSchemaVersion {
+            throw SkillmError.incompatibleCLI(
+                version: "", apiVersion: Int.max, supported: Self.supportedAPIVersions.sorted())
         }
         guard Self.supportedAPIVersions.contains(v.apiVersion) else {
             throw SkillmError.incompatibleCLI(

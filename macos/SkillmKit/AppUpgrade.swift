@@ -44,14 +44,15 @@ public protocol AppUpdater: AnyObject {
 /// "Upgrade app and restart": shown once the updater has found a newer app.
 ///
 /// The updater never checks on its own schedule (`SUEnableAutomaticChecks`
-/// is off). It is asked silently once for every Refresh cache that arrives
-/// with a new `checked_at`: at launch (the first status read), after each
-/// scheduled check, which runs on the app's refresh interval, and after the
-/// Refresh item. So the Auto check setting and its interval cover the skills,
-/// the CLI and the app alike. The app's version is independent of the CLI's,
-/// so nothing in the cache says whether a newer app exists: only the
-/// updater's answer does. A check that did not start or failed is asked again
-/// with the next status that arrives (the next tick at the latest).
+/// is off). The model asks it silently on a schedule that does not depend on
+/// the CLI: at launch, then on the model's ticks once `interval` has passed
+/// since the last check (the refresh interval from config.toml, or a day
+/// while the settings are unknown), and after the Refresh item. So a CLI
+/// that is missing, too new or broken never hides the app update that fixes
+/// it. The app's version is independent of the CLI's, so nothing in the
+/// Refresh cache says whether a newer app exists: only the updater's answer
+/// does. A check that did not start or failed is asked again at the next
+/// tick.
 ///
 /// "Skip This Version" in the updater's window keeps the item: the updater
 /// stops reminding, but the item still installs the skipped version (the
@@ -59,15 +60,18 @@ public protocol AppUpdater: AnyObject {
 @MainActor
 @Observable
 public final class AppUpgrade {
+    /// How often the updater is asked while the refresh settings are
+    /// unknown (the CLI cannot be used, or has not answered yet).
+    public static let defaultInterval: TimeInterval = 24 * 3600
+
     /// The version the updater found; nil while it has found none.
     public private(set) var version: String?
     /// The app's updater; nil when the app does not update itself (a debug
     /// build, see `UpdateFeed`).
     @ObservationIgnored public private(set) var updater: (any AppUpdater)?
-    /// The check (its `checked_at`) the updater was last asked about.
-    @ObservationIgnored private var probedCheck: Date?
-    /// The last status seen, for an updater attached after it arrived.
-    @ObservationIgnored private var lastStatus: StatusData?
+    /// When the updater last started a check; nil before the first, and
+    /// after one failed.
+    @ObservationIgnored private var lastProbe: Date?
 
     public init() {}
 
@@ -77,22 +81,31 @@ public final class AppUpgrade {
     /// The app updates itself: "Check for app update" can be offered.
     public var canCheck: Bool { updater != nil }
 
-    /// Connects the app's updater; it is asked at once about the status
-    /// seen so far.
+    /// Connects the app's updater. It is asked at the model's next tick (the
+    /// launch's, when it is attached before the model starts).
     public func attach(_ updater: any AppUpdater) {
         self.updater = updater
-        statusChanged(lastStatus)
     }
 
-    /// A status arrived (every `status`/`refresh` answer). When it is from a
-    /// check the updater was not asked about yet and no update was found
-    /// yet, the updater is asked: a re-read of the same cache asks nothing.
-    public func statusChanged(_ status: StatusData?) {
-        lastStatus = status
-        guard let updater, version == nil,
-            let checkedAt = status?.cache.checkedAt, checkedAt != probedCheck
-        else { return }
-        if updater.probe() { probedCheck = checkedAt }
+    /// A tick of the model's schedule: asks the updater when it was never
+    /// asked, or was last asked `interval` ago or longer. A nil `interval`
+    /// (auto check is off) asks nothing; the Refresh item still asks.
+    public func tick(now: Date = Date(), every interval: TimeInterval?) {
+        guard let interval else { return }
+        if let lastProbe, now.timeIntervalSince(lastProbe) < interval { return }
+        probe(now: now)
+    }
+
+    /// The Refresh item ran: asks the updater now, however recently it was
+    /// asked.
+    public func checkNow(now: Date = Date()) {
+        probe(now: now)
+    }
+
+    /// Asks the updater, unless it found an update already.
+    private func probe(now: Date) {
+        guard let updater, version == nil else { return }
+        if updater.probe() { lastProbe = now }
     }
 
     /// The updater found a newer app.
@@ -105,14 +118,14 @@ public final class AppUpgrade {
         version = nil
     }
 
-    /// The updater's check failed (offline, no appcast yet): the next
-    /// status that arrives asks it again, even for the same check.
+    /// The updater's check failed (offline, no appcast yet): the next tick
+    /// asks it again.
     public func probeFailed() {
-        probedCheck = nil
+        lastProbe = nil
     }
 
-    /// The "Upgrade app and restart" item, and "Check for app update" when
-    /// the CLI is newer than this app supports.
+    /// The "Upgrade app and restart" item, and "Check for app update" while
+    /// the CLI cannot be used.
     public func upgrade() {
         updater?.install()
     }

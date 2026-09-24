@@ -79,7 +79,8 @@ struct MenuContent: View {
         .keyboardShortcut(",")
     }
 
-    /// The CLI cannot be used: why, and the item that fixes it.
+    /// The CLI cannot be used: why, and the item that fixes it. An app
+    /// update the updater found is offered in every case: it may be the fix.
     @ViewBuilder private var cliProblem: some View {
         if let work = model.cliWork {
             Text(work.text)
@@ -92,10 +93,10 @@ struct MenuContent: View {
                 Text(version.isEmpty ? "skillm CLI is too old" : "skillm CLI \(version) is too old")
                 Button("Upgrade skillm CLI") { _ = model.upgradeCLI() }
             case .tooNew(let version):
-                Text("This app is too old for skillm \(version)")
-                if model.upgrade.canCheck {
-                    Button("Check for app update") { model.upgrade.upgrade() }
-                } else {
+                Text(
+                    version.isEmpty
+                        ? "This app is too old for this skillm CLI" : "This app is too old for skillm \(version)")
+                if !model.upgrade.canCheck {
                     Text("Install a newer skillm app.")
                 }
             case .failed(let message, let fix):
@@ -109,7 +110,21 @@ struct MenuContent: View {
             if let problem = model.cliProblem {
                 Label(problem, systemImage: "xmark.octagon")
             }
+            if model.upgrade.isAvailable {
+                Button("Upgrade app and restart") { model.upgrade.upgrade() }
+            } else if model.upgrade.canCheck, offersAppCheck {
+                Button("Check for app update") { model.upgrade.upgrade() }
+            }
             Button("Check Again") { _ = model.checkCLIAgain() }
+        }
+    }
+
+    /// The CLI is newer than this app, or broken in a way only an app update
+    /// may fix: "Check for app update".
+    private var offersAppCheck: Bool {
+        switch model.cli {
+        case .tooNew, .failed: true
+        default: false
         }
     }
 

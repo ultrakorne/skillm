@@ -102,42 +102,85 @@ public struct LoginShell: Sendable {
         self.init(shell: URL(fileURLWithPath: path), timeout: timeout, environment: environment)
     }
 
+    /// How long, after the shell exited, its stdout may stay open: a
+    /// background process the startup files left running may hold it.
+    static let stdoutDrainLimit: Duration = .seconds(1)
+
     /// The executable `command -v <name>` names, or nil when the shell
     /// names none, names something that is not an executable file, fails to
     /// start or takes longer than `timeout`. Startup files may print their
     /// own lines: the answer is the last line that is an absolute path.
+    ///
+    /// Only the shell's exit races the timeout: its stdout, which startup
+    /// files may close early or leave to a background process, is read by a
+    /// task of its own and never ends the wait.
     public func find(_ name: String) async -> URL? {
         let child = ChildProcess(
             executable: shell, arguments: ["-l", "-i", "-c", "command -v \(name)"], environment: environment)
         do { try child.start() } catch { return nil }
         let output = OutputBuffer()
-        let answered = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                for await chunk in child.stdout { output.append(chunk) }
-                return !Task.isCancelled
-            }
-            // A background process the startup files left running may hold
-            // stdout open after the shell has exited.
-            group.addTask {
-                _ = await child.waitForExit()
-                return !Task.isCancelled
-            }
-            // An interactive shell ignores SIGINT and SIGTERM: SIGKILL.
-            group.addTask {
-                do { try await Task.sleep(for: timeout) } catch { return false }
-                child.kill()
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
+        let read = Latch<Void>()
+        // Read in a task nothing cancels (an AsyncStream ends when its
+        // reader's task is cancelled).
+        let reader = Task.detached {
+            for await chunk in child.stdout { output.append(chunk) }
+            read.set(())
         }
-        guard answered else { return nil }
+        let exited = Latch<Bool>()
+        Task.detached {
+            _ = await child.waitForExit()
+            exited.set(true)
+        }
+        // An interactive shell ignores SIGINT and SIGTERM: SIGKILL.
+        let timer = Task.detached {
+            do { try await Task.sleep(for: timeout) } catch { return }
+            exited.set(false)
+        }
+        let answered = await exited.wait()
+        timer.cancel()
+        guard answered else {
+            child.kill()
+            reader.cancel()
+            return nil
+        }
+        let drainLimit = Self.stdoutDrainLimit
+        let drain = Task.detached {
+            try? await Task.sleep(for: drainLimit)
+            read.set(())
+        }
+        await read.wait()
+        drain.cancel()
         let lines = String(decoding: output.data, as: UTF8.self).split(whereSeparator: \.isNewline)
         guard let path = lines.map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { $0.hasPrefix("/") })
         else { return nil }
         let url = URL(fileURLWithPath: path)
         return SkillmBinary.isExecutableFile(url) ? url : nil
+    }
+}
+
+/// A CLI file as it is on disk, to tell whether it changed since: the file
+/// its path resolves to (through symlinks, as Homebrew's), with its device,
+/// inode, size and modification time. An upgrade that replaces the file, a
+/// Homebrew upgrade that relinks it, and a removal all change it.
+public struct CLIFileIdentity: Equatable, Sendable {
+    var path: String
+    var device: Int64
+    var inode: UInt64
+    var size: Int64
+    var modifiedSeconds: Int
+    var modifiedNanoseconds: Int
+
+    /// Nil when nothing is at `url`.
+    public init?(_ url: URL) {
+        let resolved = url.resolvingSymlinksInPath().path
+        var st = stat()
+        guard stat(resolved, &st) == 0 else { return nil }
+        path = resolved
+        device = Int64(st.st_dev)
+        inode = UInt64(st.st_ino)
+        size = Int64(st.st_size)
+        modifiedSeconds = st.st_mtimespec.tv_sec
+        modifiedNanoseconds = st.st_mtimespec.tv_nsec
     }
 }
 

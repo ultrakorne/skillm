@@ -292,17 +292,41 @@ final class AppModelTests: XCTestCase {
 
     // MARK: - Upgrade app and restart
 
-    func testTheLaunchStatusAsksTheUpdater() async throws {
+    func testTheLaunchAsksTheUpdaterOnceAndRefreshAgain() async throws {
         let m = model()
         let updater = FakeUpdater()
         m.upgrade.attach(updater)
         await m.start()
         await m.waitUntilIdle()
-        // status.json and the tick's refresh.json are the same check.
+        // The launch tick, within the interval of the launch's own ask.
         XCTAssertEqual(updater.probes, 1)
         XCTAssertFalse(m.upgrade.isAvailable)
+
+        await m.refresh()?.value
+        XCTAssertEqual(updater.probes, 2, "the Refresh item asks the updater too")
         m.upgrade.found(version: "0.5.0")
         XCTAssertTrue(m.upgrade.isAvailable)
+    }
+
+    func testTheUpdaterIsAskedWhenEveryRefreshFails() async throws {
+        let m = model(["FAKE_SKILLM_FAIL_ON": "refresh"])
+        let updater = FakeUpdater()
+        m.upgrade.attach(updater)
+        await m.start()
+        await m.waitUntilIdle()
+        XCTAssertEqual(updater.probes, 1)
+        await m.refresh()?.value
+        XCTAssertEqual(m.notice?.isError, true)
+        XCTAssertEqual(updater.probes, 2, "a failed Refresh still asks")
+    }
+
+    func testTheUpdaterIsAskedWhileTheCLIIsBroken() async throws {
+        let m = model(["FAKE_SKILLM_MODE": "garbage"])
+        let updater = FakeUpdater()
+        m.upgrade.attach(updater)
+        await m.start()
+        guard case .failed = m.cli else { return XCTFail("\(m.cli)") }
+        XCTAssertEqual(updater.probes, 1)
     }
 
     func testAFoundAppUpdateTurnsTheDotOn() async throws {

@@ -9,7 +9,8 @@ public enum SkillmError: Error, Sendable, Equatable {
     case launchFailed(path: String, reason: String)
     /// The CLI speaks an API version this app does not know: older than
     /// `supported` (0 for a skillm from before the JSON API, whose `version`
-    /// is then unknown, "") or newer.
+    /// is then unknown, "") or newer (`Int.max`, version "", for one whose
+    /// documents carry a newer schema_version).
     case incompatibleCLI(version: String, apiVersion: Int, supported: [Int])
 
     /// For `.incompatibleCLI`: the CLI is older than this app supports.
@@ -46,7 +47,8 @@ extension SkillmError: LocalizedError {
         case .incompatibleCLI(let version, _, _) where isCLITooOld:
             return version.isEmpty ? "skillm CLI is too old" : "skillm CLI \(version) is too old"
         case .incompatibleCLI(let version, _, _):
-            return "This app is too old for skillm \(version)"
+            return version.isEmpty
+                ? "This app is too old for this skillm CLI" : "This app is too old for skillm \(version)"
         case .unsupportedSchema(let v):
             return "skillm wrote output in an unknown format (schema version \(v))."
         case .malformedOutput(let detail, _, _):
