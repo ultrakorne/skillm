@@ -27,7 +27,7 @@ that follows the release version.
 
 ### Sparkle is asked when the CLI's check says so
 
-`SUEnableAutomaticChecks` is off, so the Auto refresh setting and interval cover both checks.
+`SUEnableAutomaticChecks` is off, so the Auto check skill updates setting and interval cover both checks.
 `AppUpgrade` asks Sparkle silently, once per `checked_at`, when the cache's self entry says a
 newer skillm exists, or when the bundled CLI's own release lookup failed (a GitHub API error
 must not hide a valid appcast). The item waits for Sparkle's answer: a GitHub release does not
@@ -72,8 +72,7 @@ which settings a debug build needs to try Sparkle.
 
 The appcast is `releases/latest/download/appcast.xml` of the GitHub repository, so every release
 must upload one. The public key in `project.yml` is the one `generate_keys --account skillm`
-printed; its private key stays in the release Mac's login keychain and, for CI, in the
-`SPARKLE_ED_PRIVATE_KEY` secret. Losing it means no signed update reaches installed apps.
+printed; its private key stays in the release Mac's login keychain (keep a backup). Losing it means no signed update reaches installed apps.
 
 ## Integration
 

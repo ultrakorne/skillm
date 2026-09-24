@@ -2,8 +2,7 @@
 # Builds the skillm menu bar app for a release: archives it with the release
 # version, signs it (Developer ID, hardened runtime, inside-out), notarizes and
 # staples it, zips it, and writes the Sparkle appcast that installed apps read.
-# The CI job in .github/workflows/release.yml runs this same script; so can a
-# Mac that holds the credentials.
+# It runs on a Mac that holds the credentials; there is no CI job for the app.
 #
 #   macos/scripts/release.sh [--dry-run] <version>
 #
@@ -26,7 +25,7 @@
 #             skillm-notary), made with `xcrun notarytool store-credentials`;
 #             SKILLM_NOTARY_KEYCHAIN names the keychain holding it (default:
 #             the login keychain).
-#   Sparkle   the private EdDSA key: SPARKLE_ED_PRIVATE_KEY (CI), else the
+#   Sparkle   the private EdDSA key: SPARKLE_ED_PRIVATE_KEY when set, else the
 #             login keychain item generate_keys made (account
 #             SKILLM_SPARKLE_ACCOUNT, default skillm).
 #
@@ -41,28 +40,6 @@
 #   3. The Sparkle key is already in the login keychain of the Mac that ran
 #      generate_keys (C4); on another Mac, import it with
 #      generate_keys --account skillm -f sparkle_ed_private_key.txt.
-#
-# CI secrets (the macOS job of .github/workflows/release.yml fails without
-# them), set once with the GitHub CLI from the repository checkout:
-#   MACOS_DEVELOPER_ID_P12_BASE64, MACOS_DEVELOPER_ID_P12_PASSWORD
-#       Keychain Access > My Certificates > "Developer ID Application:
-#       Starberry Games GmbH (6LH2JMGD3J)" > Export as developer-id.p12, with
-#       a password; then
-#         base64 -i developer-id.p12 | gh secret set MACOS_DEVELOPER_ID_P12_BASE64
-#         gh secret set MACOS_DEVELOPER_ID_P12_PASSWORD   (prompts for it)
-#       and delete developer-id.p12.
-#   APPLE_NOTARY_KEY_P8, APPLE_NOTARY_KEY_ID, APPLE_NOTARY_ISSUER_ID
-#       App Store Connect > Users and Access > Integrations > Team Keys > +
-#       (role Developer); download AuthKey_<key id>.p8 (only once); then
-#         gh secret set APPLE_NOTARY_KEY_P8 < AuthKey_<key id>.p8
-#         gh secret set APPLE_NOTARY_KEY_ID --body <key id>
-#         gh secret set APPLE_NOTARY_ISSUER_ID --body <issuer id>
-#   SPARKLE_ED_PRIVATE_KEY
-#       <derived data>/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys \
-#         --account skillm -x sparkle_ed_private_key.txt
-#       gh secret set SPARKLE_ED_PRIVATE_KEY < sparkle_ed_private_key.txt
-#       and delete the file (after this script's first run the tool is also
-#       under macos/build/release/DerivedData/).
 #
 # --dry-run tries the pipeline without distribution credentials: any signing
 # identity (the Developer ID one when present, else Apple Development), no
@@ -269,11 +246,10 @@ if [ "$dry_run" = 0 ]; then
 	step "Notarizing (this can take a few minutes)"
 	mkdir -p "$out/notarize"
 	ditto -c -k --sequesterRsrc --keepParent "$app" "$out/notarize/skillm.zip"
-	# Submit, keep the submission ID, then wait: if the wait is cut short (its
-	# timeout, or the CI job's), submit.json still names the submission, and
-	# `xcrun notarytool info <id>` / `log <id>` find it later. The wait's
-	# timeout stays well inside the CI job's timeout-minutes, so this script
-	# (not GitHub) ends a slow notarization and fetches what it can.
+	# Submit, keep the submission ID, then wait: if the wait is cut short,
+	# submit.json still names the submission, and `xcrun notarytool info <id>`
+	# / `log <id>` find it later. On its timeout this script ends a slow
+	# notarization and fetches what it can.
 	xcrun notarytool submit "$out/notarize/skillm.zip" "${notary_args[@]}" \
 		--output-format json >"$out/notarize/submit.json" || true
 	submission=$(plutil -extract id raw -o - "$out/notarize/submit.json" 2>/dev/null || true)
@@ -298,7 +274,7 @@ if [ "$dry_run" = 0 ]; then
 		assessment=$(spctl --assess --type execute --verbose=2 "$app" 2>&1) || die "Gatekeeper refuses the app: $assessment"
 		[[ $assessment == *"source=Notarized Developer ID"* ]] || die "Gatekeeper does not see a notarized app: $assessment"
 	else
-		# CI runners turn Gatekeeper off; the stapled ticket was validated above.
+		# Gatekeeper can be turned off; the stapled ticket was validated above.
 		warn "Gatekeeper is off on this Mac; skipping its assessment"
 	fi
 else
