@@ -2,7 +2,8 @@ import XCTest
 
 @testable import SkillmKit
 
-/// The `skillm` link "Install command-line tool" makes, in temporary folders.
+/// "Install command-line tool": finding a skillm already installed, the
+/// release tag it pins, and running an install script, in temporary folders.
 final class CommandLineToolTests: XCTestCase {
     private var root: URL!
     private let fm = FileManager.default
@@ -13,93 +14,68 @@ final class CommandLineToolTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        // A read-only folder must be writable again to be removed.
-        if let items = fm.enumerator(at: root, includingPropertiesForKeys: nil) {
-            for case let url as URL in items { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path) }
-        }
         try? fm.removeItem(at: root)
     }
 
-    /// A fake CLI inside a fake app bundle.
-    private func bundledCLI(_ app: String) throws -> URL {
-        let cli = root.appending(path: "\(app).app/Contents/Helpers/skillm")
-        try fm.createDirectory(at: cli.deletingLastPathComponent(), withIntermediateDirectories: true)
-        fm.createFile(atPath: cli.path, contents: Data("#!/bin/sh\n".utf8))
-        return cli
+    private func executable(_ url: URL) throws {
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        fm.createFile(atPath: url.path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
     }
 
-    private func dest(_ link: URL) throws -> String { try fm.destinationOfSymbolicLink(atPath: link.path) }
+    private func script(_ body: String) -> URL {
+        let url = root.appending(path: "install-\(UUID().uuidString).sh")
+        fm.createFile(atPath: url.path, contents: Data(body.utf8))
+        return url
+    }
 
-    func testLinksIntoTheFirstWritableFolder() throws {
-        let cli = try bundledCLI("skillm")
+    func testFindsAnInstalledSkillmOfAnyKind() throws {
         let first = root.appending(path: "usr-local-bin")
         let second = root.appending(path: "local-bin")
+        XCTAssertNil(CommandLineTool.installed(in: [first, second]))
+
+        // A plain binary, as install.sh leaves it.
+        try executable(second.appending(path: "skillm"))
+        XCTAssertEqual(CommandLineTool.installed(in: [first, second]), second.appending(path: "skillm"))
+
+        // A symlink counts when it resolves to an executable; a dangling one does not.
         try fm.createDirectory(at: first, withIntermediateDirectories: true)
-        let link = try CommandLineTool.install(target: cli, directories: [first, second])
-        XCTAssertEqual(link, first.appending(path: "skillm"))
-        XCTAssertEqual(try dest(link), cli.path)
-        XCTAssertEqual(CommandLineTool.installedLink(to: cli, in: [first, second]), link)
+        try fm.createSymbolicLink(at: first.appending(path: "skillm"), withDestinationURL: root.appending(path: "gone"))
+        XCTAssertEqual(CommandLineTool.installed(in: [first, second]), second.appending(path: "skillm"))
+        try executable(root.appending(path: "gone"))
+        XCTAssertEqual(CommandLineTool.installed(in: [first, second]), first.appending(path: "skillm"))
     }
 
-    func testFallsBackToTheLastFolderCreated() throws {
-        let cli = try bundledCLI("skillm")
-        let readOnly = root.appending(path: "usr-local-bin")
-        try fm.createDirectory(at: readOnly, withIntermediateDirectories: true)
-        try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: readOnly.path)
-        let missing = root.appending(path: "home/.local/bin")
-        let link = try CommandLineTool.install(target: cli, directories: [readOnly, missing])
-        XCTAssertEqual(link, missing.appending(path: "skillm"))
-        XCTAssertEqual(try dest(link), cli.path)
+    func testReleaseTag() {
+        XCTAssertEqual(CommandLineTool.releaseTag(forVersion: "0.5.0"), "v0.5.0")
+        XCTAssertEqual(CommandLineTool.releaseTag(forVersion: "v1.12.3"), "v1.12.3")
+        XCTAssertNil(CommandLineTool.releaseTag(forVersion: "dev"))
+        XCTAssertNil(CommandLineTool.releaseTag(forVersion: "0.5.0-3-gabc123"))
+        XCTAssertNil(CommandLineTool.releaseTag(forVersion: "0.5"))
     }
 
-    func testAnExistingLinkIsKept() throws {
-        let cli = try bundledCLI("skillm")
-        let dir = root.appending(path: "bin")
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let first = try CommandLineTool.install(target: cli, directories: [dir])
-        let again = try CommandLineTool.install(target: cli, directories: [dir])
-        XCTAssertEqual(first, again)
+    func testRunsTheScriptWithTheVersionAndEnvironment() async throws {
+        let bin = root.appending(path: "bin")
+        let s = script("""
+            mkdir -p "$SKILLM_BIN_DIR"
+            printf '%s' "$SKILLM_VERSION" > "$SKILLM_BIN_DIR/version"
+            printf '#!/bin/sh\\n' > "$SKILLM_BIN_DIR/skillm" && chmod +x "$SKILLM_BIN_DIR/skillm"
+            """)
+        try await CommandLineTool.runInstallScript(s, version: "v0.5.0", environment: ["SKILLM_BIN_DIR": bin.path])
+        XCTAssertEqual(try String(contentsOf: bin.appending(path: "version"), encoding: .utf8), "v0.5.0")
+        XCTAssertEqual(CommandLineTool.installed(in: [bin]), bin.appending(path: "skillm"))
     }
 
-    func testALinkIntoAnotherAppOrADanglingOneIsReplaced() throws {
-        let cli = try bundledCLI("skillm")
-        let old = try bundledCLI("Old skillm")
-        let dir = root.appending(path: "bin")
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let link = dir.appending(path: "skillm")
-
-        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: old.path)
-        XCTAssertNil(CommandLineTool.installedLink(to: cli, in: [dir]))
-        XCTAssertEqual(try CommandLineTool.install(target: cli, directories: [dir]), link)
-        XCTAssertEqual(try dest(link), cli.path)
-
-        try fm.removeItem(at: link)
-        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: root.appending(path: "gone").path)
-        XCTAssertEqual(try CommandLineTool.install(target: cli, directories: [dir]), link)
-        XCTAssertEqual(try dest(link), cli.path)
-    }
-
-    func testAnotherSkillmIsLeftAlone() throws {
-        let cli = try bundledCLI("skillm")
-        let dir = root.appending(path: "bin")
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let link = dir.appending(path: "skillm")
-
-        // A plain binary (a release install).
-        fm.createFile(atPath: link.path, contents: Data("binary".utf8))
-        XCTAssertThrowsError(try CommandLineTool.install(target: cli, directories: [dir])) {
-            XCTAssertEqual($0 as? CommandLineTool.Failure, .occupied(link.path))
+    func testAFailingScriptReportsItsLastErrorLine() async throws {
+        let s = script("""
+            echo "resolving latest release..." >&2
+            echo "error: download failed: https://example.invalid/x.tar.gz" >&2
+            exit 1
+            """)
+        do {
+            try await CommandLineTool.runInstallScript(s, version: nil)
+            XCTFail("expected a failure")
+        } catch let failure as CommandLineTool.Failure {
+            XCTAssertEqual(failure.message, "Install failed: download failed: https://example.invalid/x.tar.gz")
         }
-
-        // A link to a skillm that is not in an app (Homebrew's).
-        try fm.removeItem(at: link)
-        let cellar = root.appending(path: "Cellar/skillm/1.0/bin/skillm")
-        try fm.createDirectory(at: cellar.deletingLastPathComponent(), withIntermediateDirectories: true)
-        fm.createFile(atPath: cellar.path, contents: Data())
-        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: "../Cellar/skillm/1.0/bin/skillm")
-        XCTAssertThrowsError(try CommandLineTool.install(target: cli, directories: [dir])) {
-            XCTAssertEqual($0 as? CommandLineTool.Failure, .occupied(link.path))
-        }
-        XCTAssertEqual(try dest(link), "../Cellar/skillm/1.0/bin/skillm")
     }
 }

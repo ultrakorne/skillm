@@ -7,7 +7,7 @@
 | [Core](features/core/INDEX.md) | The commands, inspect-then-install, agents and settings, self-upgrade, Home persistence, atomic saves and the cross-process Home lock |
 | [JSON API](features/json-api/INDEX.md) | `--json`/`--events`: the machine-readable protocol GUIs run skillm through |
 | [Refresh and Status](features/refresh-status/INDEX.md) | `refresh [--if-due]` and `status`: the `status.json` cache, the one update Badge, when a check is due |
-| [macOS App](features/macos-app/INDEX.md) | The menu bar app: the Badge dot, Refresh, auto refresh, Update all skills and Upgrade and restart; its Bundled CLI, the Swift client that runs and cancels `skillm --json`, and the signed, notarized release |
+| [macOS App](features/macos-app/INDEX.md) | The menu bar app: the Badge dot, Refresh, Update all skills (with the update count) and Upgrade and restart; its Bundled CLI, the Swift client that runs and cancels `skillm --json`, and the signed, notarized release |
 
 ## Quick Links
 - [CONTEXT.md](CONTEXT.md) — ubiquitous language (read first); [vercel-skills-comparison.md](vercel-skills-comparison.md) — comparison with vercel-labs/skills and the interop decisions; [known-issues.md](known-issues.md) — deferred defects, including a plaintext credential leak into `state.toml`

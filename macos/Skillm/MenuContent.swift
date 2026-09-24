@@ -29,37 +29,28 @@ struct MenuContent: View {
     }
 
     @ViewBuilder private var ready: some View {
-        if let status = model.status {
-            ForEach(StatusSummary.lines(status)) { line in
-                switch line.kind {
-                case .info: Text(line.text)
-                case .update: Label(line.text, systemImage: "arrow.down.circle")
-                case .problem: Label(line.text, systemImage: "exclamationmark.triangle")
-                }
-            }
-        }
-        if let notice = model.notice {
-            if notice.isError {
-                Label(notice.text, systemImage: "xmark.octagon")
-            } else {
-                Text(notice.text)
-            }
-        }
+        // One line at most: what is running, else a failure, else what the
+        // last check found, else the last outcome.
         if let activity = model.activity.text {
             Text(activity)
+            Divider()
+        } else if let notice = model.notice, notice.isError {
+            Label(notice.text, systemImage: "xmark.octagon")
+            Divider()
+        } else if let status = model.status, let line = StatusSummary.line(status) {
+            switch line.kind {
+            case .info: Text(line.text)
+            case .problem: Label(line.text, systemImage: "exclamationmark.triangle")
+            }
+            Divider()
+        } else if let notice = model.notice {
+            Text(notice.text)
+            Divider()
         }
-        Divider()
         Button("Refresh") { _ = model.refresh() }
             .keyboardShortcut("r")
             .disabled(model.isBusy)
-        Toggle(
-            "Auto refresh",
-            isOn: Binding(
-                get: { model.settings?.enabled ?? false },
-                set: { _ = model.setAutoRefresh($0) })
-        )
-        .disabled(model.isBusy || model.settings == nil)
-        Button("Update all skills") { _ = model.updateAll() }
+        Button(updateAllTitle) { _ = model.updateAll() }
             .keyboardShortcut("u")
             .disabled(model.isBusy)
         if canStop {
@@ -88,4 +79,10 @@ struct MenuContent: View {
     }
 
     private var canStop: Bool { model.activity.canStop }
+
+    /// "Update all skills (2)" when the last check found updates.
+    private var updateAllTitle: String {
+        let updates = model.status?.cache.updates ?? 0
+        return updates > 0 ? "Update all skills (\(updates))" : "Update all skills"
+    }
 }

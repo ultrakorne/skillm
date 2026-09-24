@@ -461,7 +461,7 @@ extension AppModel.Activity {
     public var text: String? {
         switch self {
         case .idle, .savingSettings: nil
-        case .refreshing: "Checking for updates…"
+        case .refreshing: "Refreshing skills…"
         case .updating(let progress): progress.text
         case .updatingSkill(let id): "Updating \(id)…"
         case .installing(let progress): progress.text(doing: "Installing skills")

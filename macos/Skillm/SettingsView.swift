@@ -70,7 +70,7 @@ struct SettingsView: View {
     private var refreshSection: some View {
         Section {
             Toggle(
-                "Check for updates automatically",
+                "Auto check skill updates",
                 isOn: Binding(
                     get: { app.settings?.enabled ?? false },
                     set: { settings.setAutoRefresh($0) })
@@ -152,21 +152,23 @@ struct SettingsView: View {
     private var toolSection: some View {
         Section {
             HStack {
-                if let link = settings.commandLineTool {
-                    Text("Installed at \(SkillsModel.abbreviate(link.path))")
+                if let path = settings.commandLineTool {
+                    Text("Installed at \(SkillsModel.abbreviate(path.path))")
+                } else if settings.isInstallingTool {
+                    Text("Installing…")
                 } else {
                     Text("Not installed")
                 }
                 Spacer()
                 if settings.commandLineTool == nil {
-                    Button("Install") { settings.installCommandLineTool() }
-                        .disabled(app.cliExecutable == nil)
+                    Button("Install") { _ = settings.installCommandLineTool() }
+                        .disabled(settings.isInstallingTool)
                 }
             }
         } header: {
             Text("Command-line tool")
         } footer: {
-            Text("Links skillm into /usr/local/bin, or ~/.local/bin when that is not writable, so a terminal runs the app's skillm.")
+            Text("Runs skillm's install script: downloads skillm into /usr/local/bin, or ~/.local/bin when that is not writable. Update it later with `skillm upgrade`.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

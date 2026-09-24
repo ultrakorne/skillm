@@ -1,11 +1,9 @@
 import Foundation
 
-/// One informational line at the top of the menu.
+/// The one status line at the top of the menu.
 public struct StatusLine: Equatable, Sendable, Identifiable {
     public enum Kind: Equatable, Sendable {
         case info
-        /// Something to act on: an update.
-        case update
         /// A lookup that failed.
         case problem
     }
@@ -23,33 +21,25 @@ public struct StatusLine: Equatable, Sendable, Identifiable {
 /// The words the menu uses for the Refresh cache and for an update's
 /// outcome. A skill whose check failed is a problem, never "up to date".
 public enum StatusSummary {
-    /// The menu's status lines for `status`.
-    public static func lines(
-        _ status: StatusData, now: Date = .now, calendar: Calendar = .current
-    ) -> [StatusLine] {
+    /// The menu's one status line for `status`, or nil when there is
+    /// nothing to say beyond the menu's own items: an available skill
+    /// update shows as the count on "Update all skills", and a newer
+    /// skillm as "Upgrade and restart". A skill whose check failed is a
+    /// problem, never "up to date".
+    public static func line(_ status: StatusData) -> StatusLine? {
         let cache = status.cache
-        guard let checkedAt = cache.checkedAt else {
-            return [StatusLine("Not checked for updates yet", .info)]
+        guard cache.checkedAt != nil else {
+            return StatusLine("Not checked for updates yet", .info)
         }
-        var lines: [StatusLine] = []
         let failed = cache.skills.filter { $0.status == .error || $0.status == .untracked }.count
-        if cache.updates > 0 {
-            lines.append(StatusLine(count(cache.updates, "skill update", "skill updates") + " available", .update))
-        } else if failed == 0 {
-            lines.append(StatusLine("All skills are up to date", .info))
-        }
         if failed > 0 {
-            lines.append(StatusLine(count(failed, "skill", "skills") + " could not be checked", .problem))
+            return StatusLine(count(failed, "skill", "skills") + " could not be checked", .problem)
         }
-        if let me = cache.selfStatus {
-            if me.available, let latest = me.latest {
-                lines.append(StatusLine("skillm \(latest) is available", .update))
-            } else if me.error != nil {
-                lines.append(StatusLine("Could not check for a newer skillm", .problem))
-            }
+        if cache.updates > 0 { return nil }
+        if cache.selfStatus?.error != nil {
+            return StatusLine("Could not check for a newer skillm", .problem)
         }
-        lines.append(StatusLine("Last checked " + checkedText(checkedAt, now: now, calendar: calendar), .info))
-        return lines
+        return StatusLine("All skills are up to date", .info)
     }
 
     /// What a finished `update` did, for the menu's notice. "Up to date"
@@ -130,19 +120,6 @@ public enum StatusSummary {
             parts.append("the update status was not saved")
         }
         return parts
-    }
-
-    /// "at 10:00" today, else "on 22 Sep at 10:00" (never relative, so an
-    /// open menu cannot show an outdated "5 minutes ago").
-    static func checkedText(_ date: Date, now: Date, calendar: Calendar) -> String {
-        var time = Date.FormatStyle(date: .omitted, time: .shortened)
-        time.timeZone = calendar.timeZone
-        if calendar.isDate(date, inSameDayAs: now) {
-            return "at " + date.formatted(time)
-        }
-        var day = Date.FormatStyle(date: .abbreviated, time: .omitted)
-        day.timeZone = calendar.timeZone
-        return "on " + date.formatted(day) + " at " + date.formatted(time)
     }
 
     static func count(_ n: Int, _ one: String, _ many: String) -> String {

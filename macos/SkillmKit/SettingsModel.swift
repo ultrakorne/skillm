@@ -20,23 +20,34 @@ public final class SettingsModel {
     /// The agent waiting for the user to confirm disabling it.
     public var pendingDisable: String?
     public private(set) var loginItemState: LoginItemState = .disabled
-    /// The `skillm` link into the app's CLI; nil when there is none.
+    /// A `skillm` a terminal can run (see `CommandLineTool.installed`);
+    /// nil when there is none.
     public private(set) var commandLineTool: URL?
+    /// `install.sh` is running.
+    public private(set) var isInstallingTool = false
 
     @ObservationIgnored private let loginItem: any LoginItemService
     /// Goes up when an `agent set` starts and when it ends: an `agent ls`
     /// read that overlapped one is dropped, since it may hold the old state.
     @ObservationIgnored private var agentWrites = 0
     @ObservationIgnored private let toolDirectories: [URL]
+    @ObservationIgnored private let installScript: URL?
+    @ObservationIgnored private let installEnvironment: [String: String]
 
+    /// `installScript` defaults to the `install.sh` bundled in the app;
+    /// `installEnvironment` is added to the script's environment.
     public init(
         app: AppModel,
         loginItem: any LoginItemService = AppLoginItem(),
-        toolDirectories: [URL] = CommandLineTool.defaultDirectories()
+        toolDirectories: [URL] = CommandLineTool.defaultDirectories(),
+        installScript: URL? = Bundle.main.url(forResource: "install", withExtension: "sh"),
+        installEnvironment: [String: String] = [:]
     ) {
         self.app = app
         self.loginItem = loginItem
         self.toolDirectories = toolDirectories
+        self.installScript = installScript
+        self.installEnvironment = installEnvironment
     }
 
     /// Reads everything again: run it every time Settings opens, since the
@@ -55,10 +66,11 @@ public final class SettingsModel {
         }
     }
 
-    /// Re-reads what the system holds: the login item and the CLI link.
+    /// Re-reads what the system holds: the login item and the terminal's
+    /// skillm.
     public func refreshLocalState() {
         loginItemState = loginItem.state
-        commandLineTool = app.cliExecutable.flatMap { CommandLineTool.installedLink(to: $0, in: toolDirectories) }
+        commandLineTool = CommandLineTool.installed(in: toolDirectories)
     }
 
     // MARK: - Agents
@@ -155,18 +167,29 @@ public final class SettingsModel {
 
     // MARK: - Command-line tool
 
-    /// Links `skillm` into `/usr/local/bin` (or `~/.local/bin`).
-    public func installCommandLineTool() {
-        guard let cli = app.cliExecutable else {
-            message = AppModel.Notice(text: AppModel.NotReadyError().errorDescription ?? "", isError: true)
-            return
+    /// Runs the bundled `install.sh`, pinned to the app's CLI version when
+    /// that is a release, so a terminal gets the same skillm.
+    public func installCommandLineTool() -> Task<Void, Never>? {
+        guard let script = installScript else {
+            message = AppModel.Notice(text: "The install script is missing from the app", isError: true)
+            return nil
         }
-        do {
-            let link = try CommandLineTool.install(target: cli, directories: toolDirectories)
-            commandLineTool = link
-            message = AppModel.Notice(text: "Linked \(SkillsModel.abbreviate(link.path)) to the app's skillm", isError: false)
-        } catch {
-            message = AppModel.Notice(text: error.localizedDescription, isError: true)
+        guard !isInstallingTool else { return nil }
+        isInstallingTool = true
+        message = nil
+        var version: String?
+        if case .ready(let v) = app.cli { version = CommandLineTool.releaseTag(forVersion: v) }
+        let env = installEnvironment
+        return Task {
+            defer { isInstallingTool = false }
+            do {
+                try await CommandLineTool.runInstallScript(script, version: version, environment: env)
+                refreshLocalState()
+                let path = commandLineTool.map { SkillsModel.abbreviate($0.path) } ?? "skillm"
+                message = AppModel.Notice(text: "Installed \(path)", isError: false)
+            } catch {
+                message = AppModel.Notice(text: error.localizedDescription, isError: true)
+            }
         }
     }
 }

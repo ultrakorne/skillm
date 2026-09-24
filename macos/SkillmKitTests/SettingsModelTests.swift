@@ -32,11 +32,15 @@ final class SettingsModelTests: XCTestCase {
     private var harness: FakeHarness!
     private var loginItem: FakeLoginItem!
     private var bin: URL!
+    /// A stand-in for install.sh: puts an executable skillm in
+    /// `$SKILLM_BIN_DIR` and records the version it was asked for.
+    private var installScript: URL!
 
     override func tearDown() async throws {
         await harness?.tearDown()
         harness = nil
         if let bin { try? FileManager.default.removeItem(at: bin) }
+        if let installScript { try? FileManager.default.removeItem(at: installScript) }
     }
 
     private func started(_ env: [String: String] = [:]) async throws -> SettingsModel {
@@ -44,7 +48,17 @@ final class SettingsModelTests: XCTestCase {
         try await harness.start()
         loginItem = FakeLoginItem()
         bin = FileManager.default.temporaryDirectory.appending(path: "skillm-bin-\(UUID().uuidString)")
-        return SettingsModel(app: harness.app, loginItem: loginItem, toolDirectories: [bin])
+        installScript = FileManager.default.temporaryDirectory.appending(path: "install-\(UUID().uuidString).sh")
+        FileManager.default.createFile(
+            atPath: installScript.path,
+            contents: Data("""
+                mkdir -p "$SKILLM_BIN_DIR"
+                printf '%s' "${SKILLM_VERSION:-latest}" > "$SKILLM_BIN_DIR/version"
+                printf '#!/bin/sh\\n' > "$SKILLM_BIN_DIR/skillm" && chmod +x "$SKILLM_BIN_DIR/skillm"
+                """.utf8))
+        return SettingsModel(
+            app: harness.app, loginItem: loginItem, toolDirectories: [bin],
+            installScript: installScript, installEnvironment: ["SKILLM_BIN_DIR": bin.path])
     }
 
     func testLoadReadsTheSettingsAndAgents() async throws {
@@ -159,13 +173,15 @@ final class SettingsModelTests: XCTestCase {
 
     func testInstallCommandLineTool() async throws {
         let m = try await started()
-        m.installCommandLineTool()
-        let link = bin.appending(path: "skillm")
-        XCTAssertEqual(m.commandLineTool, link)
-        XCTAssertEqual(
-            try FileManager.default.destinationOfSymbolicLink(atPath: link.path), TestPaths.fakeSkillm.path)
+        XCTAssertNil(m.commandLineTool)
+        await m.installCommandLineTool()?.value
+        let installed = bin.appending(path: "skillm")
+        XCTAssertEqual(m.commandLineTool, installed)
+        XCTAssertFalse(m.isInstallingTool)
         XCTAssertEqual(m.message?.isError, false)
+        // Pinned to the app's CLI version (the fake reports 0.4.0), so the terminal gets the same skillm.
+        XCTAssertEqual(try String(contentsOf: bin.appending(path: "version"), encoding: .utf8), "v0.4.0")
         m.refreshLocalState()
-        XCTAssertEqual(m.commandLineTool, link)
+        XCTAssertEqual(m.commandLineTool, installed)
     }
 }

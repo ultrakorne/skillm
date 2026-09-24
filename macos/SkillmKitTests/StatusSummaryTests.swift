@@ -10,35 +10,26 @@ final class StatusSummaryTests: XCTestCase {
         return try XCTUnwrap(protocolDecoder().decode(Envelope<T>.self, from: data).data)
     }
 
-    private var utc: Calendar {
-        var c = Calendar(identifier: .gregorian)
-        c.timeZone = TimeZone(identifier: "UTC")!
-        return c
-    }
+    func testUpdatesLeaveTheLineToTheMenuItems() throws {
+        // 1 update, 2 failed checks, a newer skillm: the failure is the line.
+        var status = try fixture("status.json", as: StatusData.self)
+        XCTAssertEqual(StatusSummary.line(status), StatusLine("2 skills could not be checked", .problem))
 
-    /// The fixtures were checked at 2026-09-23T10:00:00Z.
-    private let sameDay = parseProtocolDate("2026-09-23T15:00:00Z")!
-
-    func testStatusWithUpdatesProblemsAndANewerSkillm() throws {
-        let status = try fixture("status.json", as: StatusData.self)
-        let lines = StatusSummary.lines(status, now: sameDay, calendar: utc)
-        XCTAssertEqual(lines.map(\.kind), [.update, .problem, .update, .info])
-        XCTAssertEqual(lines[0].text, "1 skill update available")
-        // gamma (untracked) and delta (error): never "up to date".
-        XCTAssertEqual(lines[1].text, "2 skills could not be checked")
-        XCTAssertEqual(lines[2].text, "skillm 0.5.0 is available")
-        XCTAssertTrue(lines[3].text.hasPrefix("Last checked at "), lines[3].text)
+        // Only updates: the count goes on "Update all skills", no line.
+        status.cache.skills = status.cache.skills.filter { $0.status != .error && $0.status != .untracked }
+        XCTAssertNil(StatusSummary.line(status))
     }
 
     func testFailedSelfCheckIsAProblem() throws {
-        let status = try fixture("refresh.json", as: RefreshData.self).status
-        let lines = StatusSummary.lines(status, now: sameDay, calendar: utc)
-        XCTAssertTrue(lines.contains(StatusLine("Could not check for a newer skillm", .problem)), "\(lines)")
+        var status = try fixture("refresh.json", as: RefreshData.self).status
+        status.cache.skills = status.cache.skills.filter { $0.status == .upToDate || $0.status == .local }
+        status.cache.updates = 0
+        XCTAssertEqual(StatusSummary.line(status), StatusLine("Could not check for a newer skillm", .problem))
     }
 
     func testNeverChecked() throws {
         let status = try fixture("status_never.json", as: StatusData.self)
-        XCTAssertEqual(StatusSummary.lines(status), [StatusLine("Not checked for updates yet", .info)])
+        XCTAssertEqual(StatusSummary.line(status), StatusLine("Not checked for updates yet", .info))
     }
 
     func testUpToDateOnlyWhenEveryCheckSucceeded() throws {
@@ -46,15 +37,7 @@ final class StatusSummaryTests: XCTestCase {
         status.cache.skills = status.cache.skills.filter { $0.status == .upToDate || $0.status == .local }
         status.cache.updates = 0
         status.cache.selfStatus?.available = false
-        let lines = StatusSummary.lines(status, now: sameDay, calendar: utc)
-        XCTAssertEqual(lines.first, StatusLine("All skills are up to date", .info))
-        XCTAssertEqual(lines.count, 2)
-    }
-
-    func testCheckedOnAnotherDayNamesTheDay() {
-        let checked = parseProtocolDate("2026-09-20T10:00:00Z")!
-        let text = StatusSummary.checkedText(checked, now: sameDay, calendar: utc)
-        XCTAssertTrue(text.hasPrefix("on "), text)
+        XCTAssertEqual(StatusSummary.line(status), StatusLine("All skills are up to date", .info))
     }
 
     func testUpdateResult() throws {

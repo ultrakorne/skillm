@@ -40,7 +40,11 @@ targets:
   Skillm:
     type: application
     platform: macOS
-    sources: [Skillm]
+    sources:
+      - Skillm
+      # "Install command-line tool" runs skillm's own install script.
+      - path: ../install.sh
+        buildPhase: resources
     dependencies:
       # Static: linked into the executable, never embedded (an embedded copy
       # is dead weight the release would have to sign).

@@ -25,11 +25,11 @@ data the tests check without a process. `SparkleUpdater` updates the app ([updat
 | `macos/project.yml` | Targets, macOS 14 deployment, `LSUIElement`, hardened runtime without sandbox, team `6LH2JMGD3J`, `SKILLM_VERSION`, Sparkle |
 | `macos/scripts/build-cli.sh` | The build phase: universal, version-stamped, signed CLI into `Contents/Helpers` |
 | `macos/Skillm/SkillmApp.swift` | The `MenuBarExtra`, window and `Settings` scenes, the status item's label, and the delegate |
-| `macos/Skillm/MenuContent.swift` | The menu: status lines, notice, activity, the commands, the windows, Stop, Quit |
+| `macos/Skillm/MenuContent.swift` | The menu: its one status line, the commands (with the update count), the windows, Stop, Quit |
 | `macos/SkillmKit/AppModel.swift` | App state and the one command: launch, status, refresh, update, settings, the windows' reads and changes, shutdown, the updater's relaunch |
 | `macos/SkillmKit/RefreshScheduler.swift` | The launch, hourly and wake ticks |
 | `macos/SkillmKit/StatusIcon.swift` | The glyph, as a template, and the badged glyph with its red dot |
-| `macos/SkillmKit/StatusSummary.swift` | The status lines for the Refresh cache and the notice for an update's outcome |
+| `macos/SkillmKit/StatusSummary.swift` | The menu's status line for the Refresh cache and the notice for an update's outcome |
 | `macos/SkillmKit/UpdateProgress.swift` | "Updating skills… n of m", folded from `update`'s events |
 | `macos/SkillmKitTests/AppModelTests.swift` | The model against the fake: launch, ticks, notices, update, stop, shutdown, the toggle |
 | `macos/SkillmKitTests/RefreshSchedulerTests.swift` | The scheduler with a hand-driven sleep: hourly ticks, wakes, stop |
@@ -48,7 +48,7 @@ after an update runs in a task of its own, so it still runs after a Stop (skillm
 
 ### Every tick asks, whatever the setting
 
-A tick runs `config get`, then `refresh --if-due`, even with Auto refresh off: the setting is
+A tick runs `config get`, then `refresh --if-due`, even with Auto check skill updates off: the setting is
 part of Due, so skillm does nothing. Reading the settings on each tick is what makes the toggle
 follow a `config set` made in a terminal, and retries a settings read that failed at launch.
 
