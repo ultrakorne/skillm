@@ -2,7 +2,7 @@
 
 ## Overview
 
-The app ships as an **App release** of its own, apart from the CLI: a tag `app-vX.Y.Z` with its
+The app ships as an **App release** of its own, apart from the CLI: a tag `mac-vX.Y.Z` with its
 own version, whose GitHub release holds the notarized, stapled app as
 `skillm_<version>_macos_app.zip` and its `.sha256`, while the **Appcast** installed apps read is
 replaced on the fixed `macos-appcast` release ([updates.md](updates.md)). One script builds it on
@@ -13,8 +13,8 @@ keeps its `vX.Y.Z` tags and goreleaser's CI job, unchanged, and only it is GitHu
 
 | File | Role |
 |------|------|
-| `macos/scripts/release.sh` | Archive, sign, notarize, staple, zip and write the appcast for one `app-vX.Y.Z`; `--help` lists the credentials and the one-time setup with their commands |
-| `macos/scripts/publish-release.sh` | Create the `app-vX.Y.Z` release (never latest) and upload the zip and `.sha256`, then replace `appcast.xml` on `macos-appcast` |
+| `macos/scripts/release.sh` | Archive, sign, notarize, staple, zip and write the appcast for one `mac-vX.Y.Z`; `--help` lists the credentials and the one-time setup with their commands |
+| `macos/scripts/publish-release.sh` | Create the `mac-vX.Y.Z` release (never latest) and upload the zip and `.sha256`, then replace `appcast.xml` on `macos-appcast` |
 | `macos/scripts/find-identity.sh` | The keychain's signing identity of a certificate kind and team |
 | `macos/scripts/test-find-identity.sh` | Tests it against a stub `security` |
 | `macos/scripts/verify-update-signature.swift` | Checks the appcast's EdDSA signature against the app's `SUPublicEDKey` |
@@ -32,7 +32,7 @@ needs no provisioning profile or Xcode account. The script refuses a `project.ym
 
 ### The build is checked before anything ships
 
-`release.sh` stops unless the tag is `app-vX.Y.Z` (a `vX.Y.Z` is the CLI's), the bundle version
+`release.sh` stops unless the tag is `mac-vX.Y.Z` (a `vX.Y.Z` is the CLI's), the bundle version
 and `CFBundleVersion` equal it (Sparkle compares the latter), the feed is the `macos-appcast`
 URL, the public key is 32 bytes, the app has no `Contents/Helpers` but has `install.sh`, holds
 arm64 and x86_64, every Mach-O carries the team, the hardened runtime and a timestamp, and the
@@ -69,7 +69,7 @@ The private key comes from the login keychain (account `skillm`), or `SPARKLE_ED
 
 App releases are created with `--latest=false`, since `install.sh` and `skillm upgrade` read the
 latest release. goreleaser would take the nearest tag of any name as the previous release, so
-the workflow names the previous `v*` tag itself and the CLI's changelog skips `app-v*` and
+the workflow names the previous `v*` tag itself and the CLI's changelog skips `mac-v*` and
 `macos-appcast`.
 
 ### Release the CLI first when the app needs a newer one

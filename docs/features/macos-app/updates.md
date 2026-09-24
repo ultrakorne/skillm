@@ -58,7 +58,7 @@ and its schedule, with a notice that the update could not be installed.
 
 Sparkle orders versions by `CFBundleVersion` against the appcast's `sparkle:version`, which
 `generate_appcast` copies from the released app's `CFBundleVersion`. `CURRENT_PROJECT_VERSION`
-follows `MARKETING_VERSION`, which `release.sh` sets from the `app-vX.Y.Z` tag, so a release is
+follows `MARKETING_VERSION`, which `release.sh` sets from the `mac-vX.Y.Z` tag, so a release is
 newer than the last one and a local `0.0.0` build older than every release.
 
 ### A debug build never updates itself

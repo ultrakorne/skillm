@@ -27,7 +27,7 @@ settings:
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     # The app's own version, independent of the CLI's: a release
-    # (scripts/release.sh app-vX.Y.Z) sets it.
+    # (scripts/release.sh mac-vX.Y.Z) sets it.
     MARKETING_VERSION: 0.0.0
     # CFBundleVersion is what Sparkle compares with the appcast's
     # sparkle:version (which generate_appcast copies from the released
@@ -70,7 +70,7 @@ targets:
         # settings through Skillm/Info.plist, which is merged into the
         # generated one. The appcast lives on a fixed release tagged
         # macos-appcast (never "latest", which is the CLI's), replaced by
-        # scripts/publish-release.sh; its items point at the app-vX.Y.Z
+        # scripts/publish-release.sh; its items point at the mac-vX.Y.Z
         # releases. The public key is the one `generate_keys --account
         # skillm` printed (its private key is in the release machine's
         # keychain).

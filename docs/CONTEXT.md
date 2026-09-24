@@ -301,7 +301,7 @@ skillm CLI), one too new is **too new** (Check for app update), and none at all 
 _Avoid_: bundled CLI, helper, embedded binary
 
 ### App release
-A release of the macOS app alone, tagged `app-vX.Y.Z` with its own version and never GitHub's
+A release of the macOS app alone, tagged `mac-vX.Y.Z` with its own version and never GitHub's
 "latest" release, which stays the CLI's (`vX.Y.Z`), since `install.sh` and Upgrade read it.
 _Avoid_: app version of the CLI release
 

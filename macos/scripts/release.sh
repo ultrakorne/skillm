@@ -4,11 +4,11 @@
 # staples it, zips it, and writes the Sparkle appcast that installed apps read.
 # It runs on a Mac that holds the credentials; there is no CI job for the app.
 #
-#   macos/scripts/release.sh [--dry-run | --no-notarize] app-v<X.Y.Z>
+#   macos/scripts/release.sh [--dry-run | --no-notarize] mac-v<X.Y.Z>
 #
 # The app is versioned and released on its own, apart from the CLI (vX.Y.Z
 # tags, goreleaser): it carries no CLI and drives the one the user installed,
-# which `api_version` keeps compatible. Its tag is app-vX.Y.Z (X.Y.Z alone is
+# which `api_version` keeps compatible. Its tag is mac-vX.Y.Z (X.Y.Z alone is
 # taken as that); the version sets MARKETING_VERSION and so CFBundleVersion,
 # which Sparkle compares. A release is built from a clean checkout of the tag.
 #
@@ -16,7 +16,7 @@
 #   skillm_<version>_macos_app.zip          the notarized, stapled app
 #   skillm_<version>_macos_app.zip.sha256
 #   appcast.xml                              the feed the app reads
-# macos/scripts/publish-release.sh uploads the zip to the app-v<version>
+# macos/scripts/publish-release.sh uploads the zip to the mac-v<version>
 # release and appcast.xml to the fixed macos-appcast release.
 #
 # Credentials (none is stored in the repository):
@@ -87,11 +87,11 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ -n "$version" ] || die "usage: release.sh [--dry-run | --no-notarize] app-v<X.Y.Z>"
-version=${version#app-v}
+[ -n "$version" ] || die "usage: release.sh [--dry-run | --no-notarize] mac-v<X.Y.Z>"
+version=${version#mac-v}
 [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
-	die "\"$version\" is not an app release app-vX.Y.Z (CLI tags are vX.Y.Z and have no app)"
-tag=app-v$version
+	die "\"$version\" is not an app release mac-vX.Y.Z (CLI tags are vX.Y.Z and have no app)"
+tag=mac-v$version
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 macos_dir=$(dirname "$script_dir")
@@ -300,7 +300,7 @@ ditto -c -k --sequesterRsrc --keepParent "$app" "$dist/$zip_name"
 
 # --- appcast ---------------------------------------------------------------
 
-# One item, the new release, pointing at the zip on its app-v<version>
+# One item, the new release, pointing at the zip on its mac-v<version>
 # release: publish-release.sh replaces the feed on every release, so an
 # installed app only ever needs the newest.
 download_prefix=$repo_url/releases/download/$tag/
