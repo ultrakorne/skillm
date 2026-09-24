@@ -16,8 +16,9 @@ Home-safety rules in [TECHNICAL.md](TECHNICAL.md).
 
 ### A bundled skillm is never replaced, and two layers refuse it
 
-The skillm inside a macOS app bundle is upgraded by the app, which replaces the whole bundle;
-swapping the binary alone would break the bundle's code signature. `core.UpgradeSelf` refuses a
+A skillm inside a macOS app bundle has to be upgraded by the app that holds it; swapping the
+binary alone would break the bundle's code signature. The skillm app carries no CLI (it drives
+the one installed on its own), so this guards a copy some other bundle holds. `core.UpgradeSelf` refuses a
 `bundled` method with `core.ErrManagedByApp`, and `selfupdate.Apply` independently refuses a
 target inside a bundle with `selfupdate.ErrBundled` before downloading anything, which
 `UpgradeSelf` maps back to `ErrManagedByApp`. The second guard covers an executable that moved
@@ -28,7 +29,7 @@ into a bundle after `CheckSelf` judged it, and any caller of `Apply` that skips 
 `core.SelfMethod` reads only the version and the executable path, so `skillm upgrade` refuses a
 bundled skillm before any network request and gives the same answer offline; `--check` still
 looks the release up and points at the app instead of `skillm upgrade`. A build whose version is
-not a release tag is `dev` even inside a bundle (a debug app bundling a source build), and
+not a release tag is `dev` even inside a bundle (a source build someone put there), and
 `CheckSelf` then returns without a lookup, leaving `Latest` empty.
 
 ### Bundle detection reads the resolved path, lexically
@@ -42,7 +43,7 @@ filesystem is) and with either separator; it touches no file, so every platform 
 
 `Available` means a newer release exists; `Eligible` means `skillm upgrade` can install it
 (`Available` and method `binary`). A bundled skillm with a newer release is `Available` but not
-`Eligible`: the app, not the CLI, acts on it.
+`Eligible`: the app that holds it, not the CLI, acts on it.
 
 ### `UpgradeSelf` installs only what `CheckSelf` found
 

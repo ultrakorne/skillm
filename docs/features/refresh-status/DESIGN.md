@@ -58,8 +58,8 @@ every problem the check hit, and the Badge.
   upstream, so it stays an error; a badge off because the network was down would hide updates.
 - **The CLI decides when a check is due** — the interval lives in Config, where `config set`
   changes it, so every GUI and timer follows one schedule and none can check in a loop.
-- **Which skillm wrote the cache never makes a check due** — the app's bundled skillm and a
-  terminal install at another version share one Home; re-judging the Self status offline is
+- **Which skillm wrote the cache never makes a check due** — two installs at different
+  versions, or one before and after an upgrade, share one Home; re-judging the Self status offline is
   enough, and a version test would make each trigger a full check for the other.
 - **Commands keep the cache current instead of re-checking** — after `update` the facts are
   known, so a network pass to clear the badge would only add latency and failure modes.

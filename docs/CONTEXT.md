@@ -213,9 +213,9 @@ verifies, and the previous binary is restored if the swap fails. Only a skillm w
 ### Upgrade method
 How the running skillm gets upgraded, judged from its version and its executable's resolved
 path alone, with no network request. **binary**: a release build installed on its own, which
-Upgrade replaces in place. **bundled**: a release build inside a macOS app bundle; the app
-upgrades its whole bundle, so Upgrade refuses it ("managed by the skillm app") and only reports
-a newer release. **dev**: a build whose version is not a clean release tag; it corresponds to no
+Upgrade replaces in place. **bundled**: a release build inside a macOS app bundle, which must
+upgrade it, so Upgrade refuses it and only reports a newer release (the skillm app carries no
+CLI; this covers a copy another bundle holds). **dev**: a build whose version is not a clean release tag; it corresponds to no
 published release, so it is reported and left alone, even inside a bundle.
 _Avoid_: install method, channel
 
@@ -223,6 +223,7 @@ _Avoid_: install method, channel
 The running skillm measured against the latest release: its current and latest versions,
 whether a newer release is **available**, and whether Upgrade is **eligible** to install it
 (available and binary). A bundled skillm can be available yet not eligible: its app upgrades it.
+The macOS app offers "Upgrade skillm CLI to X" only when the **Installed CLI** is eligible.
 
 ### Enabled agents
 The Agents that Links are applied to: the subset of agents **defined** in Config whose
@@ -290,16 +291,25 @@ CLI whose API version it does not know. Distinct from the **schema version** eve
 event line carries, which covers only the Envelope and event-line shape. The **capabilities**
 reported alongside it name the commands that have a JSON mode.
 
-### Bundled CLI
-The skillm binary shipped inside the macOS app, built from the same source as the app so both
-speak the same **API version**; it is the only skillm the app runs. Its **Upgrade method** is
-bundled: the app upgrades it together with itself, never `skillm upgrade`.
-_Avoid_: helper, embedded binary
+### Installed CLI
+The skillm binary the macOS app drives: the one the user installed on their own (`install.sh`,
+Homebrew, or anywhere on the login shell's PATH), looked up at every launch check and again
+whenever its file changes. The app carries no CLI; the two are released and versioned apart, and
+the **API version** keeps them compatible: a CLI too old for the app is **too old** (Upgrade
+skillm CLI), one too new is **too new** (Check for app update), and none at all is **missing**
+(Install skillm CLI).
+_Avoid_: bundled CLI, helper, embedded binary
+
+### App release
+A release of the macOS app alone, tagged `app-vX.Y.Z` with its own version and never GitHub's
+"latest" release, which stays the CLI's (`vX.Y.Z`), since `install.sh` and Upgrade read it.
+_Avoid_: app version of the CLI release
 
 ### Appcast
-The feed of app releases the macOS app's updater (Sparkle) reads, uploaded with every release.
-The updater installs only an app signed with the EdDSA key whose public half the running app
-carries, and offers "Upgrade and restart" once the appcast lists a newer app than the running one.
+The feed of App releases the macOS app's updater (Sparkle) reads, kept on the fixed
+`macos-appcast` GitHub release and replaced by every App release. The updater installs only an
+app signed with the EdDSA key whose public half the running app carries, and the menu offers
+"Upgrade app and restart" once the appcast lists a newer app than the running one.
 
 ## Persistence
 

@@ -120,8 +120,8 @@ the way; retry with `--force`), `uninstall_failed` (an I/O error; no force offer
 executable}`; a `dev` build looks nothing up and omits `latest`, and a `bundled` one reports
 `available` but never `eligible`. A plain `upgrade` returns `{upgraded, from, to, path}`, with
 `upgraded` false when skillm is already the latest release. It refuses a source build with
-`source_build` and the app's bundled skillm with `managed_by_app`, both before any network
-request; the app treats `managed_by_app` as "use the app's own Upgrade", not as a failure.
+`source_build` and a skillm inside an app bundle with `managed_by_app`, both before any network
+request. The macOS app offers "Upgrade skillm CLI to X" only when `eligible`.
 Neither form needs git.
 
 ## `agent set`

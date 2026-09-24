@@ -16,13 +16,13 @@ stdin on `/dev/null` and the environment from `ChildEnvironment`; the client's o
 | `macos/SkillmKit/SkillmClient.swift` | `connect`, `checkGit`, `run`, `runEnvelope`, `stream`, flag assembly, envelope decoding |
 | `macos/SkillmKit/SkillmStream.swift` | The `AsyncSequence` `stream` returns, with its cancel semantics |
 | `macos/SkillmKit/ChildProcess.swift` | One skillm process: live stdout, stderr tail, interrupt, exit wait; `Latch`, `LineSplitter` |
-| `macos/SkillmKit/SkillmBinary.swift` | `SkillmBinary` (where the CLI is looked for), `ChildEnvironment` (PATH), `GitCheck` |
+| `macos/SkillmKit/SkillmBinary.swift` | `SkillmBinary` and `LoginShell` (where the CLI is looked for), `CLIFileIdentity`, `ChildEnvironment` (PATH), `GitCheck` |
 | `macos/SkillmKit/SkillmError.swift` | Every client failure, with the user-facing message and fix |
 | `macos/SkillmKit/Protocol.swift` | Envelope, warning, error, event and stream-line types; the protocol coders; `ErrorCode` |
 | `macos/SkillmKit/Models.swift` | Codable mirrors of every command's data and the Refresh cache |
 | `macos/SkillmKitTests/FixtureTests.swift` | Decodes and re-encodes every golden fixture in `internal/protocol/testdata/` |
 | `macos/SkillmKitTests/SkillmClientTests.swift` | The client against the fake: errors, PATH, arguments, cancel, SIGTERM, streams |
-| `macos/SkillmKitTests/SetupTests.swift` | Binary lookup order, PATH extension, the git check |
+| `macos/SkillmKitTests/SetupTests.swift` | Binary lookup order, the login shell against fake shells, PATH extension, the git check |
 
 ## Noteworthy
 
@@ -57,10 +57,18 @@ wait gives stderr's EOF at most 2 s, since a grandchild (git) may still hold the
 
 ### Where the CLI is looked for
 
-`Contents/Helpers/skillm`, not `Contents/MacOS`, where the app's own executable is also named
-`skillm`; any path under `Contents/` makes the CLI's Upgrade method bundled. A debug build tries
-`$SKILLM_BIN` first, then the bundle, then `skillm` and `bin/skillm` at the repository it was
-compiled from; a release build tries the bundle only.
+The app carries no CLI. It looks at `$SKILLM_BIN` (debug builds only), then where `install.sh`
+and Homebrew put skillm (`/usr/local/bin`, `~/.local/bin`, `/opt/homebrew/bin`), then asks the
+user's login shell (`$SHELL -l -i -c 'command -v skillm'`), since a GUI app's PATH lacks what the
+startup files add; the last absolute path the shell prints wins. Only the shell's exit races the
+5 s timeout (then SIGKILL: an interactive shell ignores SIGINT and SIGTERM); its stdout, which a
+startup file may close early or leave open in a background process, never ends the wait.
+
+### Connecting refuses both directions
+
+`connect` (`version --json`) maps a skillm from before the JSON API (a usage error, no output)
+to API version 0, too old, and a document with a newer `schema_version` to too new, as it does
+an `api_version` outside `supportedAPIVersions`; the model turns each into the menu's fix.
 
 ### PATH and the git stub
 

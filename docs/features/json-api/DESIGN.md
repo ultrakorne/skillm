@@ -35,14 +35,15 @@ specific code). Each command's own codes and retries are in [commands.md](comman
 | `update` | Each skill's outcome and the adoption sweep's imports | `update_failed` (the others were written) |
 | `import` | The project's Lockfile entries and what happened to each | — |
 | `uninstall` | Each removed skill's deleted copies | `needs_confirm` → confirm the new projects; `needs_force` → retry with `--force` |
-| `upgrade` | The Self status (`--check`), or what was replaced | `managed_by_app` → use the app's Upgrade |
+| `upgrade` | The Self status (`--check`), or what was replaced | `managed_by_app` → the bundle that holds it upgrades it; `source_build` |
 | `agent ls`, `agent set` | The defined agents; what enabling and disabling changed | `no_agent_enabled`, `unknown_agent` |
 | `config get`, `config set` | Every setting's effective value | `unknown_key`, `invalid_value` |
 | `refresh`, `status` | The Refresh cache after a check (or, not due, as it was); offline, and whether it is stale | — |
 
 A GUI draws its update badge from `badge` as the CLI computed it ([refresh-status](../refresh-status/DESIGN.md)).
-For the app's bundled skillm (`method: bundled`), `self.available` means a newer GitHub release
-exists (with this platform's archive and checksum manifest), not that the app's updater has one ready.
+`self.available` means a newer GitHub release of the CLI exists (with this platform's archive and
+checksum manifest); `self.eligible` that `skillm upgrade` can install it. It says nothing about the
+macOS app, which is released on its own and asks its updater.
 
 ## Flows
 

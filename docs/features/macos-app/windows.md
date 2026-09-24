@@ -16,7 +16,7 @@ that one command, after which the model re-reads the status and bumps `installsV
   optional branch or tag → Read Skills lists its skills to tick (a lone skill is ticked) → Every
   project (Global) or One project (a folder panel) → Install, with progress and Stop.
 - **Settings** — Start at login, Auto check skill updates (on by default) with its interval, one
-  toggle per agent, and Install for the command-line tool.
+  toggle per agent, and the command-line tool the app drives: its version and path, or Install.
 
 ## Where things live
 
@@ -27,8 +27,7 @@ that one command, after which the model re-reads the status and bumps `installsV
 | `macos/Skillm/SettingsView.swift` | The `Settings` scene and the Disable agent sheet |
 | `macos/SkillmKit/SkillsModel.swift` | `list`, per-skill `update`, and `uninstall` with its confirmation |
 | `macos/SkillmKit/AddSkillModel.swift` | `source inspect`, the install request and its follow-up questions |
-| `macos/SkillmKit/SettingsModel.swift` | Settings, agents, Start at login, the command-line tool |
-| `macos/SkillmKit/CommandLineTool.swift` | Finds a `skillm` already installed and runs the bundled `install.sh` |
+| `macos/SkillmKit/SettingsModel.swift` | Settings, agents, Start at login, the command-line tool (the model's Installed CLI) |
 | `macos/SkillmKit/LoginItem.swift` | Start at login over `SMAppService.mainApp`, behind a protocol the tests fake |
 | `macos/SkillmKitTests/FakeHarness.swift` | A started `AppModel` over `fake-skillm`, with the log of commands it ran |
 
@@ -82,12 +81,10 @@ change outside the app.
 The checkbox shows `SMAppService.mainApp.status`, read again after every change and every time
 Settings loads; `requiresApproval` shows a hint with a button to the Login Items pane.
 
-### The command-line tool is skillm's own install
+### The command-line tool is the CLI the app drives
 
-Settings shows the tool as installed when an executable `skillm` is in `/usr/local/bin`,
-`~/.local/bin` or `/opt/homebrew/bin`, whoever put it there. Install runs the repository's
-`install.sh`, bundled in the app's Resources, with a minimal PATH and `SKILLM_VERSION` set to
-the Bundled CLI's release tag (a dev build takes the latest release). The script downloads the
-release binary into `/usr/local/bin`, or `~/.local/bin` when that is not writable, so it never
-asks for sudo. That skillm is standalone: it upgrades itself with `skillm upgrade`, while the
-app keeps using its Bundled CLI.
+Settings shows the Installed CLI the launch checks found, usable or not, and looks again each
+time it loads, so a skillm installed in a terminal shows. Install (only while none is found) is
+the menu's Install skillm CLI: the repository's `install.sh`, shipped in the app's Resources, run
+with a minimal PATH and no `SKILLM_VERSION`, so it takes the latest release. It downloads into
+`/usr/local/bin`, or `~/.local/bin` when that is not writable, so it never asks for sudo.

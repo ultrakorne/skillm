@@ -3,71 +3,68 @@
 ## Overview
 
 A native menu bar app for people who want skillm's update badge and commands without a
-terminal. It is a view, not a second implementation: every action runs its own copy of the CLI,
-the **Bundled CLI**, in JSON mode and shows what it answers, so all behaviour stays in the one CLI
-and the two always speak the same protocol version.
+terminal. It is a view, not a second implementation: every action runs the **Installed CLI**,
+the skillm the user installed on their own, in JSON mode and shows what it answers, so all
+behaviour stays in the one CLI. The app and the CLI are released apart; the API version says
+whether they fit, and a CLI change that breaks the app ships with an app update.
 
 ## Surface
 
 - **Status item** — a monochrome books glyph that follows the light or dark menu bar, with a red
-  dot while the Badge is on (a skill update or a newer skillm). No Dock icon, no main window.
-- **Menu** — "Starting…" during the launch checks, or the problem and its fix when the CLI
-  cannot be used. Once ready, one line at most: the running command ("Refreshing skills…",
-  "Updating skills… 2 of 5"), else the last command's failure, else what the last check found
-  ("All skills are up to date", skills that could not be checked), else the last command's
-  outcome. Available updates show no line: they are the count on **Update all skills (2)**, and a
-  newer skillm is **Upgrade and restart**. Then **Refresh** (⌘R), **Update all skills** (⌘U),
-  **Stop** while a check or an update runs, **Upgrade and restart**, the windows, and always
-  **Quit skillm** (⌘Q).
+  dot while the Badge is on (a skill update or a newer CLI) or a newer app was found. No Dock
+  icon, no main window.
+- **Menu, CLI ready** — one line at most: the running command ("Refreshing skills…", "Updating
+  skills… 2 of 5"), else the last command's failure, else what the last check found, else the
+  last command's outcome. Then **Refresh** (⌘R), **Update all skills (2)** (⌘U), **Stop** while a
+  check or an update runs, **Upgrade skillm CLI to X** when a newer CLI can be installed,
+  **Upgrade app and restart** once a newer app was found, the windows, and **Quit skillm** (⌘Q).
+- **Menu, CLI not ready** — "Starting…" during the launch checks; otherwise what is wrong and its
+  fix: not installed (**Install skillm CLI**), too old (**Upgrade skillm CLI**), too new for this
+  app, or broken (**Check for app update**), with **Upgrade app and restart** whenever a newer app
+  was found, **Check Again**, Settings and Quit.
 - **Windows** — **View skills…** (Update, Uninstall), **Add skill…** from a repository or folder,
   and **Settings…** (⌘,) with Start at login, Auto check skill updates and the command-line tool
   ([windows.md](windows.md)).
 
 ## Flows
 
-- **Launch** — the app finds the Bundled CLI, checks its API version and that a usable git is on
-  the path skillm will get, reads the Refresh cache and runs the first scheduled check. A failed
-  launch check becomes the menu's problem line and fix: the CLI is missing (reinstall), speaks an
-  unknown API version (reinstall so both match), answers with something that is not the protocol
-  (its error output is shown), or no usable git (install Apple's Command Line Tools with
-  `xcode-select --install`, or git with Homebrew, then relaunch).
+- **Launch** — the app finds the CLI (the usual install folders, then the login shell's PATH),
+  checks its API version and that a usable git is on the path skillm will get, asks for an app
+  update, reads the Refresh cache and runs the first scheduled check. Without a usable git the
+  menu says how to get one (`xcode-select --install`, or Homebrew), then relaunch.
+- **Install or upgrade the CLI** — Install runs skillm's own `install.sh` (the latest release);
+  Upgrade runs `skillm upgrade`. Either way the launch checks run again; a latest release still
+  too old for the app says so.
+- **The CLI changes in a terminal** — each tick looks again: a CLI installed while missing, or
+  upgraded, replaced or removed while in use, is picked up without a relaunch, and a too-new one
+  turns the menu into "This app is too old…" with Check for app update.
 - **Scheduled check** — at launch, every hour the Mac is awake, and 30 seconds after it wakes,
   the app re-reads the settings and runs `refresh --if-due`; skillm checks only when one is Due.
-- **Refresh** — checks every skill and skillm itself now, due or not.
-- **Auto check skill updates** (Settings, on by default) — writes `refresh.enabled` through
-  `config set`; turning it on runs a scheduled check at once. A change made in a terminal shows after the next scheduled check.
-- **Update all skills** — runs `update` with events, counts skills done in the menu, then says
-  what the run did (updated, repaired, removed missing installs, imported, failed, sources gone)
-  and re-reads the cache, so the dot clears without another check.
-- **Upgrade and restart** — shown once Sparkle, asked by a check that found a newer skillm, found
-  the new app; Sparkle installs it and relaunches once skillm has exited ([updates.md](updates.md)).
+- **Refresh** — checks every skill and the CLI now, due or not, and asks for an app update.
+  **Auto check skill updates** (Settings) turns the scheduled check on or off (`config set`).
+- **Update all skills** — runs `update` with events, counts skills done, then says what the run
+  did and re-reads the cache, so the dot clears without another check.
+- **Upgrade app and restart** — Sparkle's window installs the new app and relaunches once skillm
+  has exited ([updates.md](updates.md)).
 - **Stop and Quit** — both interrupt skillm the way Ctrl-C does and wait for it to finish its
-  current write and exit ("Stopping…" meanwhile), so the app never reads Home half-written or
-  while skillm holds the Home lock ([FLOW.mermaid](FLOW.mermaid)).
+  current write and exit ("Stopping…" meanwhile) ([FLOW.mermaid](FLOW.mermaid)).
 
 ## Decisions
 
-- **A subprocess over the Bundled CLI** — the CLI is already the tested surface, and running it
-  keeps Go free of cgo and the release pipeline unchanged ([JSON API](../json-api/DESIGN.md)).
-- **The CLI lives inside the bundle** — a CLI under the app's `Contents/` judges its Upgrade
-  method as bundled, so `skillm upgrade` refuses to swap it and Sparkle upgrades both together.
-- **An unknown API version is refused at launch** — one clear "reinstall" beats commands that
-  fail one by one; unknown error codes, statuses and event types from a newer CLI still decode.
+- **A subprocess over the user's own CLI** — the CLI is already the tested surface, and running
+  it keeps Go free of cgo. Driving the installed one means one skillm on the Mac, upgraded one way.
+- **The API version is the contract** — an unknown API version (or a newer document schema) is
+  refused at launch with the fix that matches its direction; unknown codes and events decode.
+- **App updates never depend on the CLI** — the app asks its updater on its own schedule, so a
+  CLI that is missing, too new or broken never hides the app release that fixes it.
 - **Git is checked by the app too** — without the Command Line Tools, `/usr/bin/git` is only an
   installer stub skillm cannot tell apart; the app judges it and puts Homebrew's folders first.
 - **The app asks, skillm decides** — ticks only ask whether a check is Due, so the app follows
-  the interval and the Auto check skill updates setting wherever they were changed and cannot check in a loop.
+  the interval and the Auto check setting wherever they were changed and cannot check in a loop.
 - **One command at a time** — the items grey out while one runs; a scheduled check that falls
   due meanwhile waits for the next tick instead of queueing behind it.
-- **The wake check waits 30 seconds** — the network is often not back at the wake itself, and a
-  check whose every lookup failed is retried only an hour later.
-- **Check times are absolute** — "at 10:00": "5 minutes ago" would go stale in an open menu.
-- **Background failures clear themselves** — a failed launch read or scheduled check shows until
-  the next one succeeds; the outcome of a command the user chose stays until they choose another.
-- **A cancel never cuts a write short** — the hard stop that follows only after a long grace is
-  a guard against a hung process, since skillm cannot clean up after it.
 - **No sandbox, hardened runtime; macOS 14, signed by the team** — skillm writes agents' folders,
-  projects and Home and runs git, which the App Sandbox forbids; notarization needs the hardened
-  runtime, the menu bar APIs need macOS 14, and the team signature lets colleagues' Macs run it.
-- **A debug build finds a locally built CLI and never updates itself** — it runs a CLI built from
-  the same checkout; only a release build runs the Bundled CLI alone and asks Sparkle.
+  projects and Home and runs git, which the App Sandbox forbids; the team signature lets
+  colleagues' Macs run it.
+- **A debug build can run a CLI of the checkout and never updates itself** — `$SKILLM_BIN` points
+  it at one; only a release build asks Sparkle.

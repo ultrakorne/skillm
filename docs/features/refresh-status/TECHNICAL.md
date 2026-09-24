@@ -69,7 +69,7 @@ A Home with only local skills on a source build therefore waits the full interva
 
 ### Due is judged by time; the Self entry by the running binary
 
-Several skillm binaries share one Home (the app's bundled CLI, a terminal install), so `Due`
+Several skillm binaries may share one Home (two installs, or one before and after an upgrade), so `Due`
 ignores who wrote the cache. Instead `adjustSelf` re-judges the Self entry offline whenever its
 current version, method or executable differs from the running binary's: `available` compares
 the recorded latest release with the running version, a `dev` build drops `latest`, and only a
