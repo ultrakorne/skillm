@@ -4,7 +4,7 @@
 # staples it, zips it, and writes the Sparkle appcast that installed apps read.
 # It runs on a Mac that holds the credentials; there is no CI job for the app.
 #
-#   macos/scripts/release.sh [--dry-run] app-v<X.Y.Z>
+#   macos/scripts/release.sh [--dry-run | --no-notarize] app-v<X.Y.Z>
 #
 # The app is versioned and released on its own, apart from the CLI (vX.Y.Z
 # tags, goreleaser): it carries no CLI and drives the one the user installed,
@@ -49,6 +49,14 @@
 # only when SPARKLE_ED_PRIVATE_KEY is set. Its output goes to
 # macos/build/release/<version>-dry-run/ and must never be published.
 #
+# --no-notarize builds a real, publishable release without a Developer ID:
+# signed with the Developer ID identity when there is one, else Apple
+# Development, and never notarized. It still needs a clean checkout of the
+# tag and the Sparkle key. macOS blocks such an app on first launch; each Mac
+# allows it once in System Settings > Privacy & Security > Open Anyway (or
+# `xattr -dr com.apple.quarantine /Applications/skillm.app`). Sparkle updates
+# carry no quarantine, so later versions open without asking.
+#
 # SKILLM_RELEASE_DIR overrides macos/build/release; SKILLM_NOTARY_TIMEOUT the
 # notarization wait (default 40m).
 set -euo pipefail
@@ -61,10 +69,12 @@ warn() { printf 'warning: %s\n' "$*" >&2; }
 step() { printf '\n==> %s\n' "$*" >&2; }
 
 dry_run=0
+notarize=1
 version=""
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--dry-run) dry_run=1 ;;
+	--dry-run) dry_run=1 notarize=0 ;;
+	--no-notarize) notarize=0 ;;
 	-h | --help)
 		sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p;}' "$0"
 		exit 0
@@ -77,7 +87,7 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ -n "$version" ] || die "usage: release.sh [--dry-run] app-v<X.Y.Z>"
+[ -n "$version" ] || die "usage: release.sh [--dry-run | --no-notarize] app-v<X.Y.Z>"
 version=${version#app-v}
 [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
 	die "\"$version\" is not an app release app-vX.Y.Z (CLI tags are vX.Y.Z and have no app)"
@@ -128,9 +138,9 @@ identity=${SKILLM_SIGN_IDENTITY:-}
 if [ -z "$identity" ]; then
 	identity=$("$script_dir/find-identity.sh" "Developer ID Application" "$team")
 fi
-if [ -z "$identity" ] && [ "$dry_run" = 1 ]; then
+if [ -z "$identity" ] && [ "$notarize" = 0 ]; then
 	identity=$("$script_dir/find-identity.sh" "Apple Development")
-	[ -z "$identity" ] || warn "no Developer ID Application identity; signing with Apple Development (dry run)"
+	[ -z "$identity" ] || warn "no Developer ID Application identity; signing with Apple Development (not notarized)"
 fi
 if [ -z "$identity" ]; then
 	die "no \"Developer ID Application: … ($team)\" identity in the keychain. Create it in Xcode → Settings → Accounts → (team $team) → Manage Certificates → + → Developer ID Application (needs the Account Holder or Admin role), or set SKILLM_SIGN_IDENTITY"
@@ -143,7 +153,7 @@ notary_args=(--keychain-profile "$notary_profile")
 if [ -n "${SKILLM_NOTARY_KEYCHAIN:-}" ]; then
 	notary_args+=(--keychain "$SKILLM_NOTARY_KEYCHAIN")
 fi
-if [ "$dry_run" = 0 ]; then
+if [ "$notarize" = 1 ]; then
 	# Fail before the build, not after it.
 	xcrun notarytool history "${notary_args[@]}" >/dev/null 2>&1 ||
 		die "notarytool profile \"$notary_profile\" does not work. Create it: xcrun notarytool store-credentials $notary_profile --apple-id <apple-id> --team-id $team (an app-specific password from appleid.apple.com), or with an App Store Connect API key (--key, --key-id, --issuer)"
@@ -155,6 +165,8 @@ rm -rf "$out"
 mkdir -p "$out" "$dist"
 if [ "$dry_run" = 1 ]; then
 	printf 'Built by release.sh --dry-run: not notarized, never publish.\n' >"$out/DRY-RUN"
+elif [ "$notarize" = 0 ]; then
+	printf 'Built by release.sh --no-notarize: each Mac allows it once with Open Anyway.\n' >"$out/NOT-NOTARIZED"
 fi
 
 step "Generating the Xcode project"
@@ -231,7 +243,7 @@ while IFS= read -r -d '' file; do
 	[[ $info == *"TeamIdentifier=$team"* ]] || die "$file is not signed by team $team"
 	printf '%s\n' "$info" | grep -q '^CodeDirectory .*flags=.*runtime' || die "$file lacks the hardened runtime"
 	[[ $info == *"Timestamp="* ]] || die "$file has no secure timestamp"
-	if [ "$dry_run" = 0 ]; then
+	if [ "$notarize" = 1 ]; then
 		[[ $info == *"Authority=Developer ID Application:"* ]] || die "$file is not signed with a Developer ID Application certificate"
 	fi
 	if codesign -d --entitlements - "$file" 2>/dev/null | grep -q 'get-task-allow'; then
@@ -241,7 +253,7 @@ done < <(find "$app" -type f -perm -u+x -print0)
 
 # --- notarize --------------------------------------------------------------
 
-if [ "$dry_run" = 0 ]; then
+if [ "$notarize" = 1 ]; then
 	step "Notarizing (this can take a few minutes)"
 	mkdir -p "$out/notarize"
 	ditto -c -k --sequesterRsrc --keepParent "$app" "$out/notarize/skillm.zip"
@@ -277,7 +289,7 @@ if [ "$dry_run" = 0 ]; then
 		warn "Gatekeeper is off on this Mac; skipping its assessment"
 	fi
 else
-	warn "skipping notarization and stapling (dry run)"
+	warn "skipping notarization and stapling"
 fi
 
 # --- package ---------------------------------------------------------------
@@ -331,5 +343,6 @@ ls -l "$dist" >&2
 if [ "$dry_run" = 1 ]; then
 	warn "dry run: $dist is not notarized; do not publish it"
 else
+	[ "$notarize" = 1 ] || warn "not notarized: each Mac allows the app once with Open Anyway"
 	printf '\nPublish the %s release and its feed: macos/scripts/publish-release.sh %s\n' "$tag" "$tag" >&2
 fi

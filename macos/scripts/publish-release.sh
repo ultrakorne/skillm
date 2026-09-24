@@ -46,11 +46,17 @@ grep -qF "url=\"https://github.com/$repo/releases/download/$tag/$zip_name\"" "$d
 
 command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is not installed"
 
+notes="The skillm menu bar app $version for macOS. Installed apps offer it in their menu; it drives the skillm CLI, which is released separately."
+if [ -e "$out/NOT-NOTARIZED" ]; then
+	notes+="
+
+This build is not notarized. Unzip it, move skillm.app to Applications and open it; when macOS blocks it, go to System Settings > Privacy & Security and click Open Anyway (or run \`xattr -dr com.apple.quarantine /Applications/skillm.app\`). Updates from the app's menu open without asking."
+fi
+
 # The app's release first, so the feed never names a zip that is not there.
 if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
 	gh release create "$tag" --repo "$repo" --verify-tag --latest=false \
-		--title "skillm app $version" \
-		--notes "The skillm menu bar app $version for macOS. Installed apps offer it in their menu; it drives the skillm CLI, which is released separately." ||
+		--title "skillm app $version" --notes "$notes" ||
 		die "could not create the $tag release (push the tag first: git push origin $tag)"
 fi
 gh release upload "$tag" --repo "$repo" --clobber "$dist/$zip_name" "$dist/$zip_name.sha256"
