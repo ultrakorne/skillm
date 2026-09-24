@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds the skillm menu bar app for a release: archives it with the release
 # version, signs it (Developer ID, hardened runtime, inside-out), notarizes and
-# staples it, zips it, and writes the Sparkle appcast that installed apps read.
+# staples it, packs it in a disk image to drag to Applications and in the zip
+# Sparkle updates from, and writes the Sparkle appcast that installed apps read.
 # It runs on a Mac that holds the credentials; there is no CI job for the app.
 #
 #   macos/scripts/release.sh [--dry-run | --no-notarize] mac-v<X.Y.Z>
@@ -13,11 +14,16 @@
 # which Sparkle compares. A release is built from a clean checkout of the tag.
 #
 # Output, in macos/build/release/<version>/dist/:
-#   skillm_<version>_macos_app.zip          the notarized, stapled app
+#   skillm_<version>_macos_app.dmg          the app and an Applications link
+#                                            to drag it to; signed, notarized
+#                                            and stapled; what people download
+#   skillm_<version>_macos_app.dmg.sha256
+#   skillm_<version>_macos_app.zip          the notarized, stapled app, which
+#                                            Sparkle updates from
 #   skillm_<version>_macos_app.zip.sha256
 #   appcast.xml                              the feed the app reads
-# macos/scripts/publish-release.sh uploads the zip to the mac-v<version>
-# release and appcast.xml to the fixed macos-appcast release.
+# macos/scripts/publish-release.sh uploads the disk image and the zip to the
+# mac-v<version> release and appcast.xml to the fixed macos-appcast release.
 #
 # Credentials (none is stored in the repository):
 #   signing   the "Developer ID Application" identity of the project's team
@@ -106,8 +112,9 @@ derived=$release_root/DerivedData
 dist=$out/dist
 app=$out/skillm.app
 zip_name=skillm_${version}_macos_app.zip
+dmg_name=skillm_${version}_macos_app.dmg
 
-for tool in xcodegen xcodebuild git; do
+for tool in xcodegen xcodebuild git hdiutil; do
 	command -v "$tool" >/dev/null 2>&1 || die "$tool not found (brew install $tool)"
 done
 
@@ -253,32 +260,37 @@ done < <(find "$app" -type f -perm -u+x -print0)
 
 # --- notarize --------------------------------------------------------------
 
-if [ "$notarize" = 1 ]; then
-	step "Notarizing (this can take a few minutes)"
-	mkdir -p "$out/notarize"
-	ditto -c -k --sequesterRsrc --keepParent "$app" "$out/notarize/skillm.zip"
-	# Submit, keep the submission ID, then wait: if the wait is cut short,
-	# submit.json still names the submission, and `xcrun notarytool info <id>`
-	# / `log <id>` find it later. On its timeout this script ends a slow
-	# notarization and fetches what it can.
-	xcrun notarytool submit "$out/notarize/skillm.zip" "${notary_args[@]}" \
-		--output-format json >"$out/notarize/submit.json" || true
-	submission=$(plutil -extract id raw -o - "$out/notarize/submit.json" 2>/dev/null || true)
+# notarize <file> <name> submits a zip or disk image and waits for Apple.
+# It keeps the submission ID first, in notarize/<name>-submit.json: if the
+# wait is cut short, `xcrun notarytool info <id>` / `log <id>` find it later.
+# On its timeout this script ends a slow notarization and fetches what it can.
+notarize() {
+	local file=$1 name=$2 submission result
+	xcrun notarytool submit "$file" "${notary_args[@]}" \
+		--output-format json >"$out/notarize/$name-submit.json" || true
+	submission=$(plutil -extract id raw -o - "$out/notarize/$name-submit.json" 2>/dev/null || true)
 	if [ -z "$submission" ]; then
-		cat "$out/notarize/submit.json" >&2 || true
-		die "notarytool did not accept the upload"
+		cat "$out/notarize/$name-submit.json" >&2 || true
+		die "notarytool did not accept the $name upload"
 	fi
-	printf 'submission %s\n' "$submission" >&2
+	printf 'submission %s (%s)\n' "$submission" "$name" >&2
 	xcrun notarytool wait "$submission" "${notary_args[@]}" \
-		--timeout "${SKILLM_NOTARY_TIMEOUT:-40m}" --output-format json >"$out/notarize/wait.json" || true
-	result=$(plutil -extract status raw -o - "$out/notarize/wait.json" 2>/dev/null || true)
-	xcrun notarytool log "$submission" "${notary_args[@]}" "$out/notarize/log.json" >/dev/null 2>&1 ||
+		--timeout "${SKILLM_NOTARY_TIMEOUT:-40m}" --output-format json >"$out/notarize/$name-wait.json" || true
+	result=$(plutil -extract status raw -o - "$out/notarize/$name-wait.json" 2>/dev/null || true)
+	xcrun notarytool log "$submission" "${notary_args[@]}" "$out/notarize/$name-log.json" >/dev/null 2>&1 ||
 		warn "could not fetch the notarization log (there is none until Apple finishes)"
 	if [ "$result" != Accepted ]; then
-		cat "$out/notarize/wait.json" >&2 || true
-		[ -f "$out/notarize/log.json" ] && cat "$out/notarize/log.json" >&2
-		die "notarization of submission $submission ended with status \"${result:-unknown}\" (xcrun notarytool info $submission ${notary_args[*]})"
+		cat "$out/notarize/$name-wait.json" >&2 || true
+		[ -f "$out/notarize/$name-log.json" ] && cat "$out/notarize/$name-log.json" >&2
+		die "notarization of the $name, submission $submission, ended with status \"${result:-unknown}\" (xcrun notarytool info $submission ${notary_args[*]})"
 	fi
+}
+
+if [ "$notarize" = 1 ]; then
+	step "Notarizing the app (this can take a few minutes)"
+	mkdir -p "$out/notarize"
+	ditto -c -k --sequesterRsrc --keepParent "$app" "$out/notarize/skillm.zip"
+	notarize "$out/notarize/skillm.zip" app
 	xcrun stapler staple "$app"
 	xcrun stapler validate "$app"
 	if spctl --status 2>&1 | grep -q 'assessments enabled'; then
@@ -297,6 +309,27 @@ fi
 step "Packaging"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$dist/$zip_name"
 (cd "$dist" && shasum -a 256 "$zip_name" >"$zip_name.sha256")
+
+# The disk image people download: the stapled app beside a link to
+# /Applications, the usual drag-to-install window. It is signed, notarized and
+# stapled on its own, so Gatekeeper accepts it offline too.
+step "Making the disk image"
+dmg_root=$out/dmg
+rm -rf "$dmg_root"
+mkdir -p "$dmg_root"
+ditto "$app" "$dmg_root/skillm.app"
+ln -s /Applications "$dmg_root/Applications"
+hdiutil create -quiet -volname "skillm $version" -srcfolder "$dmg_root" \
+	-fs HFS+ -format UDZO -ov "$dist/$dmg_name"
+codesign --force --timestamp --sign "$identity" "$dist/$dmg_name"
+codesign --verify --strict --verbose=2 "$dist/$dmg_name"
+if [ "$notarize" = 1 ]; then
+	step "Notarizing the disk image"
+	notarize "$dist/$dmg_name" dmg
+	xcrun stapler staple "$dist/$dmg_name"
+	xcrun stapler validate "$dist/$dmg_name"
+fi
+(cd "$dist" && shasum -a 256 "$dmg_name" >"$dmg_name.sha256")
 
 # --- appcast ---------------------------------------------------------------
 

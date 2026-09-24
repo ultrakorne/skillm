@@ -1,5 +1,6 @@
 #!/bin/bash
-# Publishes what release.sh built: the zipped app and its SHA-256 go to the
+# Publishes what release.sh built: the disk image, the zipped app and their
+# SHA-256s go to the
 # app's own GitHub release (mac-v<version>, created here with --latest=false
 # when it does not exist yet: "latest" stays the CLI's release, which
 # install.sh and skillm upgrade read), then appcast.xml replaces the feed on
@@ -30,12 +31,15 @@ macos_dir=$(dirname "$script_dir")
 out=${SKILLM_RELEASE_DIR:-$macos_dir/build/release}/$version
 dist=$out/dist
 zip_name=skillm_${version}_macos_app.zip
+dmg_name=skillm_${version}_macos_app.dmg
 
 [ ! -e "$out/DRY-RUN" ] || die "$out was built by a dry run; never publish it"
-for f in "$zip_name" "$zip_name.sha256" appcast.xml; do
+for f in "$dmg_name" "$dmg_name.sha256" "$zip_name" "$zip_name.sha256" appcast.xml; do
 	[ -f "$dist/$f" ] || die "$dist/$f is missing; run macos/scripts/release.sh $tag first"
 done
-(cd "$dist" && shasum -a 256 -c "$zip_name.sha256" >/dev/null) || die "$zip_name does not match its .sha256"
+for f in "$dmg_name" "$zip_name"; do
+	(cd "$dist" && shasum -a 256 -c "$f.sha256" >/dev/null) || die "$f does not match its .sha256"
+done
 
 # The repository is the one the app's feed names.
 feed=$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$out/skillm.app/Contents/Info.plist")
@@ -46,20 +50,21 @@ grep -qF "url=\"https://github.com/$repo/releases/download/$tag/$zip_name\"" "$d
 
 command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is not installed"
 
-notes="The skillm menu bar app $version for macOS. Installed apps offer it in their menu; it drives the skillm CLI, which is released separately."
+notes="The skillm menu bar app $version for macOS. Download $dmg_name, open it and drag skillm to Applications."
 if [ -e "$out/NOT-NOTARIZED" ]; then
 	notes+="
 
-This build is not notarized. Unzip it, move skillm.app to Applications and open it; when macOS blocks it, go to System Settings > Privacy & Security and click Open Anyway (or run \`xattr -dr com.apple.quarantine /Applications/skillm.app\`). Updates from the app's menu open without asking."
+This build is not notarized. When macOS blocks it on first launch, go to System Settings > Privacy & Security and click Open Anyway (or run \`xattr -dr com.apple.quarantine /Applications/skillm.app\`). Updates from the app's menu open without asking."
 fi
 
 # The app's release first, so the feed never names a zip that is not there.
 if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
 	gh release create "$tag" --repo "$repo" --verify-tag --latest=false \
-		--title "skillm for macOS $version" --notes "$notes" ||
+		--title "skillm macOS $version" --notes "$notes" ||
 		die "could not create the $tag release (push the tag first: git push origin $tag)"
 fi
-gh release upload "$tag" --repo "$repo" --clobber "$dist/$zip_name" "$dist/$zip_name.sha256"
+gh release upload "$tag" --repo "$repo" --clobber \
+	"$dist/$dmg_name" "$dist/$dmg_name.sha256" "$dist/$zip_name" "$dist/$zip_name.sha256"
 
 if ! gh release view "$feed_tag" --repo "$repo" >/dev/null 2>&1; then
 	gh release create "$feed_tag" --repo "$repo" --latest=false \
@@ -67,4 +72,4 @@ if ! gh release view "$feed_tag" --repo "$repo" >/dev/null 2>&1; then
 		--notes "Holds appcast.xml, the feed installed skillm apps read. Replaced by every app release; download the app from its mac-vX.Y.Z release."
 fi
 gh release upload "$feed_tag" --repo "$repo" --clobber "$dist/appcast.xml"
-printf 'Uploaded %s and its .sha256 to %s %s, and appcast.xml to %s\n' "$zip_name" "$repo" "$tag" "$feed_tag" >&2
+printf 'Uploaded %s, %s and their .sha256 to %s %s, and appcast.xml to %s\n' "$dmg_name" "$zip_name" "$repo" "$tag" "$feed_tag" >&2

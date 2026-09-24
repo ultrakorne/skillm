@@ -17,7 +17,7 @@ The CLI release is GitHub's "latest": `install.sh` and `skillm upgrade` read it.
 ```sh
 git checkout master && git pull
 git tag mac-v1.0.0 && git push origin mac-v1.0.0
-macos/scripts/release.sh --no-notarize mac-v1.0.0   # build, sign, zip, appcast
+macos/scripts/release.sh --no-notarize mac-v1.0.0   # build, sign, dmg + zip, appcast
 macos/scripts/publish-release.sh mac-v1.0.0         # GitHub release + update feed
 ```
 
@@ -30,7 +30,7 @@ macos/scripts/publish-release.sh mac-v1.0.0         # GitHub release + update fe
 
 ### Installing (not notarized)
 
-Unzip, move `skillm.app` to Applications and open it. When macOS blocks it: System Settings →
+Open the `.dmg`, drag skillm to Applications and open it. When macOS blocks it: System Settings →
 Privacy & Security → **Open Anyway** (or `xattr -dr com.apple.quarantine /Applications/skillm.app`).
 Updates from the app's menu open without asking. Without a CLI, the menu offers **Install
 skillm CLI**.

@@ -3,8 +3,9 @@
 ## Overview
 
 The app ships as an **App release** of its own, apart from the CLI: a tag `mac-vX.Y.Z` with its
-own version, whose GitHub release holds the notarized, stapled app as
-`skillm_<version>_macos_app.zip` and its `.sha256`, while the **Appcast** installed apps read is
+own version, whose GitHub release holds the notarized, stapled app twice: in
+`skillm_<version>_macos_app.dmg`, the disk image people download, and in
+`skillm_<version>_macos_app.zip`, which Sparkle updates from, each with its `.sha256`, while the **Appcast** installed apps read is
 replaced on the fixed `macos-appcast` release ([updates.md](updates.md)). One script builds it on
 a Mac that holds the credentials; a second uploads it. There is no CI job for the app. The CLI
 keeps its `vX.Y.Z` tags and goreleaser's CI job, unchanged, and only it is GitHub's "latest".
@@ -13,8 +14,8 @@ keeps its `vX.Y.Z` tags and goreleaser's CI job, unchanged, and only it is GitHu
 
 | File | Role |
 |------|------|
-| `macos/scripts/release.sh` | Archive, sign, notarize, staple, zip and write the appcast for one `mac-vX.Y.Z`; `--help` lists the credentials and the one-time setup with their commands |
-| `macos/scripts/publish-release.sh` | Create the `mac-vX.Y.Z` release (never latest) and upload the zip and `.sha256`, then replace `appcast.xml` on `macos-appcast` |
+| `macos/scripts/release.sh` | Archive, sign, notarize, staple, pack the disk image and the zip, and write the appcast for one `mac-vX.Y.Z`; `--help` lists the credentials and the one-time setup with their commands |
+| `macos/scripts/publish-release.sh` | Create the `mac-vX.Y.Z` release (never latest) and upload the disk image, the zip and their `.sha256`s, then replace `appcast.xml` on `macos-appcast` |
 | `macos/scripts/find-identity.sh` | The keychain's signing identity of a certificate kind and team |
 | `macos/scripts/test-find-identity.sh` | Tests it against a stub `security` |
 | `macos/scripts/verify-update-signature.swift` | Checks the appcast's EdDSA signature against the app's `SUPublicEDKey` |
@@ -53,9 +54,16 @@ notes. It still needs a clean checkout of the tag and the Sparkle key. macOS blo
 its first launch until the user allows it in Privacy & Security; Sparkle's updates carry no
 quarantine, so later versions open without asking.
 
+### The download is a disk image, the update a zip
+
+The disk image holds the stapled app beside an `Applications` link, the usual drag-to-install
+window. It is signed with the same identity and, unless `--no-notarize` or `--dry-run`,
+notarized and stapled on its own, so it opens offline. The appcast keeps pointing at the zip,
+which Sparkle installs from without mounting anything.
+
 ### Notarization keeps its submission ID
 
-`notarytool submit` returns at once and its ID is saved in `notarize/submit.json` before the
+`notarytool submit` returns at once and its ID is saved in `notarize/<app|dmg>-submit.json` before the
 wait starts. After the wait's timeout (40 minutes, `SKILLM_NOTARY_TIMEOUT`) the script fails
 and fetches the log; `notarize/*.json` stays either way.
 
