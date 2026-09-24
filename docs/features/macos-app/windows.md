@@ -8,9 +8,9 @@ that one command, after which the model re-reads the status and bumps `installsV
 
 ## Surface
 
-- **Skills** — a table of what `list` reports: the skill, its Source and ref, git or local, and
-  each install (Global or its project, "(missing)" when the copy is gone) with the agents that
-  read it. Per row: Reveal in Finder for each install, Update (that skill only), and Uninstall…,
+- **Skills** — a table of what `list` reports: the skill, its Source and ref, and each install
+  (Global or its project, "(missing)" when the copy is gone, "(no agent)" when no agent reads
+  it). Per row: Reveal in Finder for each install, Update (that skill only), and Uninstall…,
   whose sheet names every copy it deletes, the committed copies in projects included.
 - **Add Skill** — a Source (a git URL, `owner/repo`, or a folder, typed or chosen) and an
   optional branch or tag → Read Skills lists its skills to tick (a lone skill is ticked), with a

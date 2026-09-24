@@ -160,8 +160,9 @@ final class SkillsModelTests: XCTestCase {
         XCTAssertEqual(SkillsModel.placeText(global, home: "/Users/me"), "Global")
         XCTAssertEqual(SkillsModel.placeText(local, home: "/Users/me"), "~/src/app (missing)")
         XCTAssertEqual(SkillsModel.placeText(local, home: "/Users/other"), "/Users/me/src/app (missing)")
-        XCTAssertEqual(SkillsModel.agentsText(global), "agents")
-        XCTAssertEqual(SkillsModel.agentsText(local), "no agent")
+        let unread = SkillInstall(
+            scope: .global, root: nil, path: "/Users/me/.agents/skills/a", agents: [], recorded: true, exists: true)
+        XCTAssertEqual(SkillsModel.placeText(unread, home: "/Users/me"), "Global (no agent)")
         XCTAssertEqual(SkillsModel.abbreviate("/Users/me", home: "/Users/me"), "~")
         XCTAssertEqual(SkillsModel.abbreviate("/Users/meme/x", home: "/Users/me"), "/Users/meme/x")
     }

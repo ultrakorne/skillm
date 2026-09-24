@@ -26,8 +26,8 @@ func TestRenderSkillTableEmpty(t *testing.T) {
 
 func TestRenderSkillTablePlain(t *testing.T) {
 	rows := []Row{
-		{ID: "alpha", Source: "https://example.com/repo", Installed: "global: claude", Kind: "git"},
-		{ID: "beta", Source: "/tmp/local", Installed: "-", Kind: "local"},
+		{ID: "alpha", Source: "https://example.com/repo", Installed: "global"},
+		{ID: "beta", Source: "/tmp/local", Installed: "-"},
 	}
 	got := RenderSkillTable(rows)
 
@@ -40,7 +40,7 @@ func TestRenderSkillTablePlain(t *testing.T) {
 		t.Fatalf("got %d lines, want 3 (header + 2 rows): %q", len(lines), got)
 	}
 	header := strings.Split(lines[0], "\t")
-	want := []string{"ID", "Source", "Installed", "Kind"}
+	want := []string{"ID", "Source", "Installed"}
 	if len(header) != len(want) {
 		t.Fatalf("header columns = %v, want %v", header, want)
 	}
@@ -49,10 +49,10 @@ func TestRenderSkillTablePlain(t *testing.T) {
 			t.Fatalf("header[%d] = %q, want %q", i, header[i], want[i])
 		}
 	}
-	if !strings.Contains(lines[1], "alpha") || !strings.Contains(lines[1], "git") {
+	if !strings.Contains(lines[1], "alpha") || !strings.Contains(lines[1], "global") {
 		t.Fatalf("row 1 missing expected cells: %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "beta") || !strings.Contains(lines[2], "local") {
+	if !strings.Contains(lines[2], "beta") || !strings.Contains(lines[2], "/tmp/local") {
 		t.Fatalf("row 2 missing expected cells: %q", lines[2])
 	}
 }

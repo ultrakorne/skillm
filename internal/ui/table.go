@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"image/color"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -14,17 +13,15 @@ import (
 type Row struct {
 	ID        string // skill id
 	Source    string // origin (git url or local path)
-	Installed string // scopes×agents read live from disk, e.g. "global: claude,codex"
-	Kind      string // "git" or "local" — cheap to derive; update status lives in `skillm check`
+	Installed string // install places read live from disk, e.g. "global; /proj"
 }
 
-// RenderSkillTable formats rows into a columnar view: ID | Source | Installed |
-// Kind. On a TTY it draws a bordered, colorized table (the Kind cell tinted by
-// meaning); off a TTY it emits a plain tab-separated grid so output stays pipe-
-// and grep-friendly. An empty rows slice yields a short notice rather than an
-// empty frame.
+// RenderSkillTable formats rows into a columnar view: ID | Source | Installed.
+// On a TTY it draws a bordered, colorized table; off a TTY it emits a plain
+// tab-separated grid so output stays pipe- and grep-friendly. An empty rows
+// slice yields a short notice rather than an empty frame.
 func RenderSkillTable(rows []Row) string {
-	headers := []string{"ID", "Source", "Installed", "Kind"}
+	headers := []string{"ID", "Source", "Installed"}
 
 	if len(rows) == 0 {
 		if IsTTY() {
@@ -49,8 +46,6 @@ func renderPlain(headers []string, rows []Row) string {
 		b.WriteString(r.Source)
 		b.WriteByte('\t')
 		b.WriteString(r.Installed)
-		b.WriteByte('\t')
-		b.WriteString(r.Kind)
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -69,12 +64,7 @@ func renderStyled(headers []string, rows []Row) string {
 			if row == table.HeaderRow {
 				return headerStyle.Padding(0, 1)
 			}
-			base := cellStyle
-			// Tint the Kind column (index 3) by meaning.
-			if col == 3 && row >= 0 && row < len(rows) {
-				return base.Foreground(kindColor(rows[row].Kind))
-			}
-			return base
+			return cellStyle
 		})
 
 	// Constrain the table to the terminal so wide cells (long git URLs) wrap
@@ -86,16 +76,9 @@ func renderStyled(headers []string, rows []Row) string {
 	}
 
 	for _, r := range rows {
-		t.Row(r.ID, r.Source, r.Installed, r.Kind)
+		t.Row(r.ID, r.Source, r.Installed)
 	}
 	return t.String()
-}
-
-func kindColor(kind string) color.Color {
-	if kind == "local" {
-		return lipgloss.Color("8") // dim — local skills have no upstream
-	}
-	return lipgloss.Color("6") // cyan — git-tracked
 }
 
 func faintStyle() lipgloss.Style {

@@ -2,8 +2,8 @@ import AppKit
 import SkillmKit
 import SwiftUI
 
-/// The View skills window: every installed skill, where it is installed and
-/// for which agents, with Reveal in Finder, Update and Uninstall per skill.
+/// The View skills window: every installed skill and where it is installed
+/// (Global or its project), with Reveal in Finder, Update and Uninstall per skill.
 struct SkillsView: View {
     @Bindable var skills: SkillsModel
     @Environment(\.openWindow) private var openWindow
@@ -60,15 +60,10 @@ struct SkillsView: View {
                     .help(skill.sourceLabel)
             }
             .width(min: 140, ideal: 240)
-            TableColumn("Kind") { skill in
-                Text(skill.kind.rawValue).foregroundStyle(.secondary)
-            }
-            .width(44)
             TableColumn("Installed") { skill in
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(skill.installs.enumerated()), id: \.offset) { _, install in
                         Text(SkillsModel.placeText(install))
-                            + Text("  " + SkillsModel.agentsText(install)).foregroundStyle(.secondary)
                     }
                 }
                 .help(skill.installs.map(\.path).joined(separator: "\n"))

@@ -84,8 +84,8 @@ fails and asks to run Update again. Shows a progress bar when there is enough wo
 warrant one. Does not show diffs.
 
 ### List
-Show every installed skill with its Source, its kind (git or local) and the Scopes/Agents it
-is currently installed at (read live from disk). Offline; upstream status is Check's job.
+Show every installed skill with its Source and where it is currently installed: Global, or
+the project path (read live from disk). Offline; upstream status is Check's job.
 
 ### Local skill
 A skill installed from a local path. Its recorded **source directory is its upstream**: Update

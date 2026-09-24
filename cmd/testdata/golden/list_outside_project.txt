@@ -1,8 +1,8 @@
 --- stdout
-ID	Source	Installed	Kind
-alpha	file://$REPO//alpha	global: agents,claude; local($PROJECT): agents,claude	git
-beta	file://$REPO//beta	global: agents,claude	git
-gamma	file://$REPO//gamma	global: agents,claude; local($PROJECT): agents,claude	git
-delta	file://$REPO2//delta	global: agents,claude	git
-omega	$LOCALSRC/omega	global: agents,claude	local
+ID	Source	Installed
+alpha	file://$REPO//alpha	global; $PROJECT
+beta	file://$REPO//beta	global
+gamma	file://$REPO//gamma	global; $PROJECT
+delta	file://$REPO2//delta	global
+omega	$LOCALSRC/omega	global
 --- stderr

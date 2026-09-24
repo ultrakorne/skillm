@@ -8,8 +8,8 @@ import (
 )
 
 // TestInstalledLabel verifies the Installed column rendered from core's
-// installs: Global first, the cwd's install as bare "local", other roots with
-// their path, installs serving no agent left out, and "-" for none at all.
+// installs: global first, local installs by their project root, installs
+// serving no agent left out, and "-" for none at all.
 func TestInstalledLabel(t *testing.T) {
 	cwd := t.TempDir()
 	other := t.TempDir()
@@ -19,11 +19,11 @@ func TestInstalledLabel(t *testing.T) {
 		{Scope: core.ScopeLocal, Root: other, Agents: []string{"agents"}},
 		{Scope: core.ScopeLocal, Root: t.TempDir(), Recorded: true},
 	}
-	want := fmt.Sprintf("global: agents,claude; local: claude; local(%s): agents", other)
-	if got := installedLabel(installs, cwd); got != want {
+	want := fmt.Sprintf("global; %s; %s", cwd, other)
+	if got := installedLabel(installs); got != want {
 		t.Fatalf("label = %q, want %q", got, want)
 	}
-	if got := installedLabel(installs[3:], cwd); got != "-" {
+	if got := installedLabel(installs[3:]); got != "-" {
 		t.Fatalf("label with no served agents = %q, want \"-\"", got)
 	}
 }

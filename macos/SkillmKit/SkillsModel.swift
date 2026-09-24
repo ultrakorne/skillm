@@ -191,7 +191,8 @@ public final class SkillsModel {
     }
 
     /// Where an install is, in words: "Global", or its project with `~`
-    /// for the home folder; "(missing)" when its copy is gone.
+    /// for the home folder; "(missing)" when its copy is gone, "(no agent)"
+    /// when no agent reads it.
     public static func placeText(_ install: SkillInstall, home: String = NSHomeDirectory()) -> String {
         var text: String
         if install.scope == .global {
@@ -199,13 +200,12 @@ public final class SkillsModel {
         } else {
             text = abbreviate(install.root ?? install.path, home: home)
         }
-        if !install.exists { text += " (missing)" }
+        if !install.exists {
+            text += " (missing)"
+        } else if install.agents.isEmpty {
+            text += " (no agent)"
+        }
         return text
-    }
-
-    /// The agents that read an install, or "no agent".
-    public static func agentsText(_ install: SkillInstall) -> String {
-        install.agents.isEmpty ? "no agent" : install.agents.joined(separator: ", ")
     }
 
     /// `path` with the home folder written `~`.
