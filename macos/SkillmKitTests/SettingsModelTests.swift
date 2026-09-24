@@ -31,34 +31,17 @@ final class FakeLoginItem: LoginItemService {
 final class SettingsModelTests: XCTestCase {
     private var harness: FakeHarness!
     private var loginItem: FakeLoginItem!
-    private var bin: URL!
-    /// A stand-in for install.sh: puts an executable skillm in
-    /// `$SKILLM_BIN_DIR` and records the version it was asked for.
-    private var installScript: URL!
 
     override func tearDown() async throws {
         await harness?.tearDown()
         harness = nil
-        if let bin { try? FileManager.default.removeItem(at: bin) }
-        if let installScript { try? FileManager.default.removeItem(at: installScript) }
     }
 
     private func started(_ env: [String: String] = [:]) async throws -> SettingsModel {
         harness = try FakeHarness(env)
         try await harness.start()
         loginItem = FakeLoginItem()
-        bin = FileManager.default.temporaryDirectory.appending(path: "skillm-bin-\(UUID().uuidString)")
-        installScript = FileManager.default.temporaryDirectory.appending(path: "install-\(UUID().uuidString).sh")
-        FileManager.default.createFile(
-            atPath: installScript.path,
-            contents: Data("""
-                mkdir -p "$SKILLM_BIN_DIR"
-                printf '%s' "${SKILLM_VERSION:-latest}" > "$SKILLM_BIN_DIR/version"
-                printf '#!/bin/sh\\n' > "$SKILLM_BIN_DIR/skillm" && chmod +x "$SKILLM_BIN_DIR/skillm"
-                """.utf8))
-        return SettingsModel(
-            app: harness.app, loginItem: loginItem, toolDirectories: [bin],
-            installScript: installScript, installEnvironment: ["SKILLM_BIN_DIR": bin.path])
+        return SettingsModel(app: harness.app, loginItem: loginItem)
     }
 
     func testLoadReadsTheSettingsAndAgents() async throws {
@@ -70,7 +53,9 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(harness.app.settings, RefreshSettings(enabled: true, intervalHours: 12))
         XCTAssertEqual(m.loginItemState, .requiresApproval)
         XCTAssertNil(m.loadError)
-        XCTAssertNil(m.commandLineTool)
+        // The CLI the app drives, and its version.
+        XCTAssertEqual(m.commandLineTool, TestPaths.fakeSkillm)
+        XCTAssertEqual(m.commandLineToolVersion, "0.4.0")
     }
 
     func testEnablingAnAgentRunsAtOnce() async throws {
@@ -171,17 +156,9 @@ final class SettingsModelTests: XCTestCase {
         XCTAssertEqual(m.loginItemState, .requiresApproval, "it shows what the system holds")
     }
 
-    func testInstallCommandLineTool() async throws {
+    func testInstallRunsOnlyWhenNoCLIIsInstalled() async throws {
         let m = try await started()
-        XCTAssertNil(m.commandLineTool)
-        await m.installCommandLineTool()?.value
-        let installed = bin.appending(path: "skillm")
-        XCTAssertEqual(m.commandLineTool, installed)
+        XCTAssertNil(m.installCommandLineTool(), "installed over a working CLI")
         XCTAssertFalse(m.isInstallingTool)
-        XCTAssertEqual(m.message?.isError, false)
-        // Pinned to the app's CLI version (the fake reports 0.4.0), so the terminal gets the same skillm.
-        XCTAssertEqual(try String(contentsOf: bin.appending(path: "version"), encoding: .utf8), "v0.4.0")
-        m.refreshLocalState()
-        XCTAssertEqual(m.commandLineTool, installed)
     }
 }

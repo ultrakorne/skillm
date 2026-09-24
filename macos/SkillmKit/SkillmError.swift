@@ -3,12 +3,20 @@ import Foundation
 /// Everything `SkillmClient` can fail with. A command that ran and reported
 /// a failure is `.command`; the other cases mean the CLI could not be used.
 public enum SkillmError: Error, Sendable, Equatable {
-    /// No skillm binary was found at any of the searched paths.
+    /// No skillm CLI is installed: none at any of the searched places.
     case binaryNotFound(searched: [String])
     /// The binary exists but could not be started.
     case launchFailed(path: String, reason: String)
-    /// The CLI speaks an API version this app does not know.
+    /// The CLI speaks an API version this app does not know: older than
+    /// `supported` (0 for a skillm from before the JSON API, whose `version`
+    /// is then unknown, "") or newer.
     case incompatibleCLI(version: String, apiVersion: Int, supported: [Int])
+
+    /// For `.incompatibleCLI`: the CLI is older than this app supports.
+    public var isCLITooOld: Bool {
+        if case .incompatibleCLI(_, let api, let supported) = self, let min = supported.min() { return api < min }
+        return false
+    }
     /// A document or event line carried an unknown schema_version.
     case unsupportedSchema(Int)
     /// The CLI wrote something that is not the protocol (it crashed, or it
@@ -32,11 +40,13 @@ extension SkillmError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .binaryNotFound:
-            return "The skillm command-line tool is missing from the app."
+            return "skillm CLI is not installed"
         case .launchFailed(let path, let reason):
             return "Could not start \(path): \(reason)"
-        case .incompatibleCLI(let version, let api, _):
-            return "The bundled skillm \(version) speaks API version \(api), which this app does not support."
+        case .incompatibleCLI(let version, _, _) where isCLITooOld:
+            return version.isEmpty ? "skillm CLI is too old" : "skillm CLI \(version) is too old"
+        case .incompatibleCLI(let version, _, _):
+            return "This app is too old for skillm \(version)"
         case .unsupportedSchema(let v):
             return "skillm wrote output in an unknown format (schema version \(v))."
         case .malformedOutput(let detail, _, _):
@@ -51,9 +61,11 @@ extension SkillmError: LocalizedError {
     public var recoverySuggestion: String? {
         switch self {
         case .binaryNotFound(let searched):
-            return "Reinstall skillm. Looked in: \(searched.joined(separator: ", "))"
+            return "Install it with Install skillm CLI. Looked in: \(searched.joined(separator: ", "))"
+        case .incompatibleCLI where isCLITooOld:
+            return "Upgrade it with Upgrade skillm CLI."
         case .incompatibleCLI:
-            return "Reinstall skillm so the app and its command-line tool match."
+            return "Check for an app update."
         case .gitMissing:
             return Self.gitFix
         case .command(let e, _) where e.code == .gitMissing:

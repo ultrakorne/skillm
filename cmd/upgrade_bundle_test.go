@@ -70,8 +70,8 @@ func TestUpgradeRefusesInsideAppBundle(t *testing.T) {
 	if err == nil {
 		t.Fatalf("upgrade inside a bundle succeeded:\n%s", out)
 	}
-	if !strings.Contains(out, "managed by the skillm app; use upgrade in the menu") {
-		t.Errorf("upgrade inside a bundle did not name the app:\n%s", out)
+	if !strings.Contains(out, "inside an app bundle, which must upgrade it") {
+		t.Errorf("upgrade inside a bundle did not name the bundle:\n%s", out)
 	}
 	if strings.Contains(out, "check for a newer skillm") {
 		t.Errorf("upgrade inside a bundle reached the network before refusing:\n%s", out)
@@ -86,8 +86,8 @@ func TestUpgradeRefusesInsideAppBundle(t *testing.T) {
 		t.Errorf("upgrade --check inside a bundle did not look up the release:\n%s", out)
 	}
 
-	// A symlink into the bundle (the app's "install command-line tool")
-	// resolves to the bundled binary, so it refuses too.
+	// A symlink into the bundle resolves to the bundled binary, so it
+	// refuses too.
 	if runtime.GOOS != "windows" {
 		link := filepath.Join(dir, "bin", name)
 		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
@@ -97,7 +97,7 @@ func TestUpgradeRefusesInsideAppBundle(t *testing.T) {
 			t.Fatal(err)
 		}
 		out, err := runOffline(t, link, "upgrade", "--yes")
-		if err == nil || !strings.Contains(out, "managed by the skillm app") {
+		if err == nil || !strings.Contains(out, "inside an app bundle") {
 			t.Errorf("upgrade through a symlink into the bundle = %v:\n%s", err, out)
 		}
 	}
@@ -106,7 +106,7 @@ func TestUpgradeRefusesInsideAppBundle(t *testing.T) {
 	plain := filepath.Join(dir, "plain", name)
 	buildReleaseBinary(t, plain, "0.2.0")
 	out, _ = runOffline(t, plain, "upgrade", "--yes")
-	if strings.Contains(out, "managed by the skillm app") || !strings.Contains(out, "check for a newer skillm") {
+	if strings.Contains(out, "inside an app bundle") || !strings.Contains(out, "check for a newer skillm") {
 		t.Errorf("upgrade outside a bundle did not look up the release:\n%s", out)
 	}
 }

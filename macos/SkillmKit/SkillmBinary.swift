@@ -1,19 +1,16 @@
 import Foundation
 
-/// Finds the skillm binary the app runs.
+/// Finds the skillm CLI the app runs: the one the user installed. The app
+/// carries no CLI of its own; the CLI and the app are released separately
+/// and `api_version` keeps them compatible (`SkillmClient.connect`).
 ///
-/// A built app carries a version-matched CLI at `Contents/Helpers/skillm`
-/// (the build phase `scripts/build-cli.sh` puts it there). It lives under
-/// `Contents/` so the CLI judges itself "bundled" and refuses to swap its
-/// own binary, and not in `Contents/MacOS`, where the app's own executable is
-/// also named skillm.
-///
-/// A debug build also honours `$SKILLM_BIN` (checked first, as an explicit
-/// override) and falls back to the `go build` output at the repository root.
+/// Looked for, in order: `$SKILLM_BIN` (debug builds only, an explicit
+/// override), the folders `install.sh` and Homebrew put it in
+/// (`installDirectories`), then the user's login shell (`command -v skillm`,
+/// bounded by a timeout), for a skillm installed anywhere else on the PATH a
+/// terminal sees. The app looks again at every launch check, so a CLI
+/// installed or upgraded in a terminal meanwhile is picked up.
 public enum SkillmBinary {
-    /// The bundled CLI's path inside the app bundle.
-    public static let bundledPath = "Contents/Helpers/skillm"
-
     /// Whether this is a debug build.
     public static var isDebugBuild: Bool {
         #if DEBUG
@@ -23,55 +20,142 @@ public enum SkillmBinary {
         #endif
     }
 
-    /// The repository root this debug build was compiled from, if any.
-    public static var debugSourceRoot: URL? {
-        #if DEBUG
-            // macos/SkillmKit/SkillmBinary.swift → the repository root.
-            return URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        #else
-            return nil
-        #endif
+    /// Where `install.sh` puts skillm (`/usr/local/bin`, else
+    /// `~/.local/bin`), then Homebrew's folder.
+    public static func installDirectories(home: String = NSHomeDirectory()) -> [URL] {
+        [
+            URL(fileURLWithPath: "/usr/local/bin"),
+            URL(fileURLWithPath: home).appending(path: ".local/bin"),
+            URL(fileURLWithPath: "/opt/homebrew/bin"),
+        ]
     }
 
-    /// The paths searched, in order.
+    /// The paths looked at before the login shell is asked, in order.
     public static func candidates(
-        bundleURL: URL = Bundle.main.bundleURL,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         debug: Bool = isDebugBuild,
-        sourceRoot: URL? = debugSourceRoot
+        directories: [URL] = installDirectories()
     ) -> [URL] {
         var urls: [URL] = []
         if debug, let bin = environment["SKILLM_BIN"], !bin.isEmpty {
             urls.append(URL(fileURLWithPath: bin))
         }
-        urls.append(bundleURL.appending(path: bundledPath))
-        if debug, let root = sourceRoot {
-            urls.append(root.appending(path: "skillm"))
-            urls.append(root.appending(path: "bin/skillm"))
-        }
+        urls += directories.map { $0.appending(path: "skillm") }
         return urls
     }
 
-    /// The first candidate that is an executable file. Throws
-    /// `SkillmError.binaryNotFound`.
+    /// Whether `url` is an executable file (a symlink counts when it
+    /// resolves to one).
+    static func isExecutableFile(_ url: URL) -> Bool {
+        let path = url.resolvingSymlinksInPath().path
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && !isDir.boolValue
+            && FileManager.default.isExecutableFile(atPath: path)
+    }
+
+    /// The first candidate that is an executable file, else the one the
+    /// login shell finds (`loginShell` nil skips that). Throws
+    /// `SkillmError.binaryNotFound` naming where it looked.
     public static func locate(
-        bundleURL: URL = Bundle.main.bundleURL,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         debug: Bool = isDebugBuild,
-        sourceRoot: URL? = debugSourceRoot
-    ) throws -> URL {
-        let urls = candidates(bundleURL: bundleURL, environment: environment, debug: debug, sourceRoot: sourceRoot)
-        let fm = FileManager.default
-        for url in urls {
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue,
-                fm.isExecutableFile(atPath: url.path)
-            {
-                return url
-            }
+        directories: [URL] = installDirectories(),
+        loginShell: LoginShell? = LoginShell(environment: ProcessInfo.processInfo.environment)
+    ) async throws -> URL {
+        let urls = candidates(environment: environment, debug: debug, directories: directories)
+        if let found = urls.first(where: isExecutableFile) { return found }
+        var searched = urls.map(\.path)
+        if let loginShell {
+            if let found = await loginShell.find("skillm") { return found }
+            searched.append("the PATH of \(loginShell.shell.lastPathComponent)")
         }
-        throw SkillmError.binaryNotFound(searched: urls.map(\.path))
+        throw SkillmError.binaryNotFound(searched: searched)
+    }
+}
+
+/// Asks the user's login shell where a command is (`command -v`): a GUI app
+/// starts with a minimal PATH, while a terminal's PATH comes from the shell's
+/// startup files. The shell runs as a login, interactive shell, so both kinds
+/// of startup file (`.zprofile` and `.zshrc`, for zsh) are read, with no
+/// terminal and stdin closed. A shell that does not answer within `timeout`
+/// is stopped and counts as finding nothing.
+public struct LoginShell: Sendable {
+    /// The shell run.
+    public var shell: URL
+    public var timeout: Duration
+    /// The shell's environment.
+    public var environment: [String: String]
+
+    public init(shell: URL, timeout: Duration = .seconds(5), environment: [String: String] = [:]) {
+        self.shell = shell
+        self.timeout = timeout
+        self.environment = environment
+    }
+
+    /// The user's shell: `$SHELL`, else the account's shell, else zsh.
+    public init(environment: [String: String], timeout: Duration = .seconds(5)) {
+        var path = environment["SHELL"] ?? ""
+        if path.isEmpty, let entry = getpwuid(getuid()), let shell = entry.pointee.pw_shell {
+            path = String(cString: shell)
+        }
+        if path.isEmpty { path = "/bin/zsh" }
+        self.init(shell: URL(fileURLWithPath: path), timeout: timeout, environment: environment)
+    }
+
+    /// The executable `command -v <name>` names, or nil when the shell
+    /// names none, names something that is not an executable file, fails to
+    /// start or takes longer than `timeout`. Startup files may print their
+    /// own lines: the answer is the last line that is an absolute path.
+    public func find(_ name: String) async -> URL? {
+        let child = ChildProcess(
+            executable: shell, arguments: ["-l", "-i", "-c", "command -v \(name)"], environment: environment)
+        do { try child.start() } catch { return nil }
+        let output = OutputBuffer()
+        let answered = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await chunk in child.stdout { output.append(chunk) }
+                return !Task.isCancelled
+            }
+            // A background process the startup files left running may hold
+            // stdout open after the shell has exited.
+            group.addTask {
+                _ = await child.waitForExit()
+                return !Task.isCancelled
+            }
+            // An interactive shell ignores SIGINT and SIGTERM: SIGKILL.
+            group.addTask {
+                do { try await Task.sleep(for: timeout) } catch { return false }
+                child.kill()
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        guard answered else { return nil }
+        let lines = String(decoding: output.data, as: UTF8.self).split(whereSeparator: \.isNewline)
+        guard let path = lines.map({ $0.trimmingCharacters(in: .whitespaces) }).last(where: { $0.hasPrefix("/") })
+        else { return nil }
+        let url = URL(fileURLWithPath: path)
+        return SkillmBinary.isExecutableFile(url) ? url : nil
+    }
+}
+
+/// Bytes collected from another task.
+private final class OutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        buffer.append(chunk)
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer
     }
 }
 

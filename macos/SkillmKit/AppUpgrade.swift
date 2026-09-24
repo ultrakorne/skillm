@@ -26,7 +26,8 @@ public struct UpdateFeed: Equatable, Sendable {
 }
 
 /// The app's updater as the model sees it. The app implements it with
-/// Sparkle, which replaces the whole bundle (the bundled CLI with it).
+/// Sparkle, which replaces the app bundle. The CLI is not part of it: it is
+/// released and upgraded on its own (`skillm upgrade`).
 @MainActor
 public protocol AppUpdater: AnyObject {
     /// Asks the feed for a newer app without showing anything. The answer
@@ -34,26 +35,27 @@ public protocol AppUpdater: AnyObject {
     /// `probeFailed()` when the check failed. False when no check started
     /// (the updater is busy with another one).
     func probe() -> Bool
-    /// Shows the update found and installs it when the user agrees; the app
+    /// Checks the feed with the updater's own window: shows the update found
+    /// (or that there is none) and installs it when the user agrees; the app
     /// then quits (through `AppModel.postponeRelaunch`) and relaunches.
     func install()
 }
 
-/// "Upgrade and restart": shown once the updater has found a newer app.
+/// "Upgrade app and restart": shown once the updater has found a newer app.
 ///
-/// The updater never checks on its own schedule. A Refresh that finds a
-/// newer skillm release (`status.self.available`), or whose own lookup of
-/// the latest release failed (`status.self.error`, for the bundled CLI),
-/// asks it once per check, so the Auto refresh setting covers both. The item
-/// waits for the updater's answer rather than showing on `self.available`
-/// alone: that says a GitHub release exists, not that its appcast (and a
-/// signed app) is there yet. A check that did not start or failed is asked
-/// again with the next status that arrives (the next tick at the latest).
+/// The updater never checks on its own schedule (`SUEnableAutomaticChecks`
+/// is off). It is asked silently once for every Refresh cache that arrives
+/// with a new `checked_at`: at launch (the first status read), after each
+/// scheduled check, which runs on the app's refresh interval, and after the
+/// Refresh item. So the Auto check setting and its interval cover the skills,
+/// the CLI and the app alike. The app's version is independent of the CLI's,
+/// so nothing in the cache says whether a newer app exists: only the
+/// updater's answer does. A check that did not start or failed is asked again
+/// with the next status that arrives (the next tick at the latest).
 ///
 /// "Skip This Version" in the updater's window keeps the item: the updater
 /// stops reminding, but the item still installs the skipped version (the
-/// user-started check finds it), and the menu's dot, which comes from the
-/// CLI's cache, stays until then.
+/// user-started check finds it), and the menu's dot stays until then.
 @MainActor
 @Observable
 public final class AppUpgrade {
@@ -69,26 +71,26 @@ public final class AppUpgrade {
 
     public init() {}
 
-    /// Show "Upgrade and restart".
+    /// Show "Upgrade app and restart".
     public var isAvailable: Bool { updater != nil && version != nil }
 
-    /// Connects the app's updater; it is asked at once if the status seen
-    /// so far says a newer skillm exists.
+    /// The app updates itself: "Check for app update" can be offered.
+    public var canCheck: Bool { updater != nil }
+
+    /// Connects the app's updater; it is asked at once about the status
+    /// seen so far.
     public func attach(_ updater: any AppUpdater) {
         self.updater = updater
         statusChanged(lastStatus)
     }
 
-    /// A status arrived (every `status`/`refresh` answer). When it says a
-    /// newer skillm exists (or that the CLI could not look) and the updater
-    /// has not found an update yet, the updater is asked, once per check: a
-    /// re-read of the same cache asks nothing.
+    /// A status arrived (every `status`/`refresh` answer). When it is from a
+    /// check the updater was not asked about yet and no update was found
+    /// yet, the updater is asked: a re-read of the same cache asks nothing.
     public func statusChanged(_ status: StatusData?) {
         lastStatus = status
         guard let updater, version == nil,
-            let cache = status?.cache, let me = cache.selfStatus,
-            me.available || (me.error != nil && me.method == .bundled),
-            let checkedAt = cache.checkedAt, checkedAt != probedCheck
+            let checkedAt = status?.cache.checkedAt, checkedAt != probedCheck
         else { return }
         if updater.probe() { probedCheck = checkedAt }
     }
@@ -109,7 +111,8 @@ public final class AppUpgrade {
         probedCheck = nil
     }
 
-    /// The "Upgrade and restart" item.
+    /// The "Upgrade app and restart" item, and "Check for app update" when
+    /// the CLI is newer than this app supports.
     public func upgrade() {
         updater?.install()
     }

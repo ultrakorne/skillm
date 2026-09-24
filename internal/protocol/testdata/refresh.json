@@ -39,8 +39,8 @@
       "current": "0.4.0",
       "available": false,
       "eligible": false,
-      "method": "bundled",
-      "executable": "/Applications/skillm.app/Contents/Helpers/skillm",
+      "method": "binary",
+      "executable": "/usr/local/bin/skillm",
       "error": "check for a newer skillm: dial tcp: no route to host"
     },
     "errors": [

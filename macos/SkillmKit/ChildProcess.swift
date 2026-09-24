@@ -129,6 +129,13 @@ final class ChildProcess: @unchecked Sendable {
         }
     }
 
+    /// Kills the process (SIGKILL), for a child that is not skillm and
+    /// ignores the other signals (an interactive shell).
+    func kill() {
+        guard process.isRunning else { return }
+        Darwin.kill(process.processIdentifier, SIGKILL)
+    }
+
     /// Waits until the process has exited and its stderr is read to the end,
     /// then returns its exit status. The wait goes on even if the calling
     /// task is cancelled.

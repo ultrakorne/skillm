@@ -6,7 +6,7 @@
     "available": true,
     "eligible": false,
     "method": "bundled",
-    "executable": "/Applications/skillm.app/Contents/Helpers/skillm"
+    "executable": "/Applications/Example.app/Contents/Helpers/skillm"
   },
   "warnings": [],
   "error": null

@@ -213,7 +213,7 @@ type SelfStatusData struct {
 	// Eligible says `skillm upgrade` can install Latest (available, and
 	// method "binary").
 	Eligible bool `json:"eligible"`
-	// Method is "binary", "bundled" (inside the app bundle, which upgrades
+	// Method is "binary", "bundled" (inside an app bundle, which upgrades
 	// it) or "dev" (a source build).
 	Method string `json:"method"`
 	// Executable is the running binary's resolved path, when known.

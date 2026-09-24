@@ -59,15 +59,16 @@ public final class RefreshScheduler {
         self.tick = tick
     }
 
-    /// Ticks now, then starts the hourly wait and watches for wakes.
-    public func start() {
+    /// Ticks now (unless `tickNow` is false), then starts the hourly wait
+    /// and watches for wakes.
+    public func start(tickNow: Bool = true) {
         guard observer == nil else { return }
         observer = center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) {
             [weak self] _ in
             MainActor.assumeIsolated { self?.didWake() }
         }
         startLoop()
-        tick()
+        if tickNow { tick() }
     }
 
     /// Stops ticking.

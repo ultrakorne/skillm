@@ -4,18 +4,20 @@
 # staples it, zips it, and writes the Sparkle appcast that installed apps read.
 # It runs on a Mac that holds the credentials; there is no CI job for the app.
 #
-#   macos/scripts/release.sh [--dry-run] <version>
+#   macos/scripts/release.sh [--dry-run] app-v<X.Y.Z>
 #
-# <version> is the release tag, v0.5.0 or 0.5.0 (a clean X.Y.Z: the bundled
-# CLI treats anything else as a dev build). It sets both MARKETING_VERSION
-# (and so CFBundleVersion, which Sparkle compares) and SKILLM_VERSION (the
-# bundled CLI's version). A release is built from a clean checkout of that tag.
+# The app is versioned and released on its own, apart from the CLI (vX.Y.Z
+# tags, goreleaser): it carries no CLI and drives the one the user installed,
+# which `api_version` keeps compatible. Its tag is app-vX.Y.Z (X.Y.Z alone is
+# taken as that); the version sets MARKETING_VERSION and so CFBundleVersion,
+# which Sparkle compares. A release is built from a clean checkout of the tag.
 #
 # Output, in macos/build/release/<version>/dist/:
 #   skillm_<version>_macos_app.zip          the notarized, stapled app
 #   skillm_<version>_macos_app.zip.sha256
 #   appcast.xml                              the feed the app reads
-# macos/scripts/publish-release.sh uploads them to the tag's GitHub release.
+# macos/scripts/publish-release.sh uploads the zip to the app-v<version>
+# release and appcast.xml to the fixed macos-appcast release.
 #
 # Credentials (none is stored in the repository):
 #   signing   the "Developer ID Application" identity of the project's team
@@ -75,11 +77,11 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ -n "$version" ] || die "usage: release.sh [--dry-run] <version>"
-version=${version#v}
+[ -n "$version" ] || die "usage: release.sh [--dry-run] app-v<X.Y.Z>"
+version=${version#app-v}
 [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
-	die "version \"$version\" is not a release version X.Y.Z (a pre-release has no macOS app)"
-tag=v$version
+	die "\"$version\" is not an app release app-vX.Y.Z (CLI tags are vX.Y.Z and have no app)"
+tag=app-v$version
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 macos_dir=$(dirname "$script_dir")
@@ -95,7 +97,7 @@ dist=$out/dist
 app=$out/skillm.app
 zip_name=skillm_${version}_macos_app.zip
 
-for tool in go xcodegen xcodebuild git; do
+for tool in xcodegen xcodebuild git; do
 	command -v "$tool" >/dev/null 2>&1 || die "$tool not found (brew install $tool)"
 done
 
@@ -158,17 +160,15 @@ fi
 step "Generating the Xcode project"
 (cd "$macos_dir" && xcodegen generate --quiet)
 
-# Xcode builds the app and, in its "Embed skillm CLI" phase, the universal
-# CLI (scripts/build-cli.sh: go build per architecture with goreleaser's
-# ldflags, then lipo). Nothing is signed here: signing is done below, the
-# same way on every Mac, without provisioning or Xcode's account.
-step "Archiving skillm $version"
+# Xcode builds the universal app. Nothing is signed here: signing is done
+# below, the same way on every Mac, without provisioning or Xcode's account.
+step "Archiving the skillm app $version"
 xcodebuild archive -quiet \
 	-project "$macos_dir/Skillm.xcodeproj" -scheme Skillm -configuration Release \
 	-destination 'generic/platform=macOS' \
 	-archivePath "$out/skillm.xcarchive" -derivedDataPath "$derived" \
 	ONLY_ACTIVE_ARCH=NO \
-	MARKETING_VERSION="$version" SKILLM_VERSION="$version" \
+	MARKETING_VERSION="$version" \
 	CODE_SIGNING_ALLOWED=NO
 ditto "$out/skillm.xcarchive/Products/Applications/skillm.app" "$app"
 
@@ -183,28 +183,28 @@ plist_get() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null || tru
 [ "$(plist_get CFBundleShortVersionString)" = "$version" ] || die "CFBundleShortVersionString is not $version"
 [ "$(plist_get CFBundleVersion)" = "$version" ] ||
 	die "CFBundleVersion is \"$(plist_get CFBundleVersion)\", not $version: Sparkle compares it with the appcast's version"
+# The feed is a fixed release, never "latest": that is the CLI's release,
+# which install.sh and skillm upgrade read.
 feed=$(plist_get SUFeedURL)
-[[ $feed =~ ^https://github\.com/[^/]+/[^/]+/releases/latest/download/appcast\.xml$ ]] ||
-	die "SUFeedURL \"$feed\" is not a GitHub releases/latest/download/appcast.xml URL"
-repo_url=${feed%/releases/latest/download/appcast.xml}
+[[ $feed =~ ^https://github\.com/[^/]+/[^/]+/releases/download/macos-appcast/appcast\.xml$ ]] ||
+	die "SUFeedURL \"$feed\" is not a GitHub releases/download/macos-appcast/appcast.xml URL"
+repo_url=${feed%/releases/download/macos-appcast/appcast.xml}
 public_key=$(plist_get SUPublicEDKey)
 [ "$(printf '%s' "$public_key" | base64 -D 2>/dev/null | wc -c | tr -d ' ')" = 32 ] ||
 	die "SUPublicEDKey \"$public_key\" is not an Ed25519 public key"
 
-cli=$app/Contents/Helpers/skillm
-for binary in "$cli" "$app/Contents/MacOS/skillm"; do
-	archs=$(lipo -archs "$binary")
-	for arch in arm64 x86_64; do
-		[[ " $archs " == *" $arch "* ]] || die "$binary has no $arch slice ($archs)"
-	done
+# The app carries no CLI: it drives the one the user installed.
+[ ! -e "$app/Contents/Helpers" ] || die "the app has Contents/Helpers: it must not bundle a CLI"
+[ -f "$app/Contents/Resources/install.sh" ] || die "the app lacks install.sh (Install skillm CLI runs it)"
+archs=$(lipo -archs "$app/Contents/MacOS/skillm")
+for arch in arm64 x86_64; do
+	[[ " $archs " == *" $arch "* ]] || die "the app has no $arch slice ($archs)"
 done
-cli_version=$("$cli" version --json | plutil -extract data.version raw -o - - 2>/dev/null || true)
-[ "$cli_version" = "$version" ] || die "the bundled CLI reports version \"$cli_version\", not $version"
 
 # --- sign ------------------------------------------------------------------
 
-# Inside-out, as Sparkle's documentation describes (never --deep): the
-# bundled CLI, Sparkle's XPC services and helpers, Sparkle, then the app.
+# Inside-out, as Sparkle's documentation describes (never --deep): Sparkle's
+# XPC services and helpers, Sparkle, then the app.
 # Every piece gets the hardened runtime and a secure timestamp, which
 # notarization requires. The Downloader service keeps its entitlements.
 step "Signing"
@@ -213,7 +213,6 @@ sparkle=$app/Contents/Frameworks/Sparkle.framework
 for part in Versions/B/XPCServices/Installer.xpc Versions/B/XPCServices/Downloader.xpc Versions/B/Autoupdate Versions/B/Updater.app; do
 	[ -e "$sparkle/$part" ] || die "Sparkle's layout changed: no $part; update the signing order in release.sh"
 done
-sign "$cli"
 sign "$sparkle/Versions/B/XPCServices/Installer.xpc"
 sign --preserve-metadata=entitlements "$sparkle/Versions/B/XPCServices/Downloader.xpc"
 sign "$sparkle/Versions/B/Autoupdate"
@@ -289,8 +288,9 @@ ditto -c -k --sequesterRsrc --keepParent "$app" "$dist/$zip_name"
 
 # --- appcast ---------------------------------------------------------------
 
-# One item, the new release: the feed is releases/latest/download/appcast.xml,
-# so an installed app only ever needs the newest.
+# One item, the new release, pointing at the zip on its app-v<version>
+# release: publish-release.sh replaces the feed on every release, so an
+# installed app only ever needs the newest.
 download_prefix=$repo_url/releases/download/$tag/
 if [ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ] || [ "$dry_run" = 0 ]; then
 	step "Writing the appcast"
@@ -331,5 +331,5 @@ ls -l "$dist" >&2
 if [ "$dry_run" = 1 ]; then
 	warn "dry run: $dist is not notarized; do not publish it"
 else
-	printf '\nUpload to the %s release: macos/scripts/publish-release.sh %s\n' "$tag" "$tag" >&2
+	printf '\nPublish the %s release and its feed: macos/scripts/publish-release.sh %s\n' "$tag" "$tag" >&2
 fi

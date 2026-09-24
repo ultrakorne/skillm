@@ -224,8 +224,8 @@ func (f *File) SetSkill(s Skill) {
 // shortened since), or when CheckedAt is in the future (the clock went back).
 //
 // Which skillm wrote the cache does not matter: several binaries may share
-// one Home (the app's bundled CLI and a terminal install, at different
-// versions), and each reader re-judges the self entry for itself offline.
+// one Home (two installs at different versions, or one before and after an
+// upgrade), and each reader re-judges the self entry for itself offline.
 func Due(f *File, now time.Time, enabled bool, interval time.Duration) bool {
 	if !enabled {
 		return false

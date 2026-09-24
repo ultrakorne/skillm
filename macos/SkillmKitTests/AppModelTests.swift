@@ -84,16 +84,18 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(m.notice)
     }
 
-    func testStartFailureShowsTheProblemAndSchedulesNothing() async throws {
-        let m = model(["FAKE_SKILLM_MODE": "api99"])
+    func testStartFailureShowsTheProblemAndEachTickChecksAgain() async throws {
+        let m = model(["FAKE_SKILLM_MODE": "git_missing"])
         await m.start()
         guard case .failed(let message, let fix) = m.cli else { return XCTFail("started: \(m.cli)") }
-        XCTAssertTrue(message.contains("API version 99"), message)
-        XCTAssertNotNil(fix)
+        XCTAssertTrue(message.contains("git"), message)
+        XCTAssertEqual(fix, SkillmError.gitFix)
         XCTAssertNil(m.refresh())
+        XCTAssertEqual(commands(), ["version --json"], "the first tick waits")
+        // A wake runs the launch checks again, not a refresh.
         center.post(name: NSWorkspace.didWakeNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(commands(), ["version --json"])
+        try await eventually("the wake's launch check") { commands().count == 2 }
+        XCTAssertEqual(commands(), ["version --json", "version --json"])
         XCTAssertFalse(m.badge)
     }
 
@@ -288,19 +290,28 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(m.settings?.enabled, true)
     }
 
-    // MARK: - Upgrade and restart
+    // MARK: - Upgrade app and restart
 
-    func testLaunchStatusWithANewerSkillmAsksTheUpdater() async throws {
+    func testTheLaunchStatusAsksTheUpdater() async throws {
         let m = model()
         let updater = FakeUpdater()
         m.upgrade.attach(updater)
         await m.start()
         await m.waitUntilIdle()
-        // status.json has a newer skillm; the tick's refresh.json has none.
+        // status.json and the tick's refresh.json are the same check.
         XCTAssertEqual(updater.probes, 1)
         XCTAssertFalse(m.upgrade.isAvailable)
         m.upgrade.found(version: "0.5.0")
         XCTAssertTrue(m.upgrade.isAvailable)
+    }
+
+    func testAFoundAppUpdateTurnsTheDotOn() async throws {
+        let m = model(["FAKE_SKILLM_MODE": "git_missing"])
+        await m.start()
+        XCTAssertFalse(m.badge)
+        m.upgrade.attach(FakeUpdater())
+        m.upgrade.found(version: "0.5.0")
+        XCTAssertTrue(m.badge, "a newer app, with no Refresh cache")
     }
 
     func testRelaunchWaitsForTheRunningCommandThenStartsNothing() async throws {

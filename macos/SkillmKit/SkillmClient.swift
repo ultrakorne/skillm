@@ -37,20 +37,32 @@ public struct SkillmClient: Sendable {
         self.home = home
     }
 
-    /// A client for the binary `SkillmBinary.locate` finds.
+    /// A client for the CLI `SkillmBinary.locate` finds.
     public static func located(
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) throws -> SkillmClient {
-        SkillmClient(executable: try SkillmBinary.locate(environment: environment), environment: environment)
+    ) async throws -> SkillmClient {
+        SkillmClient(executable: try await SkillmBinary.locate(environment: environment), environment: environment)
     }
 
     // MARK: - Setup checks
 
     /// Runs `skillm version --json` and refuses a CLI whose API version this
     /// app does not know. Run it first: it works without git.
+    ///
+    /// A skillm from before the JSON API has no `version` command and no
+    /// `--json` flag: it answers with a usage error on stderr and nothing on
+    /// stdout, and is refused as API version 0 (older than any this app
+    /// supports).
     @discardableResult
     public func connect() async throws -> VersionData {
-        let v: VersionData = try await run(["version"])
+        let v: VersionData
+        do {
+            v = try await run(["version"])
+        } catch SkillmError.malformedOutput(let detail, let stderr, let status)
+            where detail == "no output" && status != 0 && Self.isUsageError(stderr)
+        {
+            throw SkillmError.incompatibleCLI(version: "", apiVersion: 0, supported: Self.supportedAPIVersions.sorted())
+        }
         guard Self.supportedAPIVersions.contains(v.apiVersion) else {
             throw SkillmError.incompatibleCLI(
                 version: v.version, apiVersion: v.apiVersion, supported: Self.supportedAPIVersions.sorted())
@@ -219,6 +231,13 @@ public struct SkillmClient: Sendable {
             throw SkillmError.malformedOutput(
                 detail: "unexpected \(T.self) document: \(error)", stderr: "", exitCode: nil)
         }
+    }
+
+    /// Whether stderr is a usage error of a skillm without JSON mode
+    /// ("Unknown command", "Unknown flag").
+    static func isUsageError(_ stderr: String) -> Bool {
+        let text = stderr.lowercased()
+        return text.contains("unknown command") || text.contains("unknown flag")
     }
 
     /// Reads only a document's schema_version.

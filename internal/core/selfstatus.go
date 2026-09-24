@@ -16,13 +16,15 @@ const (
 	// MethodBinary: a release build installed on its own; `skillm upgrade`
 	// replaces it in place.
 	MethodBinary UpgradeMethod = "binary"
-	// MethodBundled: a release build inside a macOS app bundle. The app
-	// upgrades the whole bundle (Sparkle), so skillm never replaces it.
+	// MethodBundled: a release build inside a macOS app bundle. Replacing
+	// it would break the bundle's code signature, so skillm never does; the
+	// app that holds it has to upgrade it. (The skillm app carries no CLI:
+	// it drives the one installed on its own.)
 	MethodBundled UpgradeMethod = "bundled"
 	// MethodDev: a build whose version is not a release tag (built from
 	// source). No release corresponds to it, so there is nothing to upgrade
-	// to and no release is looked up. This wins over MethodBundled: a debug
-	// app that bundles a source build is dev.
+	// to and no release is looked up. This wins over MethodBundled: a source
+	// build inside a bundle is dev.
 	MethodDev UpgradeMethod = "dev"
 )
 
@@ -38,7 +40,7 @@ type SelfStatus struct {
 	Available bool
 	// Eligible reports that `skillm upgrade` can install Latest: it is
 	// Available and Method is MethodBinary. A bundled skillm is upgraded by
-	// its app instead.
+	// the app that holds it instead.
 	Eligible bool
 	// Method says how this binary is upgraded.
 	Method UpgradeMethod
@@ -51,10 +53,10 @@ type SelfStatus struct {
 	release *selfupdate.Release
 }
 
-// ErrManagedByApp means the running skillm is inside the skillm app's bundle,
-// which the app upgrades as a whole; replacing the binary alone would break
-// the bundle's code signature.
-var ErrManagedByApp = errors.New("skillm is managed by the skillm app; use Upgrade in the menu")
+// ErrManagedByApp means the running skillm is inside an app bundle, which
+// has to upgrade it; replacing the binary alone would break the bundle's
+// code signature.
+var ErrManagedByApp = errors.New("skillm is inside an app bundle, which must upgrade it; install skillm on its own to use skillm upgrade")
 
 // ErrSourceBuild means the running skillm is not a release build, so there
 // is no release to upgrade it to.

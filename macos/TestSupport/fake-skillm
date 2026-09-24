@@ -33,6 +33,12 @@
 #                         whose copies landed, never with foreign_files)
 #   FAKE_SKILLM_NEEDS_FORCE  if set, uninstall answers needs_force unless
 #                         given --force
+#   FAKE_SKILLM_OLD_WHILE  if set and this file exists, the fake is a skillm
+#                         from before the JSON API: `--json` is an unknown
+#                         flag (a usage error on stderr, nothing on stdout)
+#                         and a plain `upgrade` deletes the file (the
+#                         upgraded skillm then answers as usual)
+#   FAKE_SKILLM_MODE=api0  `version` answers API version 0 (too old)
 set -u
 fx=${FAKE_SKILLM_FIXTURES:?}
 [ -n "${FAKE_SKILLM_ARGS:-}" ] && printf '%s\n' "$@" >"$FAKE_SKILLM_ARGS"
@@ -95,7 +101,25 @@ inline_error() {
 	exit 1
 }
 
+if [ -n "${FAKE_SKILLM_OLD_WHILE:-}" ] && [ -e "$FAKE_SKILLM_OLD_WHILE" ]; then
+	for a in "$@"; do
+		if [ "$a" = --json ]; then
+			printf '\n   ERROR  \n\n  Unknown flag: --json.\n\n  Try --help for usage.\n\n' >&2
+			exit 1
+		fi
+	done
+	if [ "${1:-}" = upgrade ]; then
+		rm -f "$FAKE_SKILLM_OLD_WHILE"
+		echo "Upgraded skillm 0.3.0 → 0.5.0"
+		exit 0
+	fi
+fi
+
 case "$mode" in
+api0)
+	echo '{"schema_version":1,"data":{"version":"0.3.0","api_version":0,"capabilities":[]},"warnings":[],"error":null}'
+	exit 0
+	;;
 api99)
 	echo '{"schema_version":1,"data":{"version":"9.0.0","api_version":99,"capabilities":[]},"warnings":[],"error":null}'
 	exit 0
@@ -222,6 +246,9 @@ source)
 	;;
 agent)
 	if [ "${2:-}" = set ]; then cat "$fx/agents_set.json"; else cat "$fx/agents.json"; fi
+	;;
+upgrade)
+	cat "$fx/upgrade.json"
 	;;
 *)
 	echo "fake-skillm: unexpected arguments: $*" >&2

@@ -16,8 +16,8 @@ final class FakeUpdater: AppUpdater {
     func install() { installs += 1 }
 }
 
-/// "Upgrade and restart": when the updater is asked, when the item shows,
-/// what it does, and the feed the Info.plist names.
+/// "Upgrade app and restart": when the updater is asked, when the item
+/// shows, what it does, and the feed the Info.plist names.
 @MainActor
 final class AppUpgradeTests: XCTestCase {
     private func status(_ name: String = "status.json") throws -> StatusData {
@@ -30,7 +30,7 @@ final class AppUpgradeTests: XCTestCase {
     private let key = Data(repeating: 7, count: 32).base64EncodedString()
 
     func testFeedNeedsAURLAndAnEd25519Key() {
-        let url = "https://github.com/ultrakorne/skillm/releases/latest/download/appcast.xml"
+        let url = "https://github.com/ultrakorne/skillm/releases/download/macos-appcast/appcast.xml"
         let feed = UpdateFeed(info: ["SUFeedURL": url, "SUPublicEDKey": key])
         XCTAssertEqual(feed?.url.absoluteString, url)
         XCTAssertEqual(feed?.publicKey, key)
@@ -48,34 +48,33 @@ final class AppUpgradeTests: XCTestCase {
 
     // MARK: - AppUpgrade
 
-    func testANewerSkillmAsksTheUpdaterOncePerCheck() throws {
+    func testEveryCheckAsksTheUpdaterOnce() throws {
         let upgrade = AppUpgrade()
         let updater = FakeUpdater()
         upgrade.attach(updater)
-        let newer = try status()
-        XCTAssertEqual(newer.cache.selfStatus?.available, true)
+        var checked = try status()
+        // The app's version is independent of the CLI's: whether a newer
+        // CLI exists says nothing about the app.
+        checked.cache.selfStatus?.available = false
 
-        upgrade.statusChanged(newer)
+        upgrade.statusChanged(checked)
         XCTAssertEqual(updater.probes, 1)
-        upgrade.statusChanged(newer)
+        upgrade.statusChanged(checked)
         XCTAssertEqual(updater.probes, 1, "a re-read of the same cache asks again")
         XCTAssertFalse(upgrade.isAvailable, "shown before the updater found the update")
 
-        // The appcast lagged behind the release: the next check asks again.
+        // The next check (the schedule's, or the Refresh item's) asks again.
         upgrade.notFound()
-        var later = newer
-        later.cache.checkedAt = newer.cache.checkedAt?.addingTimeInterval(3600)
+        var later = checked
+        later.cache.checkedAt = checked.cache.checkedAt?.addingTimeInterval(3600)
         upgrade.statusChanged(later)
         XCTAssertEqual(updater.probes, 2)
     }
 
-    func testNothingNewerAsksNothing() throws {
+    func testNoCheckAsksNothing() throws {
         let upgrade = AppUpgrade()
         let updater = FakeUpdater()
         upgrade.attach(updater)
-        var current = try status()
-        current.cache.selfStatus?.available = false
-        upgrade.statusChanged(current)
         upgrade.statusChanged(try status("status_never.json"))
         upgrade.statusChanged(nil)
         XCTAssertEqual(updater.probes, 0)
@@ -128,21 +127,13 @@ final class AppUpgradeTests: XCTestCase {
         XCTAssertEqual(updater.probes, 3)
     }
 
-    func testAFailedReleaseLookupAsksTheUpdaterForTheBundledCLIOnly() throws {
+    func testCheckForAppUpdateNeedsAnUpdater() {
         let upgrade = AppUpgrade()
+        XCTAssertFalse(upgrade.canCheck, "a debug build does not update itself")
         let updater = FakeUpdater()
         upgrade.attach(updater)
-        var failed = try status()
-        failed.cache.selfStatus?.available = false
-        failed.cache.selfStatus?.latest = nil
-        failed.cache.selfStatus?.error = "GitHub rate limit"
-
-        failed.cache.selfStatus?.method = .binary
-        upgrade.statusChanged(failed)
-        XCTAssertEqual(updater.probes, 0, "a CLI outside the app")
-
-        failed.cache.selfStatus?.method = .bundled
-        upgrade.statusChanged(failed)
-        XCTAssertEqual(updater.probes, 1)
+        XCTAssertTrue(upgrade.canCheck)
+        upgrade.upgrade()
+        XCTAssertEqual(updater.installs, 1, "the updater's own window checks")
     }
 }

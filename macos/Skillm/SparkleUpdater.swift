@@ -3,13 +3,15 @@ import OSLog
 import SkillmKit
 import Sparkle
 
-/// Sparkle, the app's updater: it replaces the whole bundle, the bundled CLI
-/// included (the CLI's own `skillm upgrade` refuses inside a bundle).
+/// Sparkle, the app's updater: it replaces the app bundle. The CLI the app
+/// drives is installed and upgraded on its own (`skillm upgrade`).
 ///
 /// It never checks on its own schedule (`SUEnableAutomaticChecks` is off):
-/// `AppUpgrade` asks it after a Refresh that found a newer skillm, and the
-/// "Upgrade and restart" item shows Sparkle's standard update window for
-/// what it found. Before it relaunches the app, every running skillm exits.
+/// `AppUpgrade` asks it silently after every check the app's schedule or the
+/// Refresh item ran, and the "Upgrade app and restart" item (or "Check for
+/// app update", when the CLI is newer than this app supports) shows
+/// Sparkle's standard update window. Before it relaunches the app, every
+/// running skillm exits.
 @MainActor
 final class SparkleUpdater: NSObject, AppUpdater, SPUUpdaterDelegate {
     private let model: AppModel

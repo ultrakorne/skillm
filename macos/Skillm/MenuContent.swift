@@ -17,11 +17,10 @@ struct MenuContent: View {
         case .ready:
             ready
             Divider()
-        case .failed(let message, let fix):
-            Text(message)
-            if let fix {
-                Text(fix)
-            }
+        default:
+            cliProblem
+            Divider()
+            settingsButton
             Divider()
         }
         Button("Quit skillm") { AppDelegate.quit() }
@@ -57,19 +56,61 @@ struct MenuContent: View {
             Button(model.isStopping ? "Stopping…" : "Stop") { model.cancel() }
                 .disabled(model.isStopping)
         }
+        if let version = model.cliUpgrade {
+            Button("Upgrade skillm CLI to \(version)") { _ = model.upgradeCLI() }
+                .disabled(model.isBusy)
+        }
         if model.upgrade.isAvailable {
             // Sparkle's window shows the new version and installs it; the
             // app waits for skillm to exit before it relaunches.
-            Button("Upgrade and restart") { model.upgrade.upgrade() }
+            Button("Upgrade app and restart") { model.upgrade.upgrade() }
         }
         Divider()
         Button("View skills…") { show(WindowID.skills) }
         Button("Add skill…") { show(WindowID.addSkill) }
+        settingsButton
+    }
+
+    private var settingsButton: some View {
         Button("Settings…") {
             NSApp.activate()
             openSettings()
         }
         .keyboardShortcut(",")
+    }
+
+    /// The CLI cannot be used: why, and the item that fixes it.
+    @ViewBuilder private var cliProblem: some View {
+        if let work = model.cliWork {
+            Text(work.text)
+        } else {
+            switch model.cli {
+            case .missing:
+                Text("skillm CLI is not installed")
+                Button("Install skillm CLI") { _ = model.installCLI() }
+            case .tooOld(let version):
+                Text(version.isEmpty ? "skillm CLI is too old" : "skillm CLI \(version) is too old")
+                Button("Upgrade skillm CLI") { _ = model.upgradeCLI() }
+            case .tooNew(let version):
+                Text("This app is too old for skillm \(version)")
+                if model.upgrade.canCheck {
+                    Button("Check for app update") { model.upgrade.upgrade() }
+                } else {
+                    Text("Install a newer skillm app.")
+                }
+            case .failed(let message, let fix):
+                Text(message)
+                if let fix {
+                    Text(fix)
+                }
+            case .starting, .ready:
+                EmptyView()
+            }
+            if let problem = model.cliProblem {
+                Label(problem, systemImage: "xmark.octagon")
+            }
+            Button("Check Again") { _ = model.checkCLIAgain() }
+        }
     }
 
     /// Opens a window in front: a menu bar app is not active on its own.

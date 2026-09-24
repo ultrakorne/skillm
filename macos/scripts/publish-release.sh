@@ -1,15 +1,17 @@
 #!/bin/bash
-# Uploads what release.sh built to the GitHub release of its tag: the zipped
-# app, its SHA-256 and appcast.xml (installed apps read
-# releases/latest/download/appcast.xml). Existing assets of the same name are
-# replaced, so a failed run can be repeated.
+# Publishes what release.sh built: the zipped app and its SHA-256 go to the
+# app's own GitHub release (app-v<version>, created here with --latest=false
+# when it does not exist yet: "latest" stays the CLI's release, which
+# install.sh and skillm upgrade read), then appcast.xml replaces the feed on
+# the fixed macos-appcast release, which installed apps read
+# (releases/download/macos-appcast/appcast.xml). Existing assets of the same
+# name are replaced, so a failed run can be repeated.
 #
-#   macos/scripts/publish-release.sh <version>
+#   macos/scripts/publish-release.sh app-v<X.Y.Z>
 #
-# The release must already exist with goreleaser's darwin archives and
-# checksums.txt: the bundled CLI only reports a newer skillm (and so the app
-# only asks Sparkle) when the release carries its platform's archive. Needs
-# the GitHub CLI, logged in (or GH_TOKEN). SKILLM_RELEASE_DIR as in release.sh.
+# The app-v<version> tag must be pushed first (git push origin app-v<version>).
+# Needs the GitHub CLI, logged in (or GH_TOKEN). SKILLM_RELEASE_DIR as in
+# release.sh.
 set -euo pipefail
 
 die() {
@@ -17,10 +19,11 @@ die() {
 	exit 1
 }
 
-[ $# = 1 ] || die "usage: publish-release.sh <version>"
-version=${1#v}
-[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die "version \"$version\" is not X.Y.Z"
-tag=v$version
+[ $# = 1 ] || die "usage: publish-release.sh app-v<X.Y.Z>"
+version=${1#app-v}
+[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die "\"$1\" is not app-vX.Y.Z"
+tag=app-v$version
+feed_tag=macos-appcast
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 macos_dir=$(dirname "$script_dir")
@@ -36,17 +39,26 @@ done
 
 # The repository is the one the app's feed names.
 feed=$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$out/skillm.app/Contents/Info.plist")
-repo=$(printf '%s\n' "$feed" | sed -n 's|^https://github\.com/\([^/]*/[^/]*\)/releases/latest/download/appcast\.xml$|\1|p')
+repo=$(printf '%s\n' "$feed" | sed -n "s|^https://github\\.com/\\([^/]*/[^/]*\\)/releases/download/$feed_tag/appcast\\.xml\$|\\1|p")
 [ -n "$repo" ] || die "cannot read the GitHub repository from SUFeedURL \"$feed\""
+grep -qF "url=\"https://github.com/$repo/releases/download/$tag/$zip_name\"" "$dist/appcast.xml" ||
+	die "appcast.xml does not point at the $tag release's $zip_name"
 
 command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is not installed"
-assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name') ||
-	die "no $tag release in $repo yet; goreleaser creates it"
-for need in "skillm_${version}_darwin_arm64.tar.gz" "skillm_${version}_darwin_amd64.tar.gz" checksums.txt; do
-	printf '%s\n' "$assets" | grep -qxF "$need" ||
-		die "the $tag release has no $need: the app's CLI could not see this release, so the app would never offer it"
-done
 
-gh release upload "$tag" --repo "$repo" --clobber \
-	"$dist/$zip_name" "$dist/$zip_name.sha256" "$dist/appcast.xml"
-printf 'Uploaded %s, its .sha256 and appcast.xml to %s %s\n' "$zip_name" "$repo" "$tag" >&2
+# The app's release first, so the feed never names a zip that is not there.
+if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+	gh release create "$tag" --repo "$repo" --verify-tag --latest=false \
+		--title "skillm app $version" \
+		--notes "The skillm menu bar app $version for macOS. Installed apps offer it in their menu; it drives the skillm CLI, which is released separately." ||
+		die "could not create the $tag release (push the tag first: git push origin $tag)"
+fi
+gh release upload "$tag" --repo "$repo" --clobber "$dist/$zip_name" "$dist/$zip_name.sha256"
+
+if ! gh release view "$feed_tag" --repo "$repo" >/dev/null 2>&1; then
+	gh release create "$feed_tag" --repo "$repo" --latest=false \
+		--title "skillm app update feed" \
+		--notes "Holds appcast.xml, the feed installed skillm apps read. Replaced by every app release; download the app from its app-vX.Y.Z release."
+fi
+gh release upload "$feed_tag" --repo "$repo" --clobber "$dist/appcast.xml"
+printf 'Uploaded %s and its .sha256 to %s %s, and appcast.xml to %s\n' "$zip_name" "$repo" "$tag" "$feed_tag" >&2

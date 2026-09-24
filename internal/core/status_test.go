@@ -371,8 +371,8 @@ func TestRecordSelfAndReadStatus(t *testing.T) {
 	}
 }
 
-// TestReadStatusSharedHome: the app's bundled CLI and a terminal install at
-// the same version share one Home; each reads the self entry as its own.
+// TestReadStatusSharedHome: a skillm inside an app bundle and a terminal
+// install at the same version share one Home; each reads the self entry as its own.
 func TestReadStatusSharedHome(t *testing.T) {
 	home := t.TempDir()
 	saveCache(t, home, &status.Self{Current: "0.4.0", Latest: "0.5.0", Available: true, Eligible: true, Method: "binary", Executable: plainExe})

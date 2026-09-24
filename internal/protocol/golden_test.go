@@ -148,7 +148,7 @@ func TestGoldenFixtures(t *testing.T) {
 		{"uninstall.json", func(w *Writer) error { return w.Result(NewUninstallData(uninstall)) }},
 		{"self_status.json", func(w *Writer) error {
 			return w.Result(NewSelfStatusData(core.SelfStatus{Current: "0.4.0", Latest: "0.5.0", Available: true,
-				Method: core.MethodBundled, Executable: "/Applications/skillm.app/Contents/Helpers/skillm"}))
+				Method: core.MethodBundled, Executable: "/Applications/Example.app/Contents/Helpers/skillm"}))
 		}},
 		{"self_status_dev.json", func(w *Writer) error {
 			return w.Result(NewSelfStatusData(core.SelfStatus{Current: "dev", Method: core.MethodDev,
@@ -228,9 +228,8 @@ func TestGoldenFixtures(t *testing.T) {
 			w.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn, Code: core.CodeSelfCheckFailed,
 				Text: "check for a newer skillm: dial tcp: no route to host"})
 			f := *cache
-			f.Self = &status.Self{Current: "0.4.0", Method: "bundled",
-				Executable: "/Applications/skillm.app/Contents/Helpers/skillm",
-				Error:      "check for a newer skillm: dial tcp: no route to host"}
+			f.Self = &status.Self{Current: "0.4.0", Method: "binary", Executable: "/usr/local/bin/skillm",
+				Error: "check for a newer skillm: dial tcp: no route to host"}
 			f.Recount()
 			return w.Result(NewRefreshData(core.StatusResult{Status: &f, Refreshed: true}))
 		}},
@@ -267,7 +266,7 @@ func TestGoldenFixtures(t *testing.T) {
 }
 
 // statusCache is the refresh cache the status fixtures show: a skill of
-// every status and a newer bundled skillm.
+// every status and a newer release the installed skillm can upgrade to.
 func statusCache() *status.File {
 	f := status.New()
 	f.CheckedAt = time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
@@ -279,8 +278,8 @@ func statusCache() *status.File {
 		{ID: "delta", Status: status.SkillError, InstalledRev: "ddd1", Error: "git clone failed: repository not found"},
 		{ID: "omega", Status: status.SkillLocal},
 	}
-	f.Self = &status.Self{Current: "0.4.0", Latest: "0.5.0", Available: true, Method: "bundled",
-		Executable: "/Applications/skillm.app/Contents/Helpers/skillm"}
+	f.Self = &status.Self{Current: "0.4.0", Latest: "0.5.0", Available: true, Eligible: true, Method: "binary",
+		Executable: "/usr/local/bin/skillm"}
 	f.Recount()
 	return f
 }

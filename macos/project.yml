@@ -9,9 +9,9 @@ options:
   createIntermediateGroups: true
 
 packages:
-  # The app's updater (C4): it replaces the whole bundle, the bundled CLI
-  # included. Pinned, since the generated project (and its Package.resolved)
-  # is not checked in.
+  # The app's updater (C4): it replaces the app bundle. The app carries no
+  # CLI; it drives the one the user installed, which upgrades itself. Pinned,
+  # since the generated project (and its Package.resolved) is not checked in.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     exactVersion: 2.10.0
@@ -26,6 +26,8 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # The app's own version, independent of the CLI's: a release
+    # (scripts/release.sh app-vX.Y.Z) sets it.
     MARKETING_VERSION: 0.0.0
     # CFBundleVersion is what Sparkle compares with the appcast's
     # sparkle:version (which generate_appcast copies from the released
@@ -42,7 +44,8 @@ targets:
     platform: macOS
     sources:
       - Skillm
-      # "Install command-line tool" runs skillm's own install script.
+      # "Install skillm CLI" runs skillm's own install script (the latest
+      # release) when no CLI is installed.
       - path: ../install.sh
         buildPhase: resources
     dependencies:
@@ -63,33 +66,26 @@ targets:
         # Hardened runtime, and no App Sandbox: skillm writes ~/.claude,
         # project folders and ~/.skillm, and spawns git.
         ENABLE_HARDENED_RUNTIME: YES
-        # The version stamped into the bundled CLI (scripts/build-cli.sh);
-        # a release build sets it to the release version.
-        SKILLM_VERSION: dev
         # Sparkle's keys (SUFeedURL, SUPublicEDKey) come from these two
         # settings through Skillm/Info.plist, which is merged into the
-        # generated one. The appcast is uploaded to every GitHub release
-        # (C5); the public key is the one `generate_keys --account skillm`
-        # printed (its private key is in the release machine's keychain).
+        # generated one. The appcast lives on a fixed release tagged
+        # macos-appcast (never "latest", which is the CLI's), replaced by
+        # scripts/publish-release.sh; its items point at the app-vX.Y.Z
+        # releases. The public key is the one `generate_keys --account
+        # skillm` printed (its private key is in the release machine's
+        # keychain).
         INFOPLIST_FILE: Skillm/Info.plist
-        SKILLM_UPDATE_FEED_URL: https://github.com/ultrakorne/skillm/releases/latest/download/appcast.xml
+        SKILLM_UPDATE_FEED_URL: https://github.com/ultrakorne/skillm/releases/download/macos-appcast/appcast.xml
         SKILLM_UPDATE_PUBLIC_KEY: uTHz68XFQQC6eZzgApyAH2h81t9nSgMxWLms3hxI4BE=
       configs:
         # A debug build never updates itself: that would replace the
         # developer's build with the latest release. To try Sparkle, pass
-        # xcodebuild SKILLM_UPDATE_FEED_URL=<appcast url>, SKILLM_VERSION=<an
-        # older release> (a "dev" CLI never reports a newer skillm, so
-        # Sparkle is never asked) and MARKETING_VERSION=<that release> (the
-        # appcast's version must be newer).
+        # xcodebuild SKILLM_UPDATE_FEED_URL=<appcast url> and
+        # MARKETING_VERSION=<an older app release> (the appcast's version
+        # must be newer). A debug build also honours $SKILLM_BIN, to drive a
+        # CLI built from this checkout (go build).
         Debug:
           SKILLM_UPDATE_FEED_URL: ""
-    postBuildScripts:
-      - name: Embed skillm CLI
-        script: '"$SRCROOT/scripts/build-cli.sh"'
-        # Go does its own up-to-date checks; run the phase every build.
-        basedOnDependencyAnalysis: false
-        outputFiles:
-          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/skillm
 
   SkillmKit:
     type: framework.static

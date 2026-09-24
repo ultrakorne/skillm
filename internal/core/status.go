@@ -278,8 +278,8 @@ func selfRow(s SelfStatus, err error) *status.Self {
 }
 
 // adjustSelf re-judges f's self entry for the running skillm when the cache
-// was written by another one (the app upgraded its bundle, or a terminal
-// install shares Home with the app's bundled CLI): the latest release found
+// was written by another one (an upgrade replaced the binary, or two skillm
+// installs at different versions share Home): the latest release found
 // then is compared with the running version, offline, and the method,
 // executable and eligibility are the running binary's.
 func adjustSelf(f *status.File, version string) {

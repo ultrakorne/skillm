@@ -61,7 +61,7 @@ final class FixtureTests: XCTestCase {
         let cache = try protocolDecoder().decode(StatusCache.self, from: data)
         try assertLossless(cache, data, url.lastPathComponent)
         XCTAssertTrue(cache.badge)
-        XCTAssertEqual(cache.selfStatus?.method, .bundled)
+        XCTAssertEqual(cache.selfStatus?.method, .binary)
     }
 
     func testDecodedValues() throws {

@@ -14,12 +14,39 @@ import Observation
 @MainActor
 @Observable
 public final class AppModel {
-    /// Whether the bundled CLI is usable.
+    /// Whether the installed CLI is usable. The app has no CLI of its own:
+    /// it drives the one the user installed (`SkillmBinary`).
     public enum CLIState: Equatable, Sendable {
+        /// The launch checks are running.
         case starting
         case ready(version: String)
-        /// The CLI cannot be used: `message` says why, `fix` how to repair it.
+        /// No skillm is installed: "Install skillm CLI".
+        case missing
+        /// The CLI speaks an older API than this app supports: "Upgrade
+        /// skillm CLI". `version` is "" for a skillm from before the JSON API.
+        case tooOld(version: String)
+        /// The CLI speaks a newer API than this app supports: "Check for app
+        /// update".
+        case tooNew(version: String)
+        /// The CLI cannot be used otherwise: `message` says why, `fix` how
+        /// to repair it.
         case failed(message: String, fix: String?)
+    }
+
+    /// Work on the CLI itself that runs outside the protocol, while the CLI
+    /// cannot be used.
+    public enum CLIWork: Equatable, Sendable {
+        /// `install.sh`, when no CLI is installed.
+        case installing
+        /// A plain `skillm upgrade`, when the CLI is too old.
+        case upgrading
+
+        public var text: String {
+            switch self {
+            case .installing: "Installing skillm CLI…"
+            case .upgrading: "Upgrading skillm CLI…"
+            }
+        }
     }
 
     /// The command running now.
@@ -37,6 +64,8 @@ public final class AppModel {
         case uninstalling(String)
         /// `config set` or `agent set`.
         case savingSettings
+        /// `upgrade`: "Upgrade skillm CLI to X".
+        case upgradingCLI
     }
 
     /// A one-line outcome the menu shows: what an update did, or why a
@@ -64,12 +93,22 @@ public final class AppModel {
     }
 
     public private(set) var cli: CLIState = .starting
+    /// The CLI the launch checks found (usable or not); nil when none is
+    /// installed.
+    public private(set) var cliPath: URL?
+    /// The version the found CLI reported; nil when unknown.
+    public private(set) var cliVersion: String?
+    /// `install.sh` or a plain `skillm upgrade` is running.
+    public private(set) var cliWork: CLIWork?
+    /// Why the last `cliWork` failed; cleared when the next starts and once
+    /// the CLI is usable.
+    public private(set) var cliProblem: String?
     /// The Refresh cache as `status`/`refresh` last reported it; nil until
     /// it was read once.
     public private(set) var status: StatusData? {
         didSet { upgrade.statusChanged(status) }
     }
-    /// "Upgrade and restart": the app's updater and what it found.
+    /// "Upgrade app and restart": the app's updater and what it found.
     public let upgrade = AppUpgrade()
     /// The refresh settings from config.toml; nil until read. Read again
     /// on every scheduled tick, so a `config set` in a terminal shows.
@@ -84,23 +123,31 @@ public final class AppModel {
     /// lists again.
     public private(set) var installsVersion = 0
 
-    /// Show the red dot: the cache's Badge (a skill update or a newer skillm).
-    public var badge: Bool { status?.cache.badge ?? false }
+    /// Show the red dot: the cache's Badge (a skill update or a newer CLI),
+    /// or a newer app the updater found.
+    public var badge: Bool { (status?.cache.badge ?? false) || upgrade.isAvailable }
+    /// The release "Upgrade skillm CLI to X" offers: the Refresh cache says
+    /// a newer CLI exists that `skillm upgrade` can install; nil otherwise.
+    public var cliUpgrade: String? {
+        guard isReady, let me = status?.cache.selfStatus, me.eligible else { return nil }
+        return me.latest
+    }
     /// A command that can change something is running: the items that
     /// start one are greyed out.
     public var isBusy: Bool { activity != .idle }
     /// Any skillm is running, a read included: a quit waits for it.
     public var hasRunningCommands: Bool { operation != nil || !reads.isEmpty }
-    /// The skillm the app runs; nil until the launch checks passed.
-    public var cliExecutable: URL? { client?.executable }
-    /// The launch checks passed: commands can run. Observable, unlike
-    /// `cliExecutable`, so a window restored at launch loads once it is true.
+    /// The launch checks passed: commands can run. Observable, so a window
+    /// restored at launch loads once it is true.
     public var isReady: Bool {
         if case .ready = cli { return true }
         return false
     }
 
     @ObservationIgnored private var client: SkillmClient?
+    /// The environment the found CLI runs with, usable or not (a plain
+    /// upgrade of a CLI too old for the protocol runs with it).
+    @ObservationIgnored private var cliEnvironment: [String: String] = [:]
     @ObservationIgnored private var operation: Task<Void, Never>?
     /// The reads running beside `operation`.
     @ObservationIgnored private var reads: [UUID: RunningRead] = [:]
@@ -109,24 +156,35 @@ public final class AppModel {
     /// read that overlapped one is dropped, since it may hold the old values.
     @ObservationIgnored private var settingsWrites = 0
     @ObservationIgnored private var isShuttingDown = false
-    @ObservationIgnored private let makeClient: @MainActor () throws -> SkillmClient
+    @ObservationIgnored private var hasStarted = false
+    @ObservationIgnored private let makeClient: @MainActor () async throws -> SkillmClient
+    @ObservationIgnored private let installScript: URL?
+    @ObservationIgnored private let installEnvironment: [String: String]
     @ObservationIgnored private let checksGit: Bool
     @ObservationIgnored private let timing: RefreshScheduler.Timing
     @ObservationIgnored private let wakeCenter: NotificationCenter
 
     /// - Parameters:
-    ///   - makeClient: finds the CLI (the bundled one by default).
+    ///   - makeClient: finds the CLI (`SkillmBinary.locate` by default); run
+    ///     at every launch check.
     ///   - checksGit: refuse to start without a usable git.
     ///   - timing: how often the scheduled refresh ticks.
     ///   - wakeCenter: where wake notifications come from (NSWorkspace's
     ///     center by default).
+    ///   - installScript: what "Install skillm CLI" runs (the `install.sh`
+    ///     bundled in the app by default); `installEnvironment` is added to
+    ///     its environment.
     public init(
-        makeClient: @escaping @MainActor () throws -> SkillmClient = { try SkillmClient.located() },
+        makeClient: @escaping @MainActor () async throws -> SkillmClient = { try await SkillmClient.located() },
         checksGit: Bool = true,
         timing: RefreshScheduler.Timing = .standard,
-        wakeCenter: NotificationCenter? = nil
+        wakeCenter: NotificationCenter? = nil,
+        installScript: URL? = Bundle.main.url(forResource: "install", withExtension: "sh"),
+        installEnvironment: [String: String] = [:]
     ) {
         self.makeClient = makeClient
+        self.installScript = installScript
+        self.installEnvironment = installEnvironment
         self.checksGit = checksGit
         self.timing = timing
         self.wakeCenter = wakeCenter ?? NSWorkspace.shared.notificationCenter
@@ -134,37 +192,173 @@ public final class AppModel {
 
     // MARK: - Launch
 
-    /// Finds the bundled skillm, refuses one with an unknown API version,
-    /// checks for git, reads the cached status, and starts the scheduled
-    /// refresh (whose first tick, which reads the settings, runs now).
+    /// Runs the launch checks (finds the installed skillm, refuses one with
+    /// an unknown API version, checks for git), reads the cached status, and
+    /// starts the schedule. Its first tick, which reads the settings, runs now
+    /// when the CLI is usable; while it is not, each tick runs the launch
+    /// checks again, so a CLI installed or upgraded in a terminal is found.
     public func start() async {
-        guard case .starting = cli, client == nil else { return }
+        guard !hasStarted else { return }
+        hasStarted = true
+        await connectCLI()
+        guard !isShuttingDown else { return }
+        if isReady { await readStatus() }
+        guard !isShuttingDown else { return }
+        startSchedule(tickNow: isReady)
+    }
+
+    /// Starts the schedule; with `tickNow` its first tick runs now.
+    private func startSchedule(tickNow: Bool = true) {
+        guard scheduler == nil else { return }
+        let scheduler = RefreshScheduler(timing: timing, notificationCenter: wakeCenter) { [weak self] in
+            self?.tick()
+        }
+        self.scheduler = scheduler
+        scheduler.start(tickNow: tickNow)
+    }
+
+    /// A scheduled tick: a refresh when the CLI is usable, else the launch
+    /// checks again.
+    private func tick() {
+        if isReady { scheduledRefresh() } else { checkCLIAgain() }
+    }
+
+    /// The launch checks. Only run while no command runs: the client goes
+    /// away until they pass.
+    private func connectCLI() async {
+        client = nil
+        cli = .starting
         do {
-            let client = try makeClient()
+            let client = try await makeClient()
+            cliPath = client.executable
+            cliEnvironment = client.environment
+            cliVersion = nil
             let version = try await client.connect()
+            cliVersion = version.version
             if checksGit { try await client.checkGit() }
             self.client = client
             cli = .ready(version: version.version)
+            cliProblem = nil
         } catch {
+            cliUnusable(error)
+        }
+    }
+
+    /// Records why the CLI cannot be used.
+    private func cliUnusable(_ error: any Error) {
+        client = nil
+        let skillmError = error as? SkillmError
+        switch skillmError {
+        case .binaryNotFound:
+            cliPath = nil
+            cliVersion = nil
+            cli = .missing
+        case .incompatibleCLI(let version, _, _):
+            cliVersion = version.isEmpty ? nil : version
+            cli = skillmError?.isCLITooOld == true ? .tooOld(version: version) : .tooNew(version: version)
+        default:
             let localized = error as? LocalizedError
             cli = .failed(
                 message: localized?.errorDescription ?? error.localizedDescription,
                 fix: localized?.recoverySuggestion)
-            return
         }
-        await readStatus()
-        guard !isShuttingDown else { return }
-        startSchedule()
     }
 
-    /// Starts the scheduled refresh; its first tick runs now.
-    private func startSchedule() {
-        guard scheduler == nil else { return }
-        let scheduler = RefreshScheduler(timing: timing, notificationCenter: wakeCenter) { [weak self] in
-            self?.scheduledRefresh()
+    /// The launch checks again, then, once they pass, the status read and a
+    /// scheduled refresh (as at launch).
+    private func relaunchChecks() async {
+        guard !isShuttingDown else { return }
+        await connectCLI()
+        guard isReady, !isShuttingDown else { return }
+        await readStatus()
+        guard !isShuttingDown else { return }
+        scheduledRefresh()
+    }
+
+    /// "Check Again", and every scheduled tick while the CLI cannot be used:
+    /// the launch checks again. Nil when the CLI is usable, or while a
+    /// check, a command or work on the CLI runs.
+    @discardableResult
+    public func checkCLIAgain() -> Task<Void, Never>? {
+        guard hasStarted, !isReady, cli != .starting, cliWork == nil, !hasRunningCommands, !isShuttingDown
+        else { return nil }
+        let task = Task { @MainActor in await self.relaunchChecks() }
+        return task
+    }
+
+    // MARK: - The CLI itself
+
+    /// "Install skillm CLI", when none is installed: runs `install.sh` (the
+    /// latest release), then the launch checks again. Nil when the CLI is
+    /// found, or while other work runs.
+    @discardableResult
+    public func installCLI() -> Task<Void, Never>? {
+        guard cli == .missing else { return nil }
+        guard let script = installScript else {
+            cliProblem = "The install script is missing from the app"
+            return nil
         }
-        self.scheduler = scheduler
-        scheduler.start()
+        let env = installEnvironment
+        return fixCLI(.installing) { try await CommandLineTool.runInstallScript(script, environment: env) }
+    }
+
+    /// "Upgrade skillm CLI". When the CLI is usable and the Refresh cache
+    /// says a newer release exists (`cliUpgrade`), `upgrade --json` as the
+    /// running command, then the version and the status read again. When
+    /// the CLI is too old for the protocol, a plain `skillm upgrade`, then
+    /// the launch checks again. Nil otherwise, or while other work runs.
+    @discardableResult
+    public func upgradeCLI() -> Task<Void, Never>? {
+        if isReady {
+            guard cliUpgrade != nil else { return nil }
+            return perform(.upgradingCLI) { model, client in
+                do {
+                    let data: UpgradeData = try await client.run(["upgrade"])
+                    let text =
+                        data.upgraded
+                        ? "Upgraded skillm CLI to \(data.to)" : "skillm CLI \(data.from) is the latest release"
+                    model.notice = Notice(text: text, isError: false)
+                } catch is CancellationError {
+                } catch {
+                    model.notice = Self.failure(error)
+                }
+                await model.reconnect(client)
+                await model.rereadStatus()
+            }
+        }
+        guard case .tooOld = cli, let path = cliPath else { return nil }
+        let env = cliEnvironment
+        return fixCLI(.upgrading) { try await CommandLineTool.runUpgrade(path, environment: env) }
+    }
+
+    /// Runs `work` on the CLI (nil while other work runs), then the launch
+    /// checks again, whether it failed or not.
+    private func fixCLI(_ kind: CLIWork, _ work: @escaping @MainActor () async throws -> Void) -> Task<Void, Never>? {
+        guard cliWork == nil, cli != .starting, !hasRunningCommands, !isShuttingDown else { return nil }
+        cliWork = kind
+        cliProblem = nil
+        return Task { @MainActor in
+            do {
+                try await work()
+            } catch {
+                self.cliProblem = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+            self.cliWork = nil
+            await self.relaunchChecks()
+        }
+    }
+
+    /// The CLI changed under a usable client (an upgrade): reads its version
+    /// again, and stops using it when this app no longer supports it.
+    private func reconnect(_ client: SkillmClient) async {
+        do {
+            let version = try await client.connect()
+            cliVersion = version.version
+            cli = .ready(version: version.version)
+        } catch is CancellationError {
+        } catch {
+            cliUnusable(error)
+        }
     }
 
     // MARK: - Commands
@@ -338,7 +532,7 @@ public final class AppModel {
         isShuttingDown = false
         isStopping = false
         notice = Notice(text: "The update could not be installed", isError: true)
-        if client != nil { startSchedule() }
+        startSchedule()
     }
 
     /// Returns when no command is running (including one a finished command
@@ -466,6 +660,7 @@ extension AppModel.Activity {
         case .updatingSkill(let id): "Updating \(id)…"
         case .installing(let progress): progress.text(doing: "Installing skills")
         case .uninstalling(let id): "Uninstalling \(id)…"
+        case .upgradingCLI: "Upgrading skillm CLI…"
         }
     }
 
@@ -474,7 +669,7 @@ extension AppModel.Activity {
     public var canStop: Bool {
         switch self {
         case .refreshing, .updating, .updatingSkill, .installing: true
-        case .idle, .savingSettings, .uninstalling: false
+        case .idle, .savingSettings, .uninstalling, .upgradingCLI: false
         }
     }
 }

@@ -2,8 +2,9 @@ import Foundation
 import Observation
 
 /// The Settings window: auto refresh and its interval, the enabled agents,
-/// Start at login and the command-line tool. The refresh settings live in
-/// `AppModel.settings`; every command goes through `AppModel`.
+/// Start at login and the command-line tool (the installed CLI the app
+/// drives). The refresh settings live in `AppModel.settings`; every command
+/// goes through `AppModel`.
 @MainActor
 @Observable
 public final class SettingsModel {
@@ -20,34 +21,22 @@ public final class SettingsModel {
     /// The agent waiting for the user to confirm disabling it.
     public var pendingDisable: String?
     public private(set) var loginItemState: LoginItemState = .disabled
-    /// A `skillm` a terminal can run (see `CommandLineTool.installed`);
-    /// nil when there is none.
-    public private(set) var commandLineTool: URL?
+    /// The skillm the app found and drives (usable or not); nil when none is
+    /// installed.
+    public var commandLineTool: URL? { app.cliPath }
+    /// The version it reported; nil when unknown.
+    public var commandLineToolVersion: String? { app.cliVersion }
     /// `install.sh` is running.
-    public private(set) var isInstallingTool = false
+    public var isInstallingTool: Bool { app.cliWork == .installing }
 
     @ObservationIgnored private let loginItem: any LoginItemService
     /// Goes up when an `agent set` starts and when it ends: an `agent ls`
     /// read that overlapped one is dropped, since it may hold the old state.
     @ObservationIgnored private var agentWrites = 0
-    @ObservationIgnored private let toolDirectories: [URL]
-    @ObservationIgnored private let installScript: URL?
-    @ObservationIgnored private let installEnvironment: [String: String]
 
-    /// `installScript` defaults to the `install.sh` bundled in the app;
-    /// `installEnvironment` is added to the script's environment.
-    public init(
-        app: AppModel,
-        loginItem: any LoginItemService = AppLoginItem(),
-        toolDirectories: [URL] = CommandLineTool.defaultDirectories(),
-        installScript: URL? = Bundle.main.url(forResource: "install", withExtension: "sh"),
-        installEnvironment: [String: String] = [:]
-    ) {
+    public init(app: AppModel, loginItem: any LoginItemService = AppLoginItem()) {
         self.app = app
         self.loginItem = loginItem
-        self.toolDirectories = toolDirectories
-        self.installScript = installScript
-        self.installEnvironment = installEnvironment
     }
 
     /// Reads everything again: run it every time Settings opens, since the
@@ -66,11 +55,12 @@ public final class SettingsModel {
         }
     }
 
-    /// Re-reads what the system holds: the login item and the terminal's
-    /// skillm.
+    /// Re-reads what the system holds: the login item. While the CLI
+    /// cannot be used, the launch checks run again too, so a skillm
+    /// installed in a terminal shows.
     public func refreshLocalState() {
         loginItemState = loginItem.state
-        commandLineTool = CommandLineTool.installed(in: toolDirectories)
+        app.checkCLIAgain()
     }
 
     // MARK: - Agents
@@ -167,29 +157,11 @@ public final class SettingsModel {
 
     // MARK: - Command-line tool
 
-    /// Runs the bundled `install.sh`, pinned to the app's CLI version when
-    /// that is a release, so a terminal gets the same skillm.
+    /// "Install": runs the bundled `install.sh` (the latest release), then
+    /// the launch checks again (`AppModel.installCLI`). Its failure is
+    /// `AppModel.cliProblem`.
+    @discardableResult
     public func installCommandLineTool() -> Task<Void, Never>? {
-        guard let script = installScript else {
-            message = AppModel.Notice(text: "The install script is missing from the app", isError: true)
-            return nil
-        }
-        guard !isInstallingTool else { return nil }
-        isInstallingTool = true
-        message = nil
-        var version: String?
-        if case .ready(let v) = app.cli { version = CommandLineTool.releaseTag(forVersion: v) }
-        let env = installEnvironment
-        return Task {
-            defer { isInstallingTool = false }
-            do {
-                try await CommandLineTool.runInstallScript(script, version: version, environment: env)
-                refreshLocalState()
-                let path = commandLineTool.map { SkillsModel.abbreviate($0.path) } ?? "skillm"
-                message = AppModel.Notice(text: "Installed \(path)", isError: false)
-            } catch {
-                message = AppModel.Notice(text: error.localizedDescription, isError: true)
-            }
-        }
+        app.installCLI()
     }
 }

@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// ErrBundled means the running skillm lives inside a macOS app bundle. The app
-// ships a version-matched skillm and upgrades the whole bundle at once
-// (Sparkle); swapping the binary alone would break the bundle's code
-// signature, so Apply refuses before downloading anything.
+// ErrBundled means the running skillm lives inside a macOS app bundle, which
+// has to upgrade it: swapping the binary alone would break the bundle's code
+// signature, so Apply refuses before downloading anything. (The skillm app
+// carries no CLI; this guards a copy some other bundle holds.)
 var ErrBundled = errors.New("the running skillm is inside an app bundle, which upgrades it")
 
 // Executable returns the running binary's path with symlinks resolved — the

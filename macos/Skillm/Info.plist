@@ -9,8 +9,9 @@
 	<key>SUPublicEDKey</key>
 	<string>$(SKILLM_UPDATE_PUBLIC_KEY)</string>
 	<!-- Sparkle never checks on its own schedule and never asks whether it
-	     may: the app asks it after a Refresh that found a newer skillm, so
-	     one schedule (the Auto refresh setting) covers both. -->
+	     may: the app asks it silently after every check it runs, so one
+	     schedule (the Auto check setting and its interval) covers the
+	     skills, the CLI and the app. -->
 	<key>SUEnableAutomaticChecks</key>
 	<false/>
 </dict>

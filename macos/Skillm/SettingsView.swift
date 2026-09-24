@@ -3,7 +3,7 @@ import SkillmKit
 import SwiftUI
 
 /// The Settings window: Start at login, auto refresh and its interval, the
-/// enabled agents and the command-line tool.
+/// enabled agents and the command-line tool the app drives.
 struct SettingsView: View {
     @Bindable var settings: SettingsModel
 
@@ -152,18 +152,26 @@ struct SettingsView: View {
     private var toolSection: some View {
         Section {
             HStack {
-                if let path = settings.commandLineTool {
-                    Text("Installed at \(SkillsModel.abbreviate(path.path))")
-                } else if settings.isInstallingTool {
+                if settings.isInstallingTool {
                     Text("Installing…")
+                } else if let path = settings.commandLineTool {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(settings.commandLineToolVersion.map { "skillm \($0)" } ?? "skillm")
+                        Text(SkillsModel.abbreviate(path.path)).font(.callout).foregroundStyle(.secondary)
+                    }
+                } else if app.cli == .starting {
+                    Text("Looking for skillm…")
                 } else {
                     Text("Not installed")
                 }
                 Spacer()
-                if settings.commandLineTool == nil {
-                    Button("Install") { _ = settings.installCommandLineTool() }
+                if settings.commandLineTool == nil, app.cli == .missing || settings.isInstallingTool {
+                    Button("Install") { settings.installCommandLineTool() }
                         .disabled(settings.isInstallingTool)
                 }
+            }
+            if let problem = app.cliProblem {
+                NoticeText(notice: .init(text: problem, isError: true))
             }
         } header: {
             Text("Command-line tool")

@@ -91,8 +91,8 @@ func TestCheckSelfBinaryUpToDate(t *testing.T) {
 	}
 }
 
-// A bundled skillm still reports an available release (the app shows it),
-// but is not Eligible: the app upgrades it, never `skillm upgrade`.
+// A bundled skillm still reports an available release, but is not Eligible:
+// the app that holds it upgrades it, never `skillm upgrade`.
 func TestCheckSelfBundled(t *testing.T) {
 	_, applies := stubSelf(t, bundledExe, "v0.3.0")
 	st, err := CheckSelf(context.Background(), "0.2.0")

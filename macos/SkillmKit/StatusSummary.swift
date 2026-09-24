@@ -23,8 +23,8 @@ public struct StatusLine: Equatable, Sendable, Identifiable {
 public enum StatusSummary {
     /// The menu's one status line for `status`, or nil when there is
     /// nothing to say beyond the menu's own items: an available skill
-    /// update shows as the count on "Update all skills", and a newer
-    /// skillm as "Upgrade and restart". A skill whose check failed is a
+    /// update shows as the count on "Update all skills", and a newer CLI
+    /// as "Upgrade skillm CLI to X". A skill whose check failed is a
     /// problem, never "up to date".
     public static func line(_ status: StatusData) -> StatusLine? {
         let cache = status.cache

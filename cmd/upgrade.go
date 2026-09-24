@@ -34,11 +34,11 @@ func newUpgradeCmd() *cobra.Command {
 			"restored if the swap fails. This upgrades the CLI only; use `skillm update` " +
 			"to pull new revisions of installed skills. A binary built from source (its " +
 			"version is not a release tag) corresponds to no release and is left alone, " +
-			"and the skillm inside the macOS app is upgraded by the app, never here.\n\n" +
+			"and a skillm inside an app bundle is upgraded by that app, never here.\n\n" +
 			"With --json, --check reports the running skillm against the latest release " +
 			"(its upgrade method, and whether an upgrade is available and eligible), and " +
 			"a plain upgrade reports what it replaced. A source build fails with code " +
-			"source_build, and the app's bundled skillm with managed_by_app.",
+			"source_build, and a skillm inside an app bundle with managed_by_app.",
 		Args: cobra.NoArgs,
 		Annotations: map[string]string{
 			// Upgrading the CLI needs no git, unlike every other command.
@@ -66,7 +66,7 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 		ui.Hintf("Install a release with the installer in the README, or `go install github.com/ultrakorne/skillm@latest`.")
 		return nil
 	case core.MethodBundled:
-		// The app upgrades its bundle as a whole; refuse before the network
+		// The app that holds it upgrades its bundle; refuse before the network
 		// so the answer is the same offline. --check still reports.
 		if !checkOnly {
 			return core.ErrManagedByApp
@@ -88,7 +88,7 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 	if checkOnly {
 		ui.Warnf("skillm %s is available (you have %s).", to, from)
 		if st.Method == core.MethodBundled {
-			ui.Hintf("Use Upgrade in the skillm app's menu to install it.")
+			ui.Hintf("Upgrade the app that holds this skillm to install it.")
 		} else {
 			ui.Hintf("Run `skillm upgrade` to install it.")
 		}
@@ -118,7 +118,7 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 // runUpgradeJSON is `upgrade --json`. With --check it reports the SelfStatus
 // (for every method; a source build looks nothing up). Otherwise it upgrades
 // with no question: a source build fails with code source_build, the app's
-// bundled skillm with managed_by_app (both before any network request), and
+// skillm inside an app bundle with managed_by_app (both before any network request), and
 // a skillm already at the latest release reports upgraded false.
 func runUpgradeJSON(ctx context.Context, current string, checkOnly bool) error {
 	out := jsonOut()
