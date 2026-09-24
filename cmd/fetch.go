@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"path/filepath"
+
 	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -42,6 +45,30 @@ func selectFound(insp *core.Inspection, selectArgs []string, all bool) ([]string
 		return nil, err
 	}
 	return inspectedIDs(chosen), nil
+}
+
+// hintDuplicates tells the user which copy was taken for every chosen skill the
+// Source holds more than once (e.g. one copy per agent folder), so a dropped
+// copy is never silent.
+func hintDuplicates(insp *core.Inspection, ids []string) {
+	chosen, err := insp.Select(ids)
+	if err != nil {
+		return
+	}
+	for _, s := range chosen {
+		if n := len(s.Duplicates); n > 0 {
+			where := s.Path
+			if insp.Kind == state.KindLocal {
+				if rel, err := filepath.Rel(insp.Source, s.Path); err == nil {
+					where = filepath.ToSlash(rel)
+				}
+			}
+			if where == "" {
+				where = "."
+			}
+			ui.Hintf("%s: found %d times in source; using %s", s.ID, n+1, where)
+		}
+	}
 }
 
 // inspectedIDs returns the ids of skills, in order.

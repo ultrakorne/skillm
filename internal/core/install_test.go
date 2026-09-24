@@ -500,3 +500,28 @@ func TestInstallExpectedCommit(t *testing.T) {
 		t.Fatalf("recorded ref = %q, want the branch main", e.Ref)
 	}
 }
+
+// TestInspectKeepsOneCopyPerID verifies a Source shipping the same skill in
+// several agent folders inspects as one skill at skills/<id>, naming the
+// copies it dropped so the CLI can say which one it took.
+func TestInspectKeepsOneCopyPerID(t *testing.T) {
+	src := t.TempDir()
+	kept := writeSkill(t, filepath.Join(src, "skills"), "demo", "kept")
+	dropped := writeSkill(t, filepath.Join(src, ".claude", "skills"), "demo", "dropped")
+
+	insp, err := Inspect(context.Background(), Options{Home: t.TempDir()}, src, "")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	defer insp.Close()
+	if len(insp.Skills) != 1 {
+		t.Fatalf("skills = %+v, want one demo", insp.Skills)
+	}
+	s := insp.Skills[0]
+	if s.ID != "demo" || s.Path != kept {
+		t.Fatalf("kept %s at %s, want demo at %s", s.ID, s.Path, kept)
+	}
+	if len(s.Duplicates) != 1 || s.Duplicates[0] != dropped {
+		t.Fatalf("duplicates = %v, want [%s]", s.Duplicates, dropped)
+	}
+}

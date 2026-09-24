@@ -284,17 +284,25 @@ type Found struct {
 	Dir string
 	// Skill is the parsed skill (via skill.Load).
 	Skill *skill.Skill
+	// Duplicates are the other directories holding a skill with the same Id,
+	// dropped by DiscoverSkills in favor of Dir (see preferFound).
+	Duplicates []string
 }
 
-// DiscoverSkills walks rootDir and returns one Found per directory that directly
-// contains a SKILL.md file.
+// DiscoverSkills walks rootDir and returns one Found per skill ID, each from a
+// directory that directly contains a SKILL.md file.
 //
 // rootDir itself counts: if rootDir/SKILL.md exists it is reported. Once a skill
 // directory is found, its subtree is not descended into — a skill is one
 // directory and nested SKILL.md files (e.g. supporting examples) are not treated
-// as separate skills. The ".git" directory is skipped. Results are returned in
-// lexical walk order. A rootDir that is a symlink to a directory is followed
-// (with or without a trailing separator); symlinks below it are not.
+// as separate skills. The ".git" directory is skipped. A rootDir that is a
+// symlink to a directory is followed (with or without a trailing separator);
+// symlinks below it are not.
+//
+// Repos that ship one skill to many agents commit a copy per agent folder
+// (.claude/skills/x, .cursor/skills/x, plugin/skills/x, ...). Those copies share
+// an ID and would install over each other, so only one directory per ID is
+// kept: see preferFound. Results are returned in lexical walk order.
 func DiscoverSkills(rootDir string) ([]Found, error) {
 	info, err := os.Stat(rootDir)
 	if err != nil {
@@ -344,5 +352,67 @@ func DiscoverSkills(rootDir string) ([]Found, error) {
 	if walkErr != nil {
 		return nil, walkErr
 	}
-	return found, nil
+	return dedupeByID(rootDir, found), nil
+}
+
+// dedupeByID keeps one Found per ID — the one preferFound ranks best — at the
+// position of that ID's first occurrence, so the result stays in walk order.
+func dedupeByID(rootDir string, found []Found) []Found {
+	best := make(map[string]int, len(found)) // id -> index into out
+	out := make([]Found, 0, len(found))
+	for _, f := range found {
+		i, seen := best[f.Id]
+		if !seen {
+			best[f.Id] = len(out)
+			out = append(out, f)
+			continue
+		}
+		if preferFound(rootDir, f, out[i]) {
+			f.Duplicates = append(out[i].Duplicates, out[i].Dir)
+			out[i] = f
+		} else {
+			out[i].Duplicates = append(out[i].Duplicates, f.Dir)
+		}
+	}
+	return out
+}
+
+// preferFound reports whether a should be kept over b, two directories holding
+// the same skill ID. The conventional homes win: anywhere under a top-level
+// skills/, then the cross-agent .agents/skills/<id>; within a rank the shallower
+// directory wins, and on a tie the earlier one in walk order (b) is kept.
+func preferFound(rootDir string, a, b Found) bool {
+	ra, rb := foundRank(rootDir, a.Dir), foundRank(rootDir, b.Dir)
+	if ra != rb {
+		return ra < rb
+	}
+	return foundDepth(rootDir, a.Dir) < foundDepth(rootDir, b.Dir)
+}
+
+// foundRank orders skill directories by how conventional their location is:
+// 0 for anywhere under a top-level skills/ (skills/<id>, skills/<category>/<id>,
+// skills/.curated/<id>), 1 for .agents/skills/<id> or .agent/skills/<id>, 2 for
+// anywhere else.
+func foundRank(rootDir, dir string) int {
+	rel, err := filepath.Rel(rootDir, filepath.Dir(dir))
+	if err != nil {
+		return 2
+	}
+	rel = filepath.ToSlash(rel)
+	switch {
+	case rel == "skills" || strings.HasPrefix(rel, "skills/"):
+		return 0
+	case rel == ".agents/skills" || rel == ".agent/skills":
+		return 1
+	}
+	return 2
+}
+
+// foundDepth is the number of path elements between rootDir and dir.
+func foundDepth(rootDir, dir string) int {
+	rel, err := filepath.Rel(rootDir, dir)
+	if err != nil || rel == "." {
+		return 0
+	}
+	return len(strings.Split(filepath.ToSlash(rel), "/"))
 }

@@ -213,6 +213,9 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 			ui.Warnf("nothing selected; no skills installed")
 			return nil
 		}
+		if !flagJSON {
+			hintDuplicates(insp, ids)
+		}
 		// Report a bad selection (a different-source collision, --as on several
 		// skills) before asking where to install.
 		if err := core.ValidateSourceSelection(opts, insp, ids, installFlagAs); err != nil {

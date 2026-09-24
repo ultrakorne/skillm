@@ -53,6 +53,9 @@ type InspectedSkill struct {
 	// with forward slashes ("" for the repo root) for git, the absolute
 	// directory for a local Source.
 	Path string
+	// Duplicates are the other copies of the skill the Source holds (e.g. one
+	// per agent folder), in Path's form; discovery kept Path and dropped them.
+	Duplicates []string
 }
 
 // Close removes the clone behind the Inspection, including any content staged
@@ -207,7 +210,11 @@ func inspectGit(ctx context.Context, url, ref string) (*Inspection, error) {
 		return fail(fmt.Errorf("no skills found in %s: expected at least one directory containing %s", url, skill.SkillFile))
 	}
 	for _, f := range found {
-		insp.Skills = append(insp.Skills, inspected(f, RepoRelSubpath(repoDir, f.Dir)))
+		s := inspected(f, RepoRelSubpath(repoDir, f.Dir))
+		for _, d := range f.Duplicates {
+			s.Duplicates = append(s.Duplicates, RepoRelSubpath(repoDir, d))
+		}
+		insp.Skills = append(insp.Skills, s)
 	}
 	return insp, nil
 }
@@ -224,7 +231,9 @@ func inspectLocal(dir, display string) (*Inspection, error) {
 	}
 	insp := &Inspection{Source: dir, Kind: state.KindLocal, root: dir}
 	for _, f := range found {
-		insp.Skills = append(insp.Skills, inspected(f, f.Dir))
+		s := inspected(f, f.Dir)
+		s.Duplicates = f.Duplicates
+		insp.Skills = append(insp.Skills, s)
 	}
 	return insp, nil
 }
