@@ -182,9 +182,18 @@ func LinkForce(home, id string, agents []agentdir.Agent, scope agentdir.Scope, c
 	return link(home, id, agents, scope, cwd, true)
 }
 
-// ErrNotManaged is wrapped by Link's refusal to replace an entry skillm did
-// not create, so callers can point the user at their --force flag.
+// ErrNotManaged is wrapped by Link's refusal to replace, and Unlink's refusal
+// to remove, an entry skillm did not create, so callers can tell a refusal
+// from a genuine I/O failure (and point the user at their --force flag).
 var ErrNotManaged = errors.New("not created by skillm")
+
+// refusal is an Unlink refusal: its text is the full sentence (it predates
+// ErrNotManaged and does not end in it), yet errors.Is still matches
+// ErrNotManaged.
+type refusal struct{ msg string }
+
+func (e *refusal) Error() string { return e.msg }
+func (e *refusal) Unwrap() error { return ErrNotManaged }
 
 func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string, force bool) (Result, error) {
 	var res Result
@@ -332,7 +341,7 @@ func link(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd st
 //   - a skillm-managed symlink is removed (ActionRemoved);
 //   - a missing entry is reported as ActionAbsent (idempotent — not an error);
 //   - a real file/dir or a foreign symlink causes a refusal error, leaving it
-//     untouched.
+//     untouched; the refusal wraps ErrNotManaged.
 //
 // On the first refusal Unlink returns the partial Result and the error.
 func Unlink(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd string) (Result, error) {
@@ -365,9 +374,9 @@ func Unlink(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd 
 			if info.IsDir() {
 				kind = "directory"
 			}
-			return res, fmt.Errorf(
+			return res, &refusal{fmt.Sprintf(
 				"refusing to remove %s: it is a %s, not a skillm-managed link",
-				linkPath, kind)
+				linkPath, kind)}
 
 		default:
 			ours, dest, err := ownedLink(home, cwd, scope, linkPath)
@@ -375,9 +384,9 @@ func Unlink(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd 
 				return res, fmt.Errorf("inspect link %s: %w", linkPath, err)
 			}
 			if !ours {
-				return res, fmt.Errorf(
+				return res, &refusal{fmt.Sprintf(
 					"refusing to remove %s: it is a symlink to %s, which is not managed by skillm",
-					linkPath, dest)
+					linkPath, dest)}
 			}
 			if err := os.Remove(linkPath); err != nil {
 				return res, fmt.Errorf("remove link %s: %w", linkPath, err)

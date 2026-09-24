@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "data": null,
+  "warnings": [
+    {
+      "code": "update_failed",
+      "message": "alpha: git fetch failed",
+      "skill_id": "alpha"
+    },
+    {
+      "code": "update_failed",
+      "message": "beta: git fetch failed",
+      "skill_id": "beta"
+    }
+  ],
+  "error": {
+    "code": "update_failed",
+    "message": "2 skills failed to update",
+    "retryable": false
+  }
+}

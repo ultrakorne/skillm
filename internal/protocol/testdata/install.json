@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "data": {
+    "scope": "local",
+    "root": "/Users/me/src/app",
+    "skills": [
+      {
+        "id": "alpha",
+        "action": "installed"
+      },
+      {
+        "id": "beta",
+        "action": "refreshed"
+      },
+      {
+        "id": "gamma",
+        "action": "converted"
+      },
+      {
+        "id": "delta",
+        "action": "overwritten"
+      },
+      {
+        "id": "omega",
+        "action": "skipped"
+      }
+    ]
+  },
+  "warnings": [],
+  "error": null
+}

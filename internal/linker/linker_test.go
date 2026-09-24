@@ -484,8 +484,12 @@ func TestUnlink_RefusesForeignSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Unlink(fx.home, id, ag, agentdir.Local, fx.cwd); err == nil {
-		t.Fatal("expected refusal error: foreign symlink must not be removed")
+	_, err := Unlink(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("expected an ErrNotManaged refusal: foreign symlink must not be removed, got %v", err)
+	}
+	if want := "refusing to remove " + linkPath + ": it is a symlink to " + foreign + ", which is not managed by skillm"; err.Error() != want {
+		t.Fatalf("refusal text = %q, want %q", err.Error(), want)
 	}
 	if _, err := os.Lstat(linkPath); err != nil {
 		t.Fatalf("foreign link wrongly removed: %v", err)
@@ -506,8 +510,12 @@ func TestUnlink_RefusesRealFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Unlink(fx.home, id, ag, agentdir.Local, fx.cwd); err == nil {
-		t.Fatal("expected refusal error: real file must not be removed")
+	_, err := Unlink(fx.home, id, ag, agentdir.Local, fx.cwd)
+	if !errors.Is(err, ErrNotManaged) {
+		t.Fatalf("expected an ErrNotManaged refusal: real file must not be removed, got %v", err)
+	}
+	if want := "refusing to remove " + linkPath + ": it is a file, not a skillm-managed link"; err.Error() != want {
+		t.Fatalf("refusal text = %q, want %q", err.Error(), want)
 	}
 	if _, err := os.Stat(linkPath); err != nil {
 		t.Fatalf("user file wrongly removed: %v", err)

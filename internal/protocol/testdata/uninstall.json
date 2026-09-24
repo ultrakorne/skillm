@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "data": {
+    "skills": [
+      {
+        "id": "alpha",
+        "removed_copies": [
+          "global",
+          "/Users/me/src/app"
+        ],
+        "warnings": []
+      },
+      {
+        "id": "beta",
+        "removed_copies": [
+          "global"
+        ],
+        "warnings": [
+          "/Users/me/.claude/skills/beta: not a skillm link; left in place"
+        ]
+      }
+    ]
+  },
+  "warnings": [],
+  "error": null
+}

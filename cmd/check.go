@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ultrakorne/skillm/internal/config"
+	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/state"
-	"github.com/ultrakorne/skillm/internal/store"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -27,7 +27,8 @@ func newCheckCmd() *cobra.Command {
 			"and changes nothing. It compares upstream revisions only and never inspects the " +
 			"installed copies, so `skillm update` may still re-sync an install whose copy has " +
 			"drifted from its recorded revision. Local skills have no upstream and are skipped.",
-		Args: cobra.NoArgs,
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCheck(cmd.Context())
 		},
@@ -38,69 +39,43 @@ func newCheckCmd() *cobra.Command {
 // runCheck reports the upstream update status of every git skill, per-skill and
 // read-only. It never mutates Home or the registry.
 func runCheck(ctx context.Context) error {
-	home, err := store.Home(flagHome)
+	opts, err := coreOptions(false)
 	if err != nil {
 		return err
 	}
+	if flagJSON {
+		return runCheckJSON(ctx, opts)
+	}
 
-	// config is loaded only to keep behaviour consistent with the rest of the
-	// CLI (e.g. honoring a relocated Home); check itself needs no agent data.
-	if _, err := config.Load(home); err != nil {
+	// One row per skill, checked concurrently by core with a live per-skill
+	// spinner. Quitting the live view cancels the remaining checks; what was
+	// found so far is still summarized, as before.
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	rep := newTermReporter(ctx, ui.ChecklistOptions{OnAbort: cancel})
+	res, err := core.Check(wctx, opts, checkReporter{rep, sourceLabels(opts.Home)})
+	rep.Wait()
+	if cerr := ctx.Err(); cerr != nil {
+		return cerr
+	}
+	if err != nil && wctx.Err() == nil {
 		return err
 	}
 
-	st, err := state.Load(home)
-	if err != nil {
-		return err
-	}
-
-	if len(st.Skills) == 0 {
+	if len(res.Skills) == 0 {
 		fmt.Fprintln(os.Stdout, "No skills in Home.")
 		return nil
 	}
 
-	// One row per skill, checked concurrently with a live per-skill spinner.
-	// Git skills incur a treeless fetch; local skills resolve instantly. ui
-	// renders the rows (live on a TTY, plain otherwise) and returns the per-row
-	// results in input order so the summary below is deterministic.
-	labels := make([]string, len(st.Skills))
-	for i, e := range st.Skills {
-		labels[i] = e.ID
-	}
-
-	check := func(ctx context.Context, i int) ui.Result {
-		e := st.Skills[i]
-		if e.Kind != state.KindGit {
-			return ui.Result{Level: ui.LevelWarn, Text: fmt.Sprintf("%s: local skill — no upstream (edit its source dir and run `skillm update` to re-sync)", e.ID)}
-		}
-		switch upstreamStatus(ctx, e) {
-		case statusUpdateAvailable:
-			return ui.Result{Level: ui.LevelWarn, Text: fmt.Sprintf("%s: update available (%s)", e.ID, sourceLabel(e))}
-		case statusUntracked:
-			return ui.Result{Level: ui.LevelError, Text: fmt.Sprintf("%s: untracked — its subdir was not found upstream (%s)", e.ID, sourceLabel(e))}
-		default: // up-to-date
-			return ui.Result{Level: ui.LevelSuccess, Text: fmt.Sprintf("%s: up-to-date", e.ID)}
-		}
-	}
-
-	results := ui.RunChecks(ctx, labels, check)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// Count only git skills: a git "update available" is LevelWarn, an "untracked"
-	// is LevelError. Local skills are also LevelWarn but carry no upstream, so the
-	// Kind guard keeps them out of the headline count.
+	// A skill whose upstream could not be read counts as untracked, whatever
+	// the cause, as the CLI always reported it.
 	updates := 0
 	untracked := 0
-	for i, r := range results {
-		if st.Skills[i].Kind != state.KindGit {
-			continue
-		}
-		switch r.Level {
-		case ui.LevelWarn:
+	for _, s := range res.Skills {
+		switch s.Status {
+		case core.StatusUpdateAvailable:
 			updates++
-		case ui.LevelError:
+		case core.StatusUntracked, core.StatusError:
 			untracked++
 		}
 	}
@@ -118,4 +93,47 @@ func runCheck(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// runCheckJSON is `check --json`: core.Check reports to the protocol writer
+// (events stream with --events), and the result is every skill's status. A
+// cancelled run (SIGINT) fails with code "cancelled" and no partial data.
+func runCheckJSON(ctx context.Context, opts core.Options) error {
+	out := jsonOut()
+	res, err := core.Check(ctx, opts, out)
+	if err != nil {
+		return err
+	}
+	return out.Result(protocol.NewCheckData(res))
+}
+
+// checkReporter renders core.Check's events on a termReporter, keeping the
+// CLI's historic wording: a skill whose upstream could not be read is shown
+// as untracked, as it always was, while core's event names the cause.
+type checkReporter struct {
+	*termReporter
+	// labels maps a skill id to its SourceLabel.
+	labels map[string]string
+}
+
+// Event implements core.Reporter.
+func (r checkReporter) Event(ev core.Event) {
+	if label, ok := r.labels[ev.Skill]; ok && ev.Type == core.EventItemDone && ev.Code == string(core.StatusError) {
+		ev.Text = core.UntrackedText(ev.Skill, label)
+	}
+	r.termReporter.Event(ev)
+}
+
+// sourceLabels maps every registered skill's id to its SourceLabel. A
+// registry that cannot be read yields none; core.Check reports that error.
+func sourceLabels(home string) map[string]string {
+	st, err := state.Load(home)
+	if err != nil {
+		return nil
+	}
+	labels := make(map[string]string, len(st.Skills))
+	for _, e := range st.Skills {
+		labels[e.ID] = core.SourceLabel(e.Kind, e.Source, e.Path)
+	}
+	return labels
 }

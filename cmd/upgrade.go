@@ -6,7 +6,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ultrakorne/skillm/internal/core"
+	"github.com/ultrakorne/skillm/internal/protocol"
 	"github.com/ultrakorne/skillm/internal/selfupdate"
+	"github.com/ultrakorne/skillm/internal/status"
 	"github.com/ultrakorne/skillm/internal/ui"
 )
 
@@ -30,10 +33,18 @@ func newUpgradeCmd() *cobra.Command {
 			"Nothing is written until the checksum matches, and the previous binary is " +
 			"restored if the swap fails. This upgrades the CLI only; use `skillm update` " +
 			"to pull new revisions of installed skills. A binary built from source (its " +
-			"version is not a release tag) corresponds to no release and is left alone.",
+			"version is not a release tag) corresponds to no release and is left alone, " +
+			"and a skillm inside an app bundle is upgraded by that app, never here.\n\n" +
+			"With --json, --check reports the running skillm against the latest release " +
+			"(its upgrade method, and whether an upgrade is available and eligible), and " +
+			"a plain upgrade reports what it replaced. A source build fails with code " +
+			"source_build, and a skillm inside an app bundle with managed_by_app.",
 		Args: cobra.NoArgs,
-		// Upgrading the CLI needs no git, unlike every other command.
-		Annotations: map[string]string{annotationSkipGitCheck: "true"},
+		Annotations: map[string]string{
+			// Upgrading the CLI needs no git, unlike every other command.
+			annotationSkipGitCheck: "true",
+			annotationJSON:         "true",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUpgrade(cmd.Context(), upgradeFlagCheck)
 		},
@@ -44,28 +55,43 @@ func newUpgradeCmd() *cobra.Command {
 
 func runUpgrade(ctx context.Context, checkOnly bool) error {
 	current := Version()
-	if !selfupdate.IsReleaseVersion(current) {
+	if flagJSON {
+		return runUpgradeJSON(ctx, current, checkOnly)
+	}
+	switch method, _ := core.SelfMethod(current); method {
+	case core.MethodDev:
 		// A source build has no release to compare against; say so plainly
 		// rather than offering to overwrite the user's own binary.
 		ui.Warnf("skillm %s is built from source, so there is no release to upgrade to.", selfupdate.Display(current))
 		ui.Hintf("Install a release with the installer in the README, or `go install github.com/ultrakorne/skillm@latest`.")
 		return nil
+	case core.MethodBundled:
+		// The app that holds it upgrades its bundle; refuse before the network
+		// so the answer is the same offline. --check still reports.
+		if !checkOnly {
+			return core.ErrManagedByApp
+		}
 	}
 
-	rel, err := selfupdate.Latest(ctx, current)
+	st, err := core.CheckSelf(ctx, current)
 	if err != nil {
-		return fmt.Errorf("check for a newer skillm: %w", err)
+		return err
 	}
+	recordSelf(ctx, termLog, st)
 
-	if !selfupdate.IsNewer(rel.Tag, current) {
-		ui.Successf("skillm %s is the latest release.", selfupdate.Display(current))
+	if !st.Available {
+		ui.Successf("skillm %s is the latest release.", st.Current)
 		return nil
 	}
 
-	from, to := selfupdate.Display(current), selfupdate.Display(rel.Tag)
+	from, to := st.Current, st.Latest
 	if checkOnly {
 		ui.Warnf("skillm %s is available (you have %s).", to, from)
-		ui.Hintf("Run `skillm upgrade` to install it.")
+		if st.Method == core.MethodBundled {
+			ui.Hintf("Upgrade the app that holds this skillm to install it.")
+		} else {
+			ui.Hintf("Run `skillm upgrade` to install it.")
+		}
 		return nil
 	}
 
@@ -80,10 +106,75 @@ func runUpgrade(ctx context.Context, checkOnly bool) error {
 		}
 	}
 
-	path, err := selfupdate.Apply(ctx, rel, current)
+	path, err := core.UpgradeSelf(ctx, st)
 	if err != nil {
-		return fmt.Errorf("upgrade to %s: %w", to, err)
+		return err
 	}
+	recordSelf(ctx, termLog, upgradedSelf(st, path))
 	ui.Successf("Upgraded skillm %s → %s (%s).", from, to, path)
 	return nil
+}
+
+// runUpgradeJSON is `upgrade --json`. With --check it reports the SelfStatus
+// (for every method; a source build looks nothing up). Otherwise it upgrades
+// with no question: a source build fails with code source_build, the app's
+// skillm inside an app bundle with managed_by_app (both before any network request), and
+// a skillm already at the latest release reports upgraded false.
+func runUpgradeJSON(ctx context.Context, current string, checkOnly bool) error {
+	out := jsonOut()
+	if !checkOnly {
+		switch method, _ := core.SelfMethod(current); method {
+		case core.MethodDev:
+			return core.ErrSourceBuild
+		case core.MethodBundled:
+			return core.ErrManagedByApp
+		}
+	}
+	st, err := core.CheckSelf(ctx, current)
+	if err != nil {
+		return err
+	}
+	recordSelf(ctx, out, st)
+	if checkOnly {
+		return out.Result(protocol.NewSelfStatusData(st))
+	}
+	data := protocol.UpgradeData{From: st.Current, To: st.Latest}
+	if st.Available {
+		if data.Path, err = core.UpgradeSelf(ctx, st); err != nil {
+			return err
+		}
+		data.Upgraded = true
+		recordSelf(ctx, out, upgradedSelf(st, data.Path))
+	}
+	return out.Result(data)
+}
+
+// recordSelf brings the refresh cache's self entry (status.json) in line
+// with what upgrade just found or installed, so a GUI's badge follows
+// without another refresh. It takes Home's lock only when there is a cache
+// to update, and a failure is only a warning: the upgrade itself is done.
+func recordSelf(ctx context.Context, rep core.Reporter, self core.SelfStatus) {
+	opts, err := coreOptions(false)
+	if err != nil {
+		return
+	}
+	if f, err := status.Load(opts.Home); err != nil || f == nil {
+		// Never refreshed (nothing to keep current), or unreadable (the
+		// next refresh rewrites it).
+		return
+	}
+	unlock, err := lockHome(ctx, opts.Home, "skillm upgrade")
+	if err != nil {
+		rep.Event(core.Event{Type: core.EventLog, Level: core.LevelWarn, Code: core.CodeStatusNotSaved,
+			Text: fmt.Sprintf("could not update %s: %v", status.FileName, err)})
+		return
+	}
+	defer unlock()
+	core.RecordSelf(opts, rep, self)
+}
+
+// upgradedSelf is the self status after st's release was installed at path:
+// the running version is now the latest.
+func upgradedSelf(st core.SelfStatus, path string) core.SelfStatus {
+	return core.SelfStatus{Current: st.Latest, Latest: st.Latest, Method: st.Method, Executable: path}
 }

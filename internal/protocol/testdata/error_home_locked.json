@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "data": null,
+  "warnings": [],
+  "error": {
+    "code": "home_locked",
+    "message": "another skillm operation (pid 4242: skillm update) is still running after 30s (it holds /Users/me/.skillm/.lock); wait for it to finish and try again",
+    "path": "/Users/me/.skillm/.lock",
+    "retryable": true
+  }
+}

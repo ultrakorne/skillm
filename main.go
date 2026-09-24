@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/charmbracelet/fang"
-
 	"github.com/ultrakorne/skillm/cmd"
 )
 
@@ -16,7 +14,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if err := fang.Execute(ctx, cmd.Root(), fang.WithVersion(cmd.Version())); err != nil {
+	if err := cmd.Execute(ctx); err != nil {
 		os.Exit(1)
 	}
 }

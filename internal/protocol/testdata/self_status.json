@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "data": {
+    "current": "0.4.0",
+    "latest": "0.5.0",
+    "available": true,
+    "eligible": false,
+    "method": "bundled",
+    "executable": "/Applications/Example.app/Contents/Helpers/skillm"
+  },
+  "warnings": [],
+  "error": null
+}

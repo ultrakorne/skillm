@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Sparkle, the app's updater. The values are build settings in
+	     project.yml; Xcode merges this file into the generated Info.plist. -->
+	<key>SUFeedURL</key>
+	<string>$(SKILLM_UPDATE_FEED_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>$(SKILLM_UPDATE_PUBLIC_KEY)</string>
+	<!-- Sparkle never checks on its own schedule and never asks whether it
+	     may: the app asks it silently after every check it runs, so one
+	     schedule (the Auto check setting and its interval) covers the
+	     skills, the CLI and the app. -->
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+</dict>
+</plist>

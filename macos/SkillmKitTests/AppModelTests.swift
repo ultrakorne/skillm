@@ -1,0 +1,380 @@
+import AppKit
+import XCTest
+
+@testable import SkillmKit
+
+/// Runs AppModel against TestSupport/fake-skillm and checks which commands
+/// it runs, and what it makes of their answers.
+@MainActor
+final class AppModelTests: XCTestCase {
+    private var scratch: URL!
+    private var models: [AppModel] = []
+    private let center = NotificationCenter()
+
+    override func setUp() async throws {
+        scratch = FileManager.default.temporaryDirectory.appending(path: "skillm-model-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() async throws {
+        for m in models { await m.shutdown() }
+        models = []
+        try? FileManager.default.removeItem(at: scratch)
+    }
+
+    private var exitedMarker: URL { scratch.appending(path: "exited") }
+
+    /// A model over the fake. The timer is hourly unless given, so only the
+    /// launch tick runs; a wake ticks at once.
+    private func model(
+        _ env: [String: String] = [:],
+        timing: RefreshScheduler.Timing = .init(interval: .seconds(3600), wakeDelay: .zero)
+    ) -> AppModel {
+        var environment = [
+            "FAKE_SKILLM_FIXTURES": TestPaths.fixtures.path,
+            "FAKE_SKILLM_LOG": scratch.appending(path: "log").path,
+            "FAKE_SKILLM_EXITED": exitedMarker.path,
+            "PATH": "/usr/bin:/bin",
+        ]
+        environment.merge(env) { $1 }
+        let client = SkillmClient(executable: TestPaths.fakeSkillm, environment: environment)
+        let m = AppModel(makeClient: { client }, checksGit: false, timing: timing, wakeCenter: center)
+        models.append(m)
+        return m
+    }
+
+    /// Every command the fake ran, one line of arguments each.
+    private func commands() -> [String] {
+        let s = (try? String(contentsOf: scratch.appending(path: "log"), encoding: .utf8)) ?? ""
+        return s.split(separator: "\n").map(String.init)
+    }
+
+    private func eventually(
+        _ what: String, timeout: Duration = .seconds(10), _ condition: () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                return XCTFail("timed out waiting for \(what); commands: \(commands())")
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// Starts the model and waits for the launch tick to finish.
+    private func started(_ env: [String: String] = [:]) async -> AppModel {
+        let m = model(env)
+        await m.start()
+        await m.waitUntilIdle()
+        return m
+    }
+
+    // MARK: - Launch
+
+    func testStartReadsStatusAndSettingsThenTicks() async throws {
+        let m = await started()
+        XCTAssertEqual(m.cli, .ready(version: "0.4.0"))
+        XCTAssertEqual(
+            commands(), ["version --json", "status --json", "config get --json", "refresh --if-due --json"])
+        // The tick's answer (refresh.json) replaced the status read first.
+        XCTAssertEqual(m.status?.cache.selfStatus?.error, "check for a newer skillm: dial tcp: no route to host")
+        XCTAssertTrue(m.badge)
+        XCTAssertEqual(m.settings, RefreshSettings(enabled: true, intervalHours: 12))
+        XCTAssertEqual(m.activity, .idle)
+        XCTAssertNil(m.notice)
+    }
+
+    func testStartFailureShowsTheProblemAndEachTickChecksAgain() async throws {
+        let m = model(["FAKE_SKILLM_MODE": "git_missing"])
+        await m.start()
+        guard case .failed(let message, let fix) = m.cli else { return XCTFail("started: \(m.cli)") }
+        XCTAssertTrue(message.contains("git"), message)
+        XCTAssertEqual(fix, SkillmError.gitFix)
+        XCTAssertNil(m.refresh())
+        XCTAssertEqual(commands(), ["version --json"], "the first tick waits")
+        // A wake runs the launch checks again, not a refresh.
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake's launch check") { commands().count == 2 }
+        XCTAssertEqual(commands(), ["version --json", "version --json"])
+        XCTAssertFalse(m.badge)
+    }
+
+    // MARK: - Refresh
+
+    func testRefreshChecksWhetherOrNotDue() async throws {
+        let m = await started()
+        await m.refresh()?.value
+        XCTAssertEqual(commands().last, "refresh --json")
+        XCTAssertTrue(m.badge)
+        XCTAssertNil(m.notice)
+    }
+
+    func testWakeRunsAScheduledRefresh() async throws {
+        let m = await started()
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake tick") { commands().filter { $0 == "refresh --if-due --json" }.count == 2 }
+        await m.waitUntilIdle()
+    }
+
+    func testTimerTicks() async throws {
+        let m = model(timing: .init(interval: .milliseconds(200), wakeDelay: .zero))
+        await m.start()
+        try await eventually("two timer ticks") { commands().filter { $0 == "refresh --if-due --json" }.count >= 3 }
+    }
+
+    func testScheduledRefreshFailureIsShown() async throws {
+        let m = await started(["FAKE_SKILLM_FAIL_ON": "refresh"])
+        XCTAssertEqual(m.notice?.isError, true)
+        XCTAssertEqual(m.notice?.origin, .background)
+        XCTAssertTrue(m.notice?.text.hasPrefix("another skillm operation") == true, "\(String(describing: m.notice))")
+        // The status read at launch stays.
+        XCTAssertEqual(m.status?.cache.selfStatus?.latest, "0.5.0")
+    }
+
+    func testScheduledRefreshFailureClearsOnTheNextSuccessfulTick() async throws {
+        let failing = scratch.appending(path: "failing")
+        FileManager.default.createFile(atPath: failing.path, contents: nil)
+        let m = await started(["FAKE_SKILLM_FAIL_ON": "refresh", "FAKE_SKILLM_FAIL_WHILE": failing.path])
+        XCTAssertEqual(m.notice?.isError, true)
+
+        try FileManager.default.removeItem(at: failing)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake tick") { commands().filter { $0 == "refresh --if-due --json" }.count == 2 }
+        await m.waitUntilIdle()
+        XCTAssertNil(m.notice)
+    }
+
+    func testTickKeepsTheNoticeOfAUserCommand() async throws {
+        let m = await started()
+        await m.updateAll()?.value
+        let notice = m.notice
+        XCTAssertNotNil(notice)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake tick") { commands().filter { $0 == "refresh --if-due --json" }.count == 2 }
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.notice, notice)
+    }
+
+    func testTickRereadsTheSettings() async throws {
+        let off = scratch.appending(path: "off")
+        let m = await started(["FAKE_SKILLM_CONFIG_OFF": off.path])
+        XCTAssertEqual(m.settings?.enabled, true)
+
+        // `skillm config set refresh.enabled false` in a terminal.
+        FileManager.default.createFile(atPath: off.path, contents: nil)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await eventually("the wake tick") { commands().filter { $0 == "refresh --if-due --json" }.count == 2 }
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.settings?.enabled, false)
+        XCTAssertEqual(Array(commands().suffix(2)), ["config get --json", "refresh --if-due --json"])
+    }
+
+    func testStoppingAScheduledRefreshSaysSo() async throws {
+        let m = model(["FAKE_SKILLM_HANG_ON": "refresh"])
+        await m.start()
+        try await eventually("the launch tick") { commands().last == "refresh --if-due --json" }
+        // Let the fake reach its traps.
+        try await Task.sleep(for: .milliseconds(300))
+        m.cancel()
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.notice, .init(text: "Check stopped", isError: false))
+    }
+
+    // MARK: - Update
+
+    func testUpdateAllReportsTheOutcomeAndRereadsStatus() async throws {
+        let m = await started()
+        let task = m.updateAll()
+        XCTAssertNotNil(task)
+        guard case .updating = m.activity else { return XCTFail("activity: \(m.activity)") }
+        XCTAssertNil(m.refresh(), "a second command started while one runs")
+        await task?.value
+        XCTAssertEqual(Array(commands().suffix(2)), ["update --json --events", "status --json"])
+        XCTAssertEqual(m.notice, .init(text: "Updated 1 skill, some installs were not updated", isError: false))
+        XCTAssertEqual(m.notice?.origin, .user)
+        XCTAssertEqual(m.activity, .idle)
+        // status.json has the self check's latest release, refresh.json not.
+        XCTAssertEqual(m.status?.cache.selfStatus?.latest, "0.5.0")
+    }
+
+    func testFailedUpdateNamesTheSkills() async throws {
+        let m = await started(["FAKE_SKILLM_FAIL_ON": "update"])
+        await m.updateAll()?.value
+        XCTAssertEqual(m.notice, .init(text: "2 skills failed to update: alpha, beta", isError: true))
+        XCTAssertEqual(commands().last, "status --json")
+    }
+
+    func testStoppingAnUpdateWaitsForSkillmThenRereadsStatus() async throws {
+        let m = await started(["FAKE_SKILLM_HANG_ON": "update"])
+        let task = m.updateAll()
+        // The fake reports its batch once it traps SIGINT.
+        try await eventually("the update's batch") {
+            if case .updating(let p) = m.activity { return p.total == 1 }
+            return false
+        }
+        m.cancel()
+        XCTAssertTrue(m.isStopping)
+        await task?.value
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "returned before skillm exited")
+        XCTAssertEqual(m.notice, .init(text: "Update stopped", isError: false))
+        XCTAssertFalse(m.isStopping)
+        XCTAssertEqual(m.activity, .idle)
+        XCTAssertEqual(Array(commands().suffix(2)), ["update --json --events", "status --json"])
+    }
+
+    func testShutdownWaitsForTheRunningCommand() async throws {
+        let m = model(["FAKE_SKILLM_HANG_ON": "refresh"])
+        await m.start()
+        try await eventually("the launch tick") { commands().last == "refresh --if-due --json" }
+        // Let the fake reach its traps.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(m.isBusy)
+        await m.shutdown()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "returned before skillm exited")
+        XCTAssertFalse(m.isBusy)
+        XCTAssertNil(m.notice, "a quit is not a failure")
+        XCTAssertNil(m.updateAll(), "a command started after shutdown")
+    }
+
+    // MARK: - Reads
+
+    func testAReadRunsBesideTheCommandAndAQuitWaitsForIt() async throws {
+        let m = await started(["FAKE_SKILLM_HANG_ON": "list"])
+        let read = Task { try await m.read(["list"], as: ListData.self) }
+        try await eventually("the read") { commands().last == "list --json" }
+        // Let the fake reach its traps.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(m.hasRunningCommands)
+        XCTAssertFalse(m.isBusy, "a read greys out nothing")
+        XCTAssertNotNil(m.refresh(), "a command starts while a read runs")
+        await m.waitUntilIdle()
+
+        await m.shutdown()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "returned before skillm exited")
+        XCTAssertFalse(m.hasRunningCommands)
+        do {
+            _ = try await read.value
+            XCTFail("the read was not interrupted")
+        } catch is CancellationError {}
+    }
+
+    func testCancellingAReadInterruptsIt() async throws {
+        let m = await started(["FAKE_SKILLM_HANG_ON": "list"])
+        let read = Task { try await m.read(["list"], as: ListData.self) }
+        try await eventually("the read") { commands().last == "list --json" }
+        try await Task.sleep(for: .milliseconds(300))
+        read.cancel()
+        do {
+            _ = try await read.value
+            XCTFail("the read was not interrupted")
+        } catch is CancellationError {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path))
+        XCTAssertFalse(m.hasRunningCommands)
+    }
+
+    // MARK: - Auto refresh
+
+    func testAutoRefreshToggleWritesTheSetting() async throws {
+        let m = await started()
+        await m.setAutoRefresh(false)?.value
+        await m.waitUntilIdle()
+        XCTAssertEqual(commands().last, "config set refresh.enabled false --json")
+        XCTAssertEqual(m.settings?.enabled, false)
+
+        await m.setAutoRefresh(true)?.value
+        await m.waitUntilIdle()
+        // Turning it on asks for a scheduled refresh at once.
+        XCTAssertEqual(
+            Array(commands().suffix(3)),
+            ["config set refresh.enabled true --json", "config get --json", "refresh --if-due --json"])
+        XCTAssertEqual(m.settings?.enabled, true)
+    }
+
+    // MARK: - Upgrade app and restart
+
+    func testTheLaunchAsksTheUpdaterOnceAndRefreshAgain() async throws {
+        let m = model()
+        let updater = FakeUpdater()
+        m.upgrade.attach(updater)
+        await m.start()
+        await m.waitUntilIdle()
+        // The launch tick, within the interval of the launch's own ask.
+        XCTAssertEqual(updater.probes, 1)
+        XCTAssertFalse(m.upgrade.isAvailable)
+
+        await m.refresh()?.value
+        XCTAssertEqual(updater.probes, 2, "the Refresh item asks the updater too")
+        m.upgrade.found(version: "0.5.0")
+        XCTAssertTrue(m.upgrade.isAvailable)
+    }
+
+    func testTheUpdaterIsAskedWhenEveryRefreshFails() async throws {
+        let m = model(["FAKE_SKILLM_FAIL_ON": "refresh"])
+        let updater = FakeUpdater()
+        m.upgrade.attach(updater)
+        await m.start()
+        await m.waitUntilIdle()
+        XCTAssertEqual(updater.probes, 1)
+        await m.refresh()?.value
+        XCTAssertEqual(m.notice?.isError, true)
+        XCTAssertEqual(updater.probes, 2, "a failed Refresh still asks")
+    }
+
+    func testTheUpdaterIsAskedWhileTheCLIIsBroken() async throws {
+        let m = model(["FAKE_SKILLM_MODE": "garbage"])
+        let updater = FakeUpdater()
+        m.upgrade.attach(updater)
+        await m.start()
+        guard case .failed = m.cli else { return XCTFail("\(m.cli)") }
+        XCTAssertEqual(updater.probes, 1)
+    }
+
+    func testAFoundAppUpdateTurnsTheDotOn() async throws {
+        let m = model(["FAKE_SKILLM_MODE": "git_missing"])
+        await m.start()
+        XCTAssertFalse(m.badge)
+        m.upgrade.attach(FakeUpdater())
+        m.upgrade.found(version: "0.5.0")
+        XCTAssertTrue(m.badge, "a newer app, with no Refresh cache")
+    }
+
+    func testRelaunchWaitsForTheRunningCommandThenStartsNothing() async throws {
+        let m = model(["FAKE_SKILLM_HANG_ON": "refresh"])
+        await m.start()
+        try await eventually("the launch tick") { commands().last == "refresh --if-due --json" }
+        // Let the fake reach its traps.
+        try await Task.sleep(for: .milliseconds(300))
+        var relaunched = false
+        XCTAssertTrue(m.postponeRelaunch { relaunched = true })
+        XCTAssertFalse(relaunched, "relaunched while skillm runs")
+        try await eventually("the relaunch") { relaunched }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exitedMarker.path), "relaunched before skillm exited")
+        XCTAssertFalse(m.hasRunningCommands)
+        XCTAssertNil(m.refresh(), "a command started after the relaunch began")
+    }
+
+    func testRelaunchWithNothingRunningGoesOnAtOnce() async throws {
+        let m = await started()
+        var relaunched = false
+        XCTAssertTrue(m.postponeRelaunch { relaunched = true })
+        try await eventually("the relaunch") { relaunched }
+        XCTAssertNil(m.updateAll(), "a command started after the relaunch began")
+    }
+
+    func testAnUpdateThatFailsAfterThePostponedRelaunchResumesTheModel() async throws {
+        let m = await started()
+        var relaunched = false
+        XCTAssertTrue(m.postponeRelaunch { relaunched = true })
+        try await eventually("the relaunch") { relaunched }
+        XCTAssertNil(m.refresh())
+
+        m.resumeAfterAbortedUpdate()
+        XCTAssertEqual(m.notice?.isError, true)
+        // The schedule's first tick runs at once; the Refresh item works.
+        await m.waitUntilIdle()
+        XCTAssertEqual(m.notice?.isError, true, "a tick cleared why nothing was installed")
+        let refresh = try XCTUnwrap(m.refresh(), "no command runs after the update failed")
+        await refresh.value
+        XCTAssertNil(m.notice)
+    }
+}

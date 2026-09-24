@@ -1,0 +1,257 @@
+#!/bin/sh
+# A fake skillm for SkillmClient's tests: it answers from the protocol's
+# golden fixtures (internal/protocol/testdata) instead of doing anything.
+#
+#   FAKE_SKILLM_FIXTURES  the fixture directory (required)
+#   FAKE_SKILLM_MODE      how to answer (see below); default: by command
+#   FAKE_SKILLM_ARGS      if set, each argument is written to it, one per line
+#   FAKE_SKILLM_PATH      if set, $PATH is written to it
+#   FAKE_SKILLM_SIGNALS   if set, "INT" or "TERM" is appended to it as each
+#                         signal arrives
+#   FAKE_SKILLM_EXITED    if set, created just before a cancelled fake exits
+#   FAKE_SKILLM_CANCEL_DELAY  seconds a cancelled fake keeps working after
+#                         SIGINT before it answers (default 0)
+#   FAKE_SKILLM_LOG       if set, each run appends its arguments to it as one
+#                         line (for tests that run several commands)
+#   FAKE_SKILLM_HANG_ON   a command (e.g. "update") that behaves as mode hang
+#                         (stream_hang with --events); the others answer
+#   FAKE_SKILLM_FAIL_ON   a command that answers a failure fixture instead
+#                         (update: error_update_failed.json, refresh:
+#                         error_home_locked.json, uninstall:
+#                         error_needs_confirm.json, install: commit_mismatch,
+#                         config: error_invalid_value.json)
+#   FAKE_SKILLM_FAIL_WHILE  if set, FAKE_SKILLM_FAIL_ON applies only while
+#                         this file exists
+#   FAKE_SKILLM_CONFIG_OFF  if set and this file exists, `config get`
+#                         answers with refresh.enabled false
+#   FAKE_SKILLM_NO_FOREIGN  if set, install succeeds without an answer flag;
+#                         otherwise it answers foreign_files unless given
+#                         --yes, --force or --skip-foreign
+#   FAKE_SKILLM_LINK_REFUSED  a skill id: install --events succeeds with a
+#                         link_refused warning for it, unless given --force
+#                         (skillm reports refused links only on a result
+#                         whose copies landed, never with foreign_files)
+#   FAKE_SKILLM_NEEDS_FORCE  if set, uninstall answers needs_force unless
+#                         given --force
+#   FAKE_SKILLM_OLD_WHILE  if set and this file exists, the fake is a skillm
+#                         from before the JSON API: `--json` is an unknown
+#                         flag (a usage error on stderr, nothing on stdout)
+#                         and a plain `upgrade` deletes the file (the
+#                         upgraded skillm then answers as usual)
+#   FAKE_SKILLM_MODE=api0  `version` answers API version 0 (too old)
+set -u
+fx=${FAKE_SKILLM_FIXTURES:?}
+[ -n "${FAKE_SKILLM_ARGS:-}" ] && printf '%s\n' "$@" >"$FAKE_SKILLM_ARGS"
+[ -n "${FAKE_SKILLM_LOG:-}" ] && echo "$*" >>"$FAKE_SKILLM_LOG"
+[ -n "${FAKE_SKILLM_PATH:-}" ] && printf '%s\n' "$PATH" >"$FAKE_SKILLM_PATH"
+
+events=no
+answered=no
+forced=no
+for a in "$@"; do
+	case "$a" in
+	--events) events=yes ;;
+	--yes | --skip-foreign) answered=yes ;;
+	--force) answered=yes forced=yes ;;
+	esac
+done
+
+record() { [ -n "${FAKE_SKILLM_SIGNALS:-}" ] && echo "$1" >>"$FAKE_SKILLM_SIGNALS"; }
+exiting() { [ -n "${FAKE_SKILLM_EXITED:-}" ] && : >"$FAKE_SKILLM_EXITED"; }
+started() { :; }
+after_interrupt() { :; }
+
+# wait_for_interrupt: set up the traps, run `started`, block until SIGINT,
+# keep working for FAKE_SKILLM_CANCEL_DELAY seconds (after_interrupt runs
+# first), then run `answer` and exit 1, as skillm does when it is cancelled. SIGTERM ends it
+# at once, as it does skillm, which does not catch it.
+wait_for_interrupt() {
+	trap 'kill "$pid" 2>/dev/null; record TERM; exiting; exit 143' TERM
+	trap 'kill "$pid" 2>/dev/null; record INT; after_interrupt; sleep "${FAKE_SKILLM_CANCEL_DELAY:-0}"; answer; exiting; exit 1' INT
+	sleep 30 >/dev/null 2>&1 &
+	pid=$!
+	started
+	wait "$pid"
+	echo "fake-skillm: never interrupted" >&2
+	exit 3
+}
+
+mode=${FAKE_SKILLM_MODE:-}
+if [ -n "${FAKE_SKILLM_FAIL_WHILE:-}" ] && [ ! -e "$FAKE_SKILLM_FAIL_WHILE" ]; then
+	FAKE_SKILLM_FAIL_ON=
+fi
+if [ -n "${FAKE_SKILLM_HANG_ON:-}" ] && [ "$1" = "$FAKE_SKILLM_HANG_ON" ]; then
+	if [ $events = yes ]; then mode=stream_hang; else mode=hang; fi
+fi
+
+# as_result FILE: an envelope fixture as the last line of an event stream.
+as_result() { tr -d '\n' <"$1" | sed 's/^{/{"type":"result",/'; echo; }
+
+# answer_error FILE: a failure fixture, as a document or as the last line
+# of an event stream; then exit 1.
+answer_error() {
+	if [ $events = yes ]; then as_result "$1"; else cat "$1"; fi
+	exit 1
+}
+
+# inline_error CODE MESSAGE: a failure envelope that has no fixture.
+inline_error() {
+	line=$(printf '{"schema_version":1,"data":null,"warnings":[],"error":{"code":"%s","message":"%s","retryable":false}}' "$1" "$2")
+	if [ $events = yes ]; then echo "$line" | sed 's/^{/{"type":"result",/'; else echo "$line"; fi
+	exit 1
+}
+
+if [ -n "${FAKE_SKILLM_OLD_WHILE:-}" ] && [ -e "$FAKE_SKILLM_OLD_WHILE" ]; then
+	for a in "$@"; do
+		if [ "$a" = --json ]; then
+			printf '\n   ERROR  \n\n  Unknown flag: --json.\n\n  Try --help for usage.\n\n' >&2
+			exit 1
+		fi
+	done
+	if [ "${1:-}" = upgrade ]; then
+		rm -f "$FAKE_SKILLM_OLD_WHILE"
+		echo "Upgraded skillm 0.3.0 → 0.5.0"
+		exit 0
+	fi
+fi
+
+case "$mode" in
+api0)
+	echo '{"schema_version":1,"data":{"version":"0.3.0","api_version":0,"capabilities":[]},"warnings":[],"error":null}'
+	exit 0
+	;;
+api99)
+	echo '{"schema_version":1,"data":{"version":"9.0.0","api_version":99,"capabilities":[]},"warnings":[],"error":null}'
+	exit 0
+	;;
+schema2)
+	echo '{"schema_version":2,"data":null,"warnings":[],"error":null}'
+	exit 0
+	;;
+git_missing)
+	echo '{"schema_version":1,"data":null,"warnings":[],"error":{"code":"git_missing","message":"git was not found on your PATH; skillm requires the system git binary — install git and try again","retryable":false}}'
+	exit 1
+	;;
+garbage)
+	echo "this is not json"
+	echo "panic: something broke" >&2
+	exit 2
+	;;
+stderr_flood)
+	# More stderr than a pipe holds, the diagnostic last.
+	echo "this is not json"
+	i=0
+	while [ $i -lt 2000 ]; do
+		echo "goroutine $i [running]: some/package.function(0x0, 0x0) at /src/file.go:123 +0x45" >&2
+		i=$((i + 1))
+	done
+	echo "panic: the real reason" >&2
+	exit 2
+	;;
+hang)
+	answer() {
+		echo '{"schema_version":1,"data":null,"warnings":[{"code":"copy_failed","message":"beta: partly copied","skill_id":"beta"}],"error":{"code":"cancelled","message":"context canceled","retryable":true}}'
+	}
+	wait_for_interrupt
+	;;
+ignore_int)
+	# A hung skillm: SIGINT changes nothing, only SIGTERM ends it.
+	trap 'record TERM; kill "$pid" 2>/dev/null; exiting; exit 143' TERM
+	trap 'record INT; kill "$pid" 2>/dev/null' INT
+	while :; do
+		sleep 30 >/dev/null 2>&1 &
+		pid=$!
+		wait "$pid"
+	done
+	;;
+stream_hang)
+	# The first event is written once SIGINT is trapped.
+	started() { echo '{"schema_version":1,"type":"event","event":"batch","items":["alpha"]}'; }
+	# The work in progress when SIGINT arrives still reports its events.
+	after_interrupt() {
+		echo '{"schema_version":1,"type":"event","event":"item_start","index":0,"skill_id":"alpha"}'
+	}
+	answer() {
+		echo '{"schema_version":1,"type":"result","data":null,"warnings":[],"error":{"code":"cancelled","message":"context canceled","retryable":true}}'
+	}
+	wait_for_interrupt
+	;;
+esac
+
+case "$1" in
+version) cat "$fx/version.json" ;;
+list) cat "$fx/list.json" ;;
+status) cat "$fx/status.json" ;;
+refresh)
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = refresh ]; then
+		cat "$fx/error_home_locked.json"
+		exit 1
+	fi
+	cat "$fx/refresh.json"
+	;;
+check)
+	if [ $events = yes ]; then cat "$fx/check_events.ndjson"; else cat "$fx/check.json"; fi
+	;;
+update)
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = update ]; then
+		if [ $events = yes ]; then as_result "$fx/error_update_failed.json"; else cat "$fx/error_update_failed.json"; fi
+		exit 1
+	elif [ $events = yes ]; then
+		cat "$fx/update_events.ndjson"
+	else
+		cat "$fx/error_update_failed.json"
+		exit 1
+	fi
+	;;
+config)
+	[ "${FAKE_SKILLM_FAIL_ON:-}" = config ] && answer_error "$fx/error_invalid_value.json"
+	# `config set refresh.enabled false`, and `config get` under
+	# FAKE_SKILLM_CONFIG_OFF, answer the fixture with it off.
+	if [ "${2:-}" = set ] && [ "${3:-}" = refresh.enabled ] && [ "${4:-}" = false ]; then
+		sed 's/"enabled": true/"enabled": false/' "$fx/config.json"
+	elif [ "${2:-}" = set ] && [ "${3:-}" = refresh.interval_hours ]; then
+		sed "s/\"interval_hours\": 12/\"interval_hours\": ${4:-12}/" "$fx/config.json"
+	elif [ "${2:-}" = get ] && [ -n "${FAKE_SKILLM_CONFIG_OFF:-}" ] && [ -e "$FAKE_SKILLM_CONFIG_OFF" ]; then
+		sed 's/"enabled": true/"enabled": false/' "$fx/config.json"
+	else
+		cat "$fx/config.json"
+	fi
+	;;
+install)
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = install ]; then
+		inline_error commit_mismatch "the source moved since it was inspected"
+	elif [ $answered = no ] && [ -z "${FAKE_SKILLM_NO_FOREIGN:-}" ]; then
+		answer_error "$fx/error_foreign_files.json"
+	elif [ $events = yes ]; then
+		if [ -n "${FAKE_SKILLM_LINK_REFUSED:-}" ] && [ $forced = no ]; then
+			id=$FAKE_SKILLM_LINK_REFUSED
+			sed "s|\"warnings\":\[\]|\"warnings\":[{\"code\":\"link_refused\",\"message\":\"$id: /Users/me/.claude/skills/$id is not a skillm link; left alone\",\"skill_id\":\"$id\"}]|" "$fx/install_events.ndjson"
+		else
+			cat "$fx/install_events.ndjson"
+		fi
+	else
+		cat "$fx/install.json"
+	fi
+	;;
+uninstall)
+	if [ "${FAKE_SKILLM_FAIL_ON:-}" = uninstall ]; then
+		answer_error "$fx/error_needs_confirm.json"
+	elif [ -n "${FAKE_SKILLM_NEEDS_FORCE:-}" ] && [ $forced = no ]; then
+		inline_error needs_force "beta: /Users/me/.claude/skills/beta is not a skillm link"
+	fi
+	cat "$fx/uninstall.json"
+	;;
+source)
+	cat "$fx/inspect.json"
+	;;
+agent)
+	if [ "${2:-}" = set ]; then cat "$fx/agents_set.json"; else cat "$fx/agents.json"; fi
+	;;
+upgrade)
+	cat "$fx/upgrade.json"
+	;;
+*)
+	echo "fake-skillm: unexpected arguments: $*" >&2
+	exit 64
+	;;
+esac

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "data": {
+    "skills": [
+      {
+        "id": "alpha",
+        "kind": "git",
+        "outcome": "updated",
+        "revision": "aaa2",
+        "advanced": true,
+        "pruned": [],
+        "warnings": [
+          "/Users/me/src/app: skills-lock.json not updated: permission denied"
+        ]
+      },
+      {
+        "id": "beta",
+        "kind": "git",
+        "outcome": "up_to_date",
+        "revision": "bbb1",
+        "advanced": false,
+        "pruned": [],
+        "warnings": []
+      },
+      {
+        "id": "gamma",
+        "kind": "git",
+        "outcome": "pruned",
+        "revision": "ccc2",
+        "advanced": true,
+        "pruned": [
+          "global",
+          "/Users/me/src/old"
+        ],
+        "warnings": []
+      },
+      {
+        "id": "delta",
+        "kind": "git",
+        "outcome": "drift_check_skipped",
+        "revision": "ddd1",
+        "advanced": false,
+        "pruned": [],
+        "error": "stage delta: disk full",
+        "warnings": []
+      },
+      {
+        "id": "omega",
+        "kind": "local",
+        "outcome": "synced",
+        "advanced": false,
+        "pruned": [],
+        "warnings": []
+      }
+    ],
+    "imported": [
+      {
+        "id": "shared",
+        "root": "/Users/me/src/app",
+        "outcome": "imported"
+      },
+      {
+        "id": "npm-thing",
+        "root": "/Users/me/src/app",
+        "outcome": "skipped",
+        "error": "not a git remote (source type \"node_modules\")"
+      }
+    ],
+    "updated": 2,
+    "synced": true
+  },
+  "warnings": [],
+  "error": null
+}

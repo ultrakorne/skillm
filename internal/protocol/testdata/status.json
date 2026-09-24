@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "data": {
+    "schema_version": 1,
+    "checked_at": "2026-09-23T10:00:00Z",
+    "next_due_at": "2026-09-24T10:00:00Z",
+    "skills": [
+      {
+        "id": "alpha",
+        "status": "up_to_date",
+        "installed_rev": "aaa1",
+        "upstream_rev": "aaa1"
+      },
+      {
+        "id": "beta",
+        "status": "update_available",
+        "installed_rev": "bbb1",
+        "upstream_rev": "bbb2"
+      },
+      {
+        "id": "gamma",
+        "status": "untracked",
+        "installed_rev": "ccc1",
+        "error": "gitx: \"gamma\" not found at \"main\""
+      },
+      {
+        "id": "delta",
+        "status": "error",
+        "installed_rev": "ddd1",
+        "error": "git clone failed: repository not found"
+      },
+      {
+        "id": "omega",
+        "status": "local"
+      }
+    ],
+    "updates": 1,
+    "self": {
+      "current": "0.4.0",
+      "latest": "0.5.0",
+      "available": true,
+      "eligible": true,
+      "method": "binary",
+      "executable": "/usr/local/bin/skillm"
+    },
+    "errors": [
+      {
+        "code": "untracked",
+        "skill_id": "gamma",
+        "message": "gitx: \"gamma\" not found at \"main\""
+      },
+      {
+        "code": "error",
+        "skill_id": "delta",
+        "message": "git clone failed: repository not found"
+      }
+    ],
+    "badge": true,
+    "stale": false
+  },
+  "warnings": [],
+  "error": null
+}

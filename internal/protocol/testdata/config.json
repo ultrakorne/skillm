@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "data": {
+    "refresh": {
+      "enabled": true,
+      "interval_hours": 12
+    }
+  },
+  "warnings": [],
+  "error": null
+}

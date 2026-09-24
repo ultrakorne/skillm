@@ -9,17 +9,18 @@ Fixed entries stay, marked `✅ DONE (date)`, so the history reads in one place.
 
 ---
 
-## Remote URL normalization (`normalizeRemote`, `cmd/import.go`)
+## Remote URL normalization (`core.NormalizeRemote`, `internal/core/source.go`)
 
 **Found 2026-07-16**, while fixing the case-folding bug in the same function. All three
 items below were confirmed by probing the real function — they are pre-existing and were
 **not** introduced by that change.
 
-Background: `normalizeRemote` reduces a git remote to a comparable form so that one repo
-typed several ways reads as one Source. It has two callers — `srcIdentity.matches`
-(`cmd/fetch.go`), which decides whether an install is a same-source refresh or a
-`--as` collision, and `lockEntryMatches` (`cmd/import.go`), which tells "already managed"
-from a genuine name collision on import. When it under-normalizes, one repo reads as two
+Background: `NormalizeRemote` reduces a git remote to a comparable form so that one repo
+typed several ways reads as one Source. It decides identity in `SrcIdentity.Matches`
+(`internal/core/source.go`), which tells a same-source refresh from a `--as` collision on
+install, and in `lockEntryMatches` (`internal/core/import.go`), which tells "already managed" from a
+genuine name collision on import; `MergeEntry` also uses it to keep a recorded remote's
+spelling. When it under-normalizes, one repo reads as two
 Sources: the user hits a spurious "already installed from a different source" error and,
 if they follow the suggestion and pass `--as`, ends up with a duplicate install of the
 same repo under a second Skill ID.
@@ -28,45 +29,48 @@ same repo under a second Skill ID.
 
 The most serious of the three — a security issue, not just a correctness one.
 
-`canonicalRemote` (`cmd/fetch.go`) only trims trailing slashes, so a remote typed with
+`CanonicalRemote` (`internal/core/source.go`) only trims trailing slashes, so a remote typed with
 embedded credentials is recorded **verbatim** as the entry's `Source`:
 
 ```
-canonicalRemote("https://user:tok3N@github.com/o/r/") = "https://user:tok3N@github.com/o/r"
+CanonicalRemote("https://user:tok3N@github.com/o/r/") = "https://user:tok3N@github.com/o/r"
 ```
 
 Consequences, all confirmed in code:
 
 - The token lands in `~/.skillm/state.toml`, which is written **`0o644`** —
-  world-readable (`internal/state/state.go:121`).
-- `sourceLabel` (`cmd/list.go:145-147`) renders `e.Source` as the Source column, so
+  world-readable (`internal/state/state.go`).
+- `core.SourceLabel` (`internal/core/check.go`) renders `e.Source` as the Source column, so
   `skillm list` **prints the token** to the terminal, into scrollback, and into any CI log.
-- `update` and `list --check` hand `e.Source` back to `gitx.TreelessClone`
-  (`cmd/update.go:369`, `cmd/list.go:121`), so the stored credential keeps being used.
+  `skillm list --json` hands it to the GUI too, in both `source` and `source_label`
+  (`internal/protocol/data.go`).
+- `update`, `check` and a re-fetch by Skill ID hand `e.Source` back to `gitx.TreelessClone`
+  (`internal/core/update.go`, `internal/core/check.go`, `core.RefetchSkill` in
+  `internal/core/source.go`), so the stored credential keeps being used.
 
-Separately, `normalizeRemote` does not strip the `user:token@` userinfo, so the same repo
+Separately, `NormalizeRemote` does not strip the `user:token@` userinfo, so the same repo
 installed once with and once without credentials reads as two Sources:
 
 ```
-normalizeRemote("https://user:tok3N@github.com/o/r") = "user:tok3n@github.com/o/r"
-normalizeRemote("https://github.com/o/r")            = "github.com/o/r"
+NormalizeRemote("https://user:tok3N@github.com/o/r") = "user:tok3n@github.com/o/r"
+NormalizeRemote("https://github.com/o/r")            = "github.com/o/r"
 ```
 
-**Fix sketch:** strip userinfo in `canonicalRemote` before the URL is ever recorded (git
+**Fix sketch:** strip userinfo in `CanonicalRemote` before the URL is ever recorded (git
 credentials belong in a credential helper or `~/.netrc`, not the registry), and strip it in
-`normalizeRemote` so the two spellings compare equal. Tightening `state.toml` to `0o600` is
+`NormalizeRemote` so the two spellings compare equal. Tightening `state.toml` to `0o600` is
 worth doing regardless of this entry. Note that stripping at record time is a behavior
 change for anyone relying on an embedded token to authenticate `update` — decide whether to
 migrate existing entries or just stop recording new ones.
 
 ### 2. `ssh://` with an explicit port folds the port into the repo path
 
-`normalizeRemote` replaces the first `:` with `/` to fold the scp-like form, which also
+`NormalizeRemote` replaces the first `:` with `/` to fold the scp-like form, which also
 rewrites a port separator:
 
 ```
-normalizeRemote("ssh://git@host.example.com:22/o/r.git") = "host.example.com/22/o/r"
-normalizeRemote("ssh://git@host.example.com/o/r.git")    = "host.example.com/o/r"
+NormalizeRemote("ssh://git@host.example.com:22/o/r.git") = "host.example.com/22/o/r"
+NormalizeRemote("ssh://git@host.example.com/o/r.git")    = "host.example.com/o/r"
 ```
 
 Same repo, two Sources — the port is not part of a repo's identity, and `:22` is the
@@ -81,8 +85,8 @@ port. Keep the plain scp path working — `git@host:o/r.git` is the common spell
 The fold is gated on a literal `git@` prefix, so any other SSH user misses it:
 
 ```
-normalizeRemote("me@host.example.com:o/r.git")       = "me@host.example.com:o/r"
-normalizeRemote("ssh://me@host.example.com/o/r.git") = "me@host.example.com/o/r"
+NormalizeRemote("me@host.example.com:o/r.git")       = "me@host.example.com:o/r"
+NormalizeRemote("ssh://me@host.example.com/o/r.git") = "me@host.example.com/o/r"
 ```
 
 Same repo, two Sources. `git@` covers GitHub/GitLab/Bitbucket, so this only bites
@@ -97,5 +101,5 @@ entry 1's problem and wants stripping, not folding.
 ## Related
 
 - The host-aware path case-folding rule these three sit alongside is documented at
-  `pathCaseInsensitiveHosts` (`cmd/import.go`); adding a host there is the intended
+  `pathCaseInsensitiveHosts` (`internal/core/source.go`); adding a host there is the intended
   extension point when a provider is confirmed case-insensitive.

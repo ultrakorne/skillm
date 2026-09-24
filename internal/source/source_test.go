@@ -471,3 +471,56 @@ func TestDiscoverSkills_NotADir(t *testing.T) {
 		t.Fatal("expected error for missing rootDir")
 	}
 }
+
+// TestDiscoverSkills_SymlinkedRoot: a root that is a symlink to a directory is
+// walked whether or not it carries a trailing separator (the form shell
+// tab-completion gives), and the recorded Dir is clean either way.
+func TestDiscoverSkills_SymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	writeSkill(t, filepath.Join(real, "alpha"), "alpha")
+	writeSkill(t, filepath.Join(real, "beta"), "beta")
+	link := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, root := range []string{link, link + string(filepath.Separator)} {
+		found, err := DiscoverSkills(root)
+		if err != nil {
+			t.Fatalf("DiscoverSkills(%q): %v", root, err)
+		}
+		if got := ids(found); len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
+			t.Fatalf("DiscoverSkills(%q) = %v, want [alpha beta]", root, got)
+		}
+		if want := filepath.Join(link, "alpha"); found[0].Dir != want {
+			t.Errorf("DiscoverSkills(%q): Dir = %q, want %q", root, found[0].Dir, want)
+		}
+	}
+
+	// A symlinked root that is itself the skill.
+	skillLink := filepath.Join(t.TempDir(), "alpha")
+	if err := os.Symlink(filepath.Join(real, "alpha"), skillLink); err != nil {
+		t.Fatal(err)
+	}
+	found, err := DiscoverSkills(skillLink + string(filepath.Separator))
+	if err != nil || len(found) != 1 || found[0].Dir != skillLink || found[0].Id != "alpha" {
+		t.Fatalf("root skill through a symlink: found=%+v err=%v", found, err)
+	}
+}
+
+func TestIsPathRemote(t *testing.T) {
+	for arg, want := range map[string]bool{
+		"./catalog.git":                      true,
+		"../x/catalog.git":                   true,
+		"catalog.git":                        true,
+		"/abs/catalog.git":                   true,
+		"https://github.com/acme/skills.git": false,
+		"file:///srv/catalog.git":            false,
+		"git@github.com:acme/skills.git":     false,
+		"github.com:acme/skills.git":         false,
+		"ssh://git@example.com/acme/x.git":   false,
+	} {
+		if got := IsPathRemote(arg); got != want {
+			t.Errorf("IsPathRemote(%q) = %v, want %v", arg, got, want)
+		}
+	}
+}

@@ -24,6 +24,17 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # The macOS app's own tags (mac-v*, macos-appcast) sit between CLI
+      # releases: goreleaser would take the nearest tag of any name as the
+      # previous release and cut the changelog short. Name both tags.
+      - name: Find the previous CLI release
+        run: |
+          echo "GORELEASER_CURRENT_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          if [ -n "$previous" ]; then
+            echo "GORELEASER_PREVIOUS_TAG=${previous}" >> "$GITHUB_ENV"
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

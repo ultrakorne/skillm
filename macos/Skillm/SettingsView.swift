@@ -1,0 +1,210 @@
+import AppKit
+import SkillmKit
+import SwiftUI
+
+/// The Settings window: Start at login, auto refresh and its interval, the
+/// enabled agents and the command-line tool the app drives.
+struct SettingsView: View {
+    @Bindable var settings: SettingsModel
+
+    private var app: AppModel { settings.app }
+
+    var body: some View {
+        Form {
+            generalSection
+            refreshSection
+            agentsSection
+            toolSection
+            if let message = settings.message {
+                Section { NoticeText(notice: message) }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 480, height: 620)
+        // Read again every time Settings opens (the menu activates the app
+        // first), once the CLI is ready (a window macOS restores at launch
+        // opens before), and whenever the app comes back to the front: the
+        // user may have changed the login item in System Settings, or the
+        // config in a terminal, meanwhile.
+        .task(id: app.isReady) { await settings.load() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await settings.load() }
+        }
+        // A sheet, not a confirmation dialog: it stays open while another
+        // command runs, and closes once the disable has started.
+        .sheet(
+            isPresented: Binding(
+                get: { settings.pendingDisable != nil },
+                set: { if !$0 { settings.pendingDisable = nil } })
+        ) {
+            DisableAgentSheet(name: settings.pendingDisable ?? "", busy: app.isBusy) {
+                settings.confirmDisable()
+            } cancel: {
+                settings.pendingDisable = nil
+            }
+        }
+    }
+
+    // MARK: - General
+
+    private var generalSection: some View {
+        Section("General") {
+            Toggle(
+                "Start at login",
+                isOn: Binding(
+                    get: { settings.loginItemState != .disabled },
+                    set: { settings.setStartAtLogin($0) }))
+            if settings.loginItemState == .requiresApproval {
+                HStack {
+                    Label("Allow skillm in Login Items to start it at login.", systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                    Spacer()
+                    Button("Open Login Items") { settings.openLoginItemsSettings() }
+                }
+            }
+        }
+    }
+
+    // MARK: - Refresh
+
+    private var refreshSection: some View {
+        Section {
+            Toggle(
+                "Auto check skill updates",
+                isOn: Binding(
+                    get: { app.settings?.enabled ?? false },
+                    set: { settings.setAutoRefresh($0) })
+            )
+            .disabled(app.isBusy || app.settings == nil)
+            Picker(
+                "Check every",
+                selection: Binding(
+                    get: { app.settings?.intervalHours ?? 24 },
+                    set: { settings.setInterval(hours: $0) })
+            ) {
+                ForEach(intervalChoices, id: \.self) { hours in
+                    Text(Self.intervalText(hours)).tag(hours)
+                }
+            }
+            .disabled(app.isBusy || app.settings?.enabled != true)
+        } header: {
+            Text("Updates")
+        } footer: {
+            if let error = settings.loadError {
+                NoticeText(notice: .init(text: error, isError: true))
+            }
+        }
+    }
+
+    /// The offered intervals, plus the configured one if it is not among
+    /// them (set with `skillm config set`).
+    private var intervalChoices: [Int] {
+        var choices = SettingsModel.intervalChoices
+        if let current = app.settings?.intervalHours, !choices.contains(current) {
+            choices.append(current)
+            choices.sort()
+        }
+        return choices
+    }
+
+    static func intervalText(_ hours: Int) -> String {
+        switch hours {
+        case 1: "hour"
+        case 24: "day"
+        case 168: "week"
+        case let h where h % 24 == 0: "\(h / 24) days"
+        default: "\(hours) hours"
+        }
+    }
+
+    // MARK: - Agents
+
+    private var agentsSection: some View {
+        Section {
+            ForEach(settings.agents) { agent in
+                Toggle(
+                    isOn: Binding(
+                        get: { agent.enabled },
+                        set: { settings.setAgent(agent.name, enabled: $0) })
+                ) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(agent.name)
+                        Text(folders(agent)).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(app.isBusy || settings.isLastEnabled(agent))
+            }
+        } header: {
+            Text("Agents")
+        } footer: {
+            Text("Installed skills are linked into every enabled agent's folders. Add agents in ~/.skillm/config.toml.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func folders(_ agent: Agent) -> String {
+        [agent.global, agent.local].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    // MARK: - Command-line tool
+
+    private var toolSection: some View {
+        Section {
+            HStack {
+                if settings.isInstallingTool {
+                    Text("Installing…")
+                } else if let path = settings.commandLineTool {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(settings.commandLineToolVersion.map { "skillm \($0)" } ?? "skillm")
+                        Text(SkillsModel.abbreviate(path.path)).font(.callout).foregroundStyle(.secondary)
+                    }
+                } else if app.cli == .starting {
+                    Text("Looking for skillm…")
+                } else {
+                    Text("Not installed")
+                }
+                Spacer()
+                if settings.commandLineTool == nil, app.cli == .missing || settings.isInstallingTool {
+                    Button("Install") { settings.installCommandLineTool() }
+                        .disabled(settings.isInstallingTool)
+                }
+            }
+            if let problem = app.cliProblem {
+                NoticeText(notice: .init(text: problem, isError: true))
+            }
+        } header: {
+            Text("Command-line tool")
+        }
+    }
+}
+
+/// Disabling an agent removes its links: asked first.
+struct DisableAgentSheet: View {
+    let name: String
+    /// Another command is running: Disable waits for it.
+    let busy: Bool
+    let confirm: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Disable \(name)?").font(.headline)
+            Text("Its links to your skills are removed everywhere. The skills stay installed for the other agents.")
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                if busy {
+                    Text("Waiting for the running command…").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel", role: .cancel, action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Disable", role: .destructive, action: confirm)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(busy)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+}

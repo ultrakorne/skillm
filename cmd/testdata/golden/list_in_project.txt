@@ -1,0 +1,8 @@
+--- stdout
+ID	Source	Installed	Kind
+alpha	file://$REPO//alpha	global: agents,claude; local: agents,claude	git
+beta	file://$REPO//beta	global: agents,claude	git
+gamma	file://$REPO//gamma	global: agents,claude; local: agents,claude	git
+delta	file://$REPO2//delta	global: agents,claude	git
+omega	$LOCALSRC/omega	global: agents,claude	local
+--- stderr

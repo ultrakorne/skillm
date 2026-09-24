@@ -1,0 +1,125 @@
+# XcodeGen spec for the skillm menu bar app. The generated Skillm.xcodeproj
+# is not checked in: run `xcodegen generate` in this directory.
+name: Skillm
+
+options:
+  bundleIdPrefix: games.starberry
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  # The app's updater (C4): it replaces the app bundle. The app carries no
+  # CLI; it drives the one the user installed, which upgrades itself. Pinned,
+  # since the generated project (and its Package.resolved) is not checked in.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
+
+settings:
+  base:
+    # Starberry Games GmbH; the app is signed with this team so it can be
+    # given to colleagues' Macs. A release is signed with the team's
+    # Developer ID and notarized by scripts/release.sh, which reads the team
+    # from here.
+    DEVELOPMENT_TEAM: 6LH2JMGD3J
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    # The app's own version, independent of the CLI's: a release
+    # (scripts/release.sh mac-vX.Y.Z) sets it.
+    MARKETING_VERSION: 0.0.0
+    # CFBundleVersion is what Sparkle compares with the appcast's
+    # sparkle:version (which generate_appcast copies from the released
+    # app's CFBundleVersion), so it follows the release's MARKETING_VERSION:
+    # a release that sets only MARKETING_VERSION is still newer than the
+    # last one.
+    CURRENT_PROJECT_VERSION: $(MARKETING_VERSION)
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  Skillm:
+    type: application
+    platform: macOS
+    sources:
+      - Skillm
+      # "Install skillm CLI" runs skillm's own install script (the latest
+      # release) when no CLI is installed.
+      - path: ../install.sh
+        buildPhase: resources
+    dependencies:
+      # Static: linked into the executable, never embedded (an embedded copy
+      # is dead weight the release would have to sign).
+      - target: SkillmKit
+        embed: false
+      - package: Sparkle
+    settings:
+      base:
+        PRODUCT_NAME: skillm
+        PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: skillm
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        # A menu bar app: no Dock icon, no main window.
+        INFOPLIST_KEY_LSUIElement: YES
+        # Hardened runtime, and no App Sandbox: skillm writes ~/.claude,
+        # project folders and ~/.skillm, and spawns git.
+        ENABLE_HARDENED_RUNTIME: YES
+        # Sparkle's keys (SUFeedURL, SUPublicEDKey) come from these two
+        # settings through Skillm/Info.plist, which is merged into the
+        # generated one. The appcast lives on a fixed release tagged
+        # macos-appcast (never "latest", which is the CLI's), replaced by
+        # scripts/publish-release.sh; its items point at the mac-vX.Y.Z
+        # releases. The public key is the one `generate_keys --account
+        # skillm` printed (its private key is in the release machine's
+        # keychain).
+        INFOPLIST_FILE: Skillm/Info.plist
+        SKILLM_UPDATE_FEED_URL: https://github.com/ultrakorne/skillm/releases/download/macos-appcast/appcast.xml
+        SKILLM_UPDATE_PUBLIC_KEY: uTHz68XFQQC6eZzgApyAH2h81t9nSgMxWLms3hxI4BE=
+      configs:
+        # A debug build never updates itself: that would replace the
+        # developer's build with the latest release. To try Sparkle, pass
+        # xcodebuild SKILLM_UPDATE_FEED_URL=<appcast url> and
+        # MARKETING_VERSION=<an older app release> (the appcast's version
+        # must be newer). A debug build also honours $SKILLM_BIN, to drive a
+        # CLI built from this checkout (go build).
+        Debug:
+          SKILLM_UPDATE_FEED_URL: ""
+
+  SkillmKit:
+    type: framework.static
+    platform: macOS
+    sources: [SkillmKit]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm.SkillmKit
+        GENERATE_INFOPLIST_FILE: YES
+
+  SkillmKitTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [SkillmKitTests]
+    dependencies:
+      - target: SkillmKit
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm.SkillmKitTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Skillm:
+    build:
+      targets:
+        Skillm: all
+        SkillmKitTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - SkillmKitTests
+    archive:
+      config: Release

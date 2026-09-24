@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "data": null,
+  "warnings": [
+    {
+      "code": "agent_skipped",
+      "message": "skipped opencode: no global location"
+    }
+  ],
+  "error": {
+    "code": "foreign_files",
+    "message": "refusing to overwrite files skillm did not create: /Users/me/.agents/skills/beta",
+    "paths": [
+      "/Users/me/.agents/skills/beta"
+    ],
+    "retryable": false
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "data": {
+    "enabled": [
+      "agents",
+      "opencode"
+    ],
+    "changes": [
+      {
+        "name": "opencode",
+        "enabled": true,
+        "skills": [
+          "grill-with-docs",
+          "notes"
+        ],
+        "places": [
+          "global",
+          "local: /Users/me/src/app"
+        ],
+        "warnings": [
+          "opencode: /Users/me/.config/opencode/skill/notes is not a skillm link; skipped"
+        ]
+      },
+      {
+        "name": "claude",
+        "enabled": false,
+        "skills": [
+          "grill-with-docs"
+        ],
+        "places": [
+          "global"
+        ],
+        "warnings": []
+      }
+    ]
+  },
+  "warnings": [
+    {
+      "code": "link_skipped",
+      "message": "opencode: /Users/me/.config/opencode/skill/notes is not a skillm link; skipped"
+    }
+  ],
+  "error": null
+}

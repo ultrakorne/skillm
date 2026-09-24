@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "data": {
+    "agents": [
+      {
+        "name": "agents",
+        "enabled": true,
+        "global": "~/.agents/skills",
+        "local": ".agents/skills"
+      },
+      {
+        "name": "claude",
+        "enabled": true,
+        "global": "~/.claude/skills",
+        "local": ".claude/skills"
+      },
+      {
+        "name": "opencode",
+        "enabled": false,
+        "global": "~/.config/opencode/skill"
+      }
+    ]
+  },
+  "warnings": [],
+  "error": null
+}

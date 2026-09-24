@@ -1,0 +1,7 @@
+{"schema_version":1,"type":"event","event":"batch","items":["alpha","beta"]}
+{"schema_version":1,"type":"event","event":"item_start","index":0,"skill_id":"alpha"}
+{"schema_version":1,"type":"event","event":"item_start","index":1,"skill_id":"beta"}
+{"schema_version":1,"type":"event","event":"item_done","level":"warn","index":1,"skill_id":"beta","code":"update_available","text":"beta: update available (https://github.com/acme/skills//beta)"}
+{"schema_version":1,"type":"event","event":"item_done","level":"success","index":0,"skill_id":"alpha","code":"up_to_date","text":"alpha: up-to-date"}
+{"schema_version":1,"type":"event","event":"progress","done":2,"total":2}
+{"schema_version":1,"type":"result","data":{"skills":[{"id":"alpha","kind":"git","status":"up_to_date","installed_rev":"aaa1","upstream_rev":"aaa1"},{"id":"beta","kind":"git","status":"update_available","installed_rev":"bbb1","upstream_rev":"bbb2"}],"updates":1},"warnings":[],"error":null}

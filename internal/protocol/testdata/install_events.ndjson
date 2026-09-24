@@ -1,0 +1,5 @@
+{"schema_version":1,"type":"event","event":"batch","items":["alpha"]}
+{"schema_version":1,"type":"event","event":"item_start","index":0,"skill_id":"alpha"}
+{"schema_version":1,"type":"event","event":"log","level":"success","skill_id":"alpha","code":"installed","text":"installed alpha in ~/.agents/skills (global)"}
+{"schema_version":1,"type":"event","event":"item_done","level":"success","index":0,"skill_id":"alpha","code":"installed","text":"installed alpha in ~/.agents/skills (global)"}
+{"schema_version":1,"type":"result","data":{"scope":"global","skills":[{"id":"alpha","action":"installed"}]},"warnings":[],"error":null}

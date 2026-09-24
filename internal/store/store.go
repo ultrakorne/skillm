@@ -6,13 +6,15 @@
 //
 //	<home>/
 //	├── config.toml
-//	└── state.toml
+//	├── state.toml
+//	└── .lock        (see Lock)
 //
-// Home holds only skillm's config and registry; a skill's files live solely in
-// its canonical install stores (~/.agents/skills at Global scope,
-// <project>/.agents/skills at Local scope). There is no longer a Home skills/
-// library — the installs are the only copies. Reading/writing config.toml and
-// state.toml belongs to the config and state packages respectively.
+// Home holds only skillm's config, registry, and lock file; a skill's files
+// live solely in its canonical install stores (~/.agents/skills at Global
+// scope, <project>/.agents/skills at Local scope). There is no longer a Home
+// skills/ library — the installs are the only copies. Reading/writing
+// config.toml and state.toml belongs to the config and state packages
+// respectively; both write through WriteFileAtomic.
 package store
 
 import (
@@ -22,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // dirName is the conventional Home directory name under the user's home.
@@ -50,8 +53,8 @@ func Home(override string) (string, error) {
 }
 
 // EnsureHome creates the Home directory if it does not already exist. Home holds
-// only config.toml and state.toml, so this is just a MkdirAll of the home dir
-// itself. It is idempotent.
+// only config.toml, state.toml, .lock and the refresh cache status.json, so
+// this is just a MkdirAll of the home dir itself. It is idempotent.
 func EnsureHome(home string) error {
 	if home == "" {
 		return errors.New("home directory path is empty")
@@ -80,37 +83,73 @@ func CopyDir(srcDir, dstDir string) error {
 }
 
 // ReplaceDir replaces dstDir with a fresh copy of srcDir. It copies srcDir into
-// a temporary sibling first, then removes any existing dstDir and renames the
-// staging copy into place. This is not atomic — between the remove and the
-// rename there is a brief window where dstDir does not exist — but it does
-// guarantee the destination is never left half-written: the copy is fully
-// staged before the old dstDir is touched, so a failure mid-copy leaves the
-// existing dstDir intact. The parent of dstDir is created if missing. This is
+// a uniquely named, hidden staging sibling first (so concurrent runs never
+// share one, and an agent scanning the skill folder never sees it as a skill),
+// then removes any existing dstDir and renames the staged copy into place. This
+// is not atomic — between the remove and the rename there is a brief window
+// where dstDir does not exist — but it does guarantee the destination is never
+// left half-written: the copy is fully staged before the old dstDir is touched,
+// so a failure mid-copy leaves the existing dstDir intact. Staging dirs left by
+// a killed run are swept first; callers hold Home's lock (see Lock), so no
+// other run is using them. The parent of dstDir is created if missing. This is
 // how a Vendored copy is written and refreshed.
 func ReplaceDir(srcDir, dstDir string) error {
-	if _, err := os.Stat(srcDir); err != nil {
+	info, err := os.Stat(srcDir)
+	if err != nil {
 		return fmt.Errorf("read source directory %s: %w", srcDir, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(dstDir), 0o755); err != nil {
+	if !info.IsDir() {
+		return fmt.Errorf("source path %s is not a directory", srcDir)
+	}
+	parent := filepath.Dir(dstDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("create parent of %s: %w", dstDir, err)
 	}
+	sweepStages(dstDir)
 
-	stage := dstDir + ".skillm-tmp"
-	_ = os.RemoveAll(stage)
+	// The copy goes one level inside the unique holder dir, so copyTree creates
+	// its root with the source's mode filtered by the umask, like every other
+	// directory in the copy (MkdirTemp would force 0700).
+	holder, err := os.MkdirTemp(parent, stagePrefix(dstDir))
+	if err != nil {
+		return fmt.Errorf("create staging dir for %s: %w", dstDir, err)
+	}
+	defer os.RemoveAll(holder)
+	stage := filepath.Join(holder, filepath.Base(dstDir))
 	if err := CopyDir(srcDir, stage); err != nil {
-		_ = os.RemoveAll(stage)
 		return fmt.Errorf("stage copy of %s: %w", srcDir, err)
 	}
 
 	if err := os.RemoveAll(dstDir); err != nil {
-		_ = os.RemoveAll(stage)
 		return fmt.Errorf("clear destination %s: %w", dstDir, err)
 	}
 	if err := os.Rename(stage, dstDir); err != nil {
-		_ = os.RemoveAll(stage)
 		return fmt.Errorf("install copy into %s: %w", dstDir, err)
 	}
 	return nil
+}
+
+// stagePrefix is the name prefix of ReplaceDir's staging dirs for dstDir.
+func stagePrefix(dstDir string) string {
+	return "." + filepath.Base(dstDir) + ".skillm-tmp-"
+}
+
+// sweepStages removes staging dirs a killed ReplaceDir left next to dstDir,
+// including the fixed "<dst>.skillm-tmp" name older versions used.
+// Best-effort: a leftover it cannot remove does not block the copy.
+func sweepStages(dstDir string) {
+	_ = os.RemoveAll(dstDir + ".skillm-tmp")
+	parent := filepath.Dir(dstDir)
+	ents, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	prefix := stagePrefix(dstDir)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), prefix) {
+			_ = os.RemoveAll(filepath.Join(parent, e.Name()))
+		}
+	}
 }
 
 // DirContentEqual reports whether the directory trees at a and b have identical

@@ -5,13 +5,15 @@
 // Home is created (see EnsureExists); when the file is absent, callers get
 // those same defaults rather than an error, so "what is written" equals "what
 // you fall back to". skillm otherwise avoids rewriting the file — only
-// `skillm agent` does, to toggle the per-agent enabled flags.
+// `skillm agent` (the per-agent enabled flags) and `skillm config set` (the
+// settings in settings.go) do, and each rewrites the whole file.
 package config
 
 import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +21,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/store"
 )
 
 // FileName is the base name of the config file within Home.
@@ -52,13 +55,18 @@ type Config struct {
 	// Agents is the set of defined agents keyed by name (the [agents.<name>]
 	// tables in config.toml).
 	Agents map[string]AgentDef `toml:"agents"`
+	// Refresh is the [refresh] table: the GUIs' scheduled update check. Nil
+	// (or a missing key) means the default (see RefreshEnabled and
+	// RefreshIntervalHours).
+	Refresh *Refresh `toml:"refresh,omitempty"`
 }
 
 // boolPtr returns a pointer to b, for setting AgentDef.Enabled.
 func boolPtr(b bool) *bool { return &b }
 
 // Default returns a freshly allocated Config holding skillm's built-in
-// defaults, both enabled: "claude", which reads its own ~/.claude/skills
+// defaults: two agents, both enabled, and the default [refresh] settings.
+// The agents are "claude", which reads its own ~/.claude/skills
 // folders, and "agents", which points at the cross-agent .agents/skills
 // convention read by Codex, Cursor, Amp, Gemini CLI and others (Codex does
 // not read .codex/skills). That entry is named for the folder rather than any
@@ -70,6 +78,10 @@ func Default() *Config {
 		Agents: map[string]AgentDef{
 			"claude": {Enabled: boolPtr(true), Global: "~/.claude/skills", Local: ".claude/skills"},
 			"agents": {Enabled: boolPtr(true), Global: "~/.agents/skills", Local: ".agents/skills"},
+		},
+		Refresh: &Refresh{
+			Enabled:       boolPtr(DefaultRefreshEnabled),
+			IntervalHours: intPtr(DefaultRefreshIntervalHours),
 		},
 	}
 }
@@ -96,17 +108,49 @@ func Load(homeDir string) (*Config, error) {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
 
-	var c Config
-	if err := toml.Unmarshal(data, &c); err != nil {
+	var f fileConfig
+	if err := toml.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	return &c, nil
+	return &Config{Agents: f.Agents, Refresh: decodeRefresh(f.Refresh)}, nil
+}
+
+// fileConfig is the shape Load decodes: Config, except that the [refresh]
+// table is read loosely (see decodeRefresh), so a hand edit that gives a
+// setting the wrong type cannot make every command fail, including the
+// `skillm config set` that would repair it.
+type fileConfig struct {
+	Agents  map[string]AgentDef `toml:"agents"`
+	Refresh any                 `toml:"refresh"`
+}
+
+// decodeRefresh builds the [refresh] table from its loosely decoded form. A
+// key holding a value of the wrong type (interval_hours = "12" or 1.5,
+// enabled = "yes") counts as absent and so reads as its default; the next
+// Save writes the typed value back. A missing or non-table [refresh] is nil.
+func decodeRefresh(v any) *Refresh {
+	t, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	r := &Refresh{}
+	if b, ok := t["enabled"].(bool); ok {
+		r.Enabled = boolPtr(b)
+	}
+	if h, ok := t["interval_hours"].(int64); ok {
+		// Out-of-int-range values fall back to the default like any other
+		// out-of-bounds hand edit (see RefreshIntervalHours).
+		if h >= math.MinInt32 && h <= math.MaxInt32 {
+			r.IntervalHours = intPtr(int(h))
+		}
+	}
+	return r
 }
 
 // Save writes c to the config file in homeDir, creating homeDir if necessary.
 // It writes the whole file (overwriting any existing one and dropping any
 // hand-written comments), so callers should only invoke it in response to an
-// explicit user action such as `skillm agent`.
+// explicit user action such as `skillm agent` or `skillm config set`.
 func Save(homeDir string, c *Config) error {
 	if c == nil {
 		return errors.New("config: cannot save nil config")
@@ -122,7 +166,7 @@ func Save(homeDir string, c *Config) error {
 	}
 
 	path := Path(homeDir)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := store.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
 	}
 	return nil

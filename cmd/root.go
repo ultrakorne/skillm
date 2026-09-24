@@ -10,6 +10,8 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ultrakorne/skillm/internal/protocol"
 )
 
 // version is the build version, overridable at link time:
@@ -24,7 +26,7 @@ var version = "dev"
 // a user might be trying to fix their install.
 const annotationSkipGitCheck = "skillm:skip-git-check"
 
-// Version returns the build version (used by main.go to configure fang).
+// Version returns the build version.
 func Version() string { return version }
 
 // Global persistent flags, bound on the root command and readable by every
@@ -44,7 +46,7 @@ var (
 var rootCmd = newRootCmd()
 
 // Root returns the fully assembled root command (with every subcommand that has
-// registered itself via init). main.go hands this to fang.Execute.
+// registered itself via init). Execute runs it through fang.
 func Root() *cobra.Command { return rootCmd }
 
 func newRootCmd() *cobra.Command {
@@ -62,6 +64,13 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		// Verify the runtime prerequisites before any command runs.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			flagsParsed = true
+			if err := checkJSONFlags(cmd); err != nil {
+				return err
+			}
+			if flagJSON {
+				quietGit()
+			}
 			if cmd.Annotations[annotationSkipGitCheck] == "true" {
 				return nil
 			}
@@ -73,6 +82,8 @@ func newRootCmd() *cobra.Command {
 	pf.BoolVar(&flagForce, "force", false, "skip confirmations and safety refusals")
 	pf.BoolVar(&flagYes, "yes", false, "assume yes to confirmation prompts")
 	pf.StringVar(&flagHome, "home", "", "override the Home directory (default ~/.skillm)")
+	pf.BoolVar(&flagJSON, "json", false, "write machine-readable JSON to stdout (never prompts)")
+	pf.BoolVar(&flagEvents, "events", false, "with --json, stream progress events as NDJSON before the result")
 
 	return c
 }
@@ -82,7 +93,10 @@ func newRootCmd() *cobra.Command {
 func checkGit() error {
 	if _, err := exec.LookPath("git"); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return errors.New("git was not found on your PATH; skillm requires the system git binary — install git and try again")
+			return &protocol.Error{
+				Code:    protocol.CodeGitMissing,
+				Message: "git was not found on your PATH; skillm requires the system git binary — install git and try again",
+			}
 		}
 		return fmt.Errorf("could not locate the git binary: %w", err)
 	}

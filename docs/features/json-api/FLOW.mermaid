@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant G as GUI
+    participant S as skillm (check --json --events)
+    participant R as Git remotes
+
+    G->>S: spawn, read stdout line by line
+    opt at least one skill installed
+        S-->>G: event "batch" (items = every skill id; item i is items[i])
+        par one per skill, concurrently
+            S-->>G: event "item_start" (index, skill_id)
+            opt git skill
+                S->>R: read upstream Revision (no prompts)
+                R-->>S: tree SHA, or failure
+            end
+            S-->>G: event "item_done" (index, level, code = status, text)
+        end
+    end
+    alt finished
+        S-->>G: "result" line: data {skills, updates}, error null, exit 0
+    else cancelled (unresolved items get no item_done) or failed
+        S-->>G: "result" line: data null, error {code, retryable}, exit non-zero
+    end

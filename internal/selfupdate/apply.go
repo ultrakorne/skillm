@@ -28,10 +28,16 @@ import (
 // path the user typed: a symlinked install (e.g. a package manager's
 // /usr/local/bin/skillm -> ../Cellar/…) is resolved to its real target, so the
 // report names the file that actually changed.
+//
+// A binary inside a macOS app bundle is never replaced: Apply returns
+// ErrBundled before downloading anything (see InBundle).
 func Apply(ctx context.Context, rel *Release, version string) (string, error) {
 	target, err := resolveExecutable()
 	if err != nil {
 		return "", fmt.Errorf("locate the running skillm binary: %w", err)
+	}
+	if InBundle(target) {
+		return "", ErrBundled
 	}
 
 	tmp, err := os.MkdirTemp("", "skillm-upgrade-")

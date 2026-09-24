@@ -17,7 +17,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// waitDelay bounds how long runGit waits for git's output pipes to close
+// once git itself has exited or been killed on cancellation. A killed
+// `git clone` over HTTP(S) leaves its remote helper (git-remote-http) running
+// with the inherited stderr, and without a bound Wait would block on that
+// pipe for as long as the server stalls.
+const waitDelay = 2 * time.Second
 
 // runGit invokes `git <args...>` with dir as the working directory (dir may be
 // empty to use the process cwd) and returns trimmed stdout. On failure it
@@ -30,7 +38,14 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	cmd.WaitDelay = waitDelay
+	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
+		// git exited successfully and only a lingering helper still held the
+		// pipes open: the command itself succeeded.
+		err = nil
+	}
+	if err != nil {
 		// Prefer the context error so callers can detect cancellation.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), ctxErr)
@@ -155,7 +170,23 @@ func DefaultRef(ctx context.Context, repoDir string) (string, error) {
 		}
 	}
 
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		// Cancelled, not undeterminable: wrap ctx's error so callers can tell.
+		return "", fmt.Errorf("gitx: default branch of %s: %w", repoDir, ctxErr)
+	}
 	return "", fmt.Errorf("gitx: could not determine default branch for %s", repoDir)
+}
+
+// HeadCommit returns the full SHA of the commit checked out in repoDir.
+func HeadCommit(ctx context.Context, repoDir string) (string, error) {
+	if repoDir == "" {
+		return "", errors.New("gitx: repoDir is empty")
+	}
+	out, err := runGit(ctx, repoDir, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("gitx: resolve HEAD commit: %w", err)
+	}
+	return out, nil
 }
 
 // SubtreeSHA returns the git tree object SHA of subpath within the repository
@@ -190,7 +221,7 @@ func SubtreeSHA(ctx context.Context, repoDir, ref, subpath string) (string, erro
 		return "", fmt.Errorf("gitx: ls-tree %q at %q: %w", clean, ref, err)
 	}
 	if out == "" {
-		return "", fmt.Errorf("gitx: %q not found at %q", clean, ref)
+		return "", &NotFoundError{Path: clean, Ref: ref}
 	}
 
 	// Each NUL-terminated record is: "<mode> <type> <object>\t<path>".
@@ -213,7 +244,17 @@ func SubtreeSHA(ctx context.Context, repoDir, ref, subpath string) (string, erro
 		return objID, nil
 	}
 
-	return "", fmt.Errorf("gitx: %q not found at %q", clean, ref)
+	return "", &NotFoundError{Path: clean, Ref: ref}
+}
+
+// NotFoundError is SubtreeSHA's error when ref holds nothing at the subpath:
+// the repository was read, and the skill's directory is not in it.
+type NotFoundError struct {
+	Path, Ref string
+}
+
+func (e *NotFoundError) Error() string {
+	return fmt.Sprintf("gitx: %q not found at %q", e.Path, e.Ref)
 }
 
 // MaterializeSubdir extracts the files under subpath (resolved at the currently

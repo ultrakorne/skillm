@@ -59,6 +59,13 @@ func (k Kind) String() string {
 // relative path, so an existing local directory of that name keeps winning, as
 // it did before shorthands were understood.
 func Classify(arg string) (Kind, error) {
+	return ClassifyAt(arg, "")
+}
+
+// ClassifyAt is Classify with a relative local path looked up under dir
+// instead of the process's working directory. An empty dir, or an absolute
+// arg, behaves exactly like Classify.
+func ClassifyAt(arg, dir string) (Kind, error) {
 	trimmed := strings.TrimSpace(arg)
 	if trimmed == "" {
 		return 0, fmt.Errorf("empty source: provide a git URL, a GitHub owner/repo, or a local path")
@@ -68,7 +75,11 @@ func Classify(arg string) (Kind, error) {
 		return Git, nil
 	}
 
-	info, err := os.Stat(trimmed)
+	path := trimmed
+	if dir != "" && !filepath.IsAbs(path) {
+		path = JoinPath(dir, path)
+	}
+	info, err := os.Stat(path)
 	switch {
 	case err == nil && info.IsDir():
 		return Local, nil
@@ -83,6 +94,18 @@ func Classify(arg string) (Kind, error) {
 		return Git, nil
 	}
 	return 0, fmt.Errorf("source %q is neither a git URL (or GitHub owner/repo) nor an existing local directory", arg)
+}
+
+// JoinPath joins the relative path p onto base. On Windows a path rooted at a
+// separator but naming no volume (`\skills\foo`) is relative to the current
+// drive, not the current directory, so it is joined onto base's volume
+// instead — where filepath.Abs would put it. Elsewhere such a path is already
+// absolute and callers never pass it.
+func JoinPath(base, p string) string {
+	if p != "" && os.IsPathSeparator(p[0]) && filepath.VolumeName(p) == "" {
+		return filepath.Join(filepath.VolumeName(base), p)
+	}
+	return filepath.Join(base, p)
 }
 
 // GitRemote returns the remote URL to clone for an arg Classify reported as Git:
@@ -170,6 +193,21 @@ func LooksLikeSource(arg string) bool {
 	return strings.ContainsAny(s, `/\`)
 }
 
+// LooksLikeGitRemote reports whether arg has the shape of a git remote (see
+// looksLikeGitRemote), without touching the filesystem.
+func LooksLikeGitRemote(arg string) bool {
+	return looksLikeGitRemote(strings.TrimSpace(arg))
+}
+
+// IsPathRemote reports whether a git remote is a filesystem path — git clones
+// it as a local repository — rather than a URL (a "scheme://" form) or an
+// scp-like "host:path" remote. A relative one is relative to the directory git
+// runs in, so a caller resolves it before handing it to git.
+func IsPathRemote(remote string) bool {
+	s := strings.TrimSpace(remote)
+	return !strings.Contains(s, "://") && !isScpLike(s)
+}
+
 // looksLikeGitRemote reports whether s has the shape of a git remote URL.
 //
 // Recognised forms:
@@ -242,7 +280,7 @@ type Found struct {
 	// Id is the skill's directory base name — its candidate Skill ID.
 	Id string
 	// Dir is the absolute-or-relative directory containing the skill's
-	// SKILL.md (as walked from the supplied rootDir).
+	// SKILL.md (as walked from the supplied rootDir), cleaned.
 	Dir string
 	// Skill is the parsed skill (via skill.Load).
 	Skill *skill.Skill
@@ -257,7 +295,9 @@ type Found struct {
 // rootDir itself counts: if rootDir/SKILL.md exists it is reported. Once a skill
 // directory is found, its subtree is not descended into — a skill is one
 // directory and nested SKILL.md files (e.g. supporting examples) are not treated
-// as separate skills. The ".git" directory is skipped.
+// as separate skills. The ".git" directory is skipped. A rootDir that is a
+// symlink to a directory is followed (with or without a trailing separator);
+// symlinks below it are not.
 //
 // Repos that ship one skill to many agents commit a copy per agent folder
 // (.claude/skills/x, .cursor/skills/x, plugin/skills/x, ...). Those copies share
@@ -272,15 +312,23 @@ func DiscoverSkills(rootDir string) ([]Found, error) {
 		return nil, fmt.Errorf("discover skills: %q is not a directory", rootDir)
 	}
 
+	// WalkDir reads its root with Lstat, so a symlinked root would count as a
+	// non-directory and never be walked. A trailing separator makes the OS
+	// resolve the link, as it does when a user tab-completes "link/".
+	walkRoot := rootDir
+	if li, err := os.Lstat(rootDir); err == nil && li.Mode()&fs.ModeSymlink != 0 {
+		walkRoot = rootDir + string(filepath.Separator)
+	}
+
 	var found []Found
-	walkErr := filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !d.IsDir() {
 			return nil
 		}
-		if d.Name() == ".git" && path != rootDir {
+		if d.Name() == ".git" && path != walkRoot {
 			return fs.SkipDir
 		}
 
@@ -290,11 +338,13 @@ func DiscoverSkills(rootDir string) ([]Found, error) {
 			return nil // no SKILL.md here; keep descending
 		}
 
-		sk, loadErr := skill.Load(path)
+		// The walk root keeps any trailing separator; record clean paths.
+		dir := filepath.Clean(path)
+		sk, loadErr := skill.Load(dir)
 		if loadErr != nil {
-			return fmt.Errorf("load skill in %q: %w", path, loadErr)
+			return fmt.Errorf("load skill in %q: %w", dir, loadErr)
 		}
-		found = append(found, Found{Id: sk.ID, Dir: path, Skill: sk})
+		found = append(found, Found{Id: sk.ID, Dir: dir, Skill: sk})
 
 		// One directory == one skill: do not recurse into a found skill dir.
 		return fs.SkipDir

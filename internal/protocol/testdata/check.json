@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "data": {
+    "skills": [
+      {
+        "id": "alpha",
+        "kind": "git",
+        "status": "up_to_date",
+        "installed_rev": "aaa1",
+        "upstream_rev": "aaa1"
+      },
+      {
+        "id": "beta",
+        "kind": "git",
+        "status": "update_available",
+        "installed_rev": "bbb1",
+        "upstream_rev": "bbb2"
+      },
+      {
+        "id": "gamma",
+        "kind": "git",
+        "status": "untracked",
+        "installed_rev": "ccc1",
+        "error": "gitx: \"gamma\" not found at \"main\""
+      },
+      {
+        "id": "delta",
+        "kind": "git",
+        "status": "error",
+        "installed_rev": "ddd1",
+        "error": "git clone failed: repository not found"
+      },
+      {
+        "id": "omega",
+        "kind": "local",
+        "status": "local"
+      }
+    ],
+    "updates": 1
+  },
+  "warnings": [],
+  "error": null
+}

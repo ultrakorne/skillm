@@ -436,3 +436,38 @@ func TestInstallAsRefRejectedInIDMode(t *testing.T) {
 		t.Fatalf("--ref in id mode should be rejected; err=%v out=%s", err, out)
 	}
 }
+
+// TestInstallProjectFlag: --project installs into the named project from any
+// working directory, a relative one resolved against the working directory;
+// --skip-foreign leaves a skill whose slot holds foreign files out, with a
+// warning, and installs the rest without asking.
+func TestInstallProjectFlag(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	_, url := initSkillRepo(t)
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
+	parent := t.TempDir()
+	project := filepath.Join(parent, "proj")
+	if err := os.MkdirAll(filepath.Join(project, ".agents", "skills", "beta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mine := filepath.Join(project, ".agents", "skills", "beta", "MINE.md")
+	if err := os.WriteFile(mine, []byte("mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := e.runIn(t, parent, "install", url, "alpha", "beta", "--project", "proj", "--skip-foreign")
+	if !strings.Contains(out, "installed alpha") || !strings.Contains(out, "skipped beta") {
+		t.Fatalf("install --project --skip-foreign output:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md")); err != nil {
+		t.Fatalf("alpha not installed in the project: %v", err)
+	}
+	if _, err := os.Stat(mine); err != nil {
+		t.Fatalf("the skipped skill's files must stay: %v", err)
+	}
+	if out, err := e.tryRun(t, "install", url, "alpha", "--project", filepath.Join(parent, "missing")); err == nil {
+		t.Fatalf("--project at a missing directory succeeded:\n%s", out)
+	}
+}

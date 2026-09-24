@@ -1,0 +1,87 @@
+package core
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// Typed errors core returns where the terminal front-end used to prompt. cmd
+// decides whether to ask the user and retry (with Options.Force or
+// Options.Yes set); a non-interactive caller reports them as they are.
+
+// ForeignFilesError means an operation would overwrite entries skillm did not
+// create. Nothing has been written when it is returned; retrying with
+// Options.Force overwrites them.
+type ForeignFilesError struct {
+	Paths []string
+}
+
+func (e *ForeignFilesError) Error() string {
+	return "refusing to overwrite files skillm did not create: " + strings.Join(e.Paths, ", ")
+}
+
+// ErrNeedsConfirm means an operation stopped before changing anything because
+// it needs the caller's (fresh) confirmation. The matching error's type says
+// what to confirm and how the retry carries the answer: for
+// *UninstallScopeChangedError, the new ConfirmedRoots.
+var ErrNeedsConfirm = errors.New("confirmation required")
+
+// ErrNeedsForce means an operation stopped at an entry skillm did not create
+// (a foreign file or symlink where it would remove or write). Unlike
+// ErrNeedsConfirm it may come after partial progress; the matching error's
+// type says what is already done. Options.Yes does not step past it: a retry
+// with Options.Force does, leaving the foreign entry in place.
+var ErrNeedsForce = errors.New("blocked by an entry skillm did not create")
+
+// SourceCollisionError means skill ID is already installed from a different
+// Source, so installing this one under the same id would replace an unrelated
+// skill. Installing it under another id (InstallRequest.As) resolves it.
+type SourceCollisionError struct {
+	ID string
+}
+
+func (e *SourceCollisionError) Error() string {
+	return fmt.Sprintf("skill %q is already installed from a different source", e.ID)
+}
+
+// ErrAsMultiple means an As override (which renames one skill) was given for a
+// selection of more than one skill.
+var ErrAsMultiple = errors.New("an id override renames a single skill but more than one skill was selected")
+
+// LocalScopeAliasedError means a Local install at Base would land in the
+// enabled agents' global skill folders (Base is the user's home directory), so
+// there is no real local scope there.
+type LocalScopeAliasedError struct {
+	Base string
+}
+
+func (e *LocalScopeAliasedError) Error() string {
+	return fmt.Sprintf("local scope resolves to the global skill folder here (%s)", e.Base)
+}
+
+// CommitMismatchError means an install asked for a specific commit
+// (InstallRequest.Commit) but the Inspection is pinned to another one: the
+// ref moved on between the caller's inspection and this one. Nothing has been
+// written; the caller re-inspects and asks again.
+type CommitMismatchError struct {
+	Want, Got string
+}
+
+func (e *CommitMismatchError) Error() string {
+	return fmt.Sprintf("the source is at commit %s, not the expected %s (it changed since it was inspected)", e.Got, e.Want)
+}
+
+// ProjectDirError means the project directory a command was pointed at is
+// missing or not a directory (Err says which), so a stale or mistyped path
+// is refused rather than treated as a project with nothing in it.
+type ProjectDirError struct {
+	Path string
+	Err  error
+}
+
+func (e *ProjectDirError) Error() string {
+	return fmt.Sprintf("project directory %s: %v", e.Path, e.Err)
+}
+
+func (e *ProjectDirError) Unwrap() error { return e.Err }
