@@ -13,8 +13,9 @@ that one command, after which the model re-reads the status and bumps `installsV
   read it. Per row: Reveal in Finder for each install, Update (that skill only), and Uninstall…,
   whose sheet names every copy it deletes, the committed copies in projects included.
 - **Add Skill** — a Source (a git URL, `owner/repo`, or a folder, typed or chosen) and an
-  optional branch or tag → Read Skills lists its skills to tick (a lone skill is ticked) → Every
-  project (Global) or One project (a folder panel) → Install, with progress and Stop.
+  optional branch or tag → Read Skills lists its skills to tick (a lone skill is ticked), with a
+  fuzzy filter over id, name and description → Continue opens a second page: the chosen skills,
+  Every project (Global) or One project (a folder panel), Back, and Install, with progress and Stop.
 - **Settings** — Start at login, Auto check skill updates (on by default) with its interval, one
   toggle per agent, and the command-line tool the app drives: its version and path, or Install.
 

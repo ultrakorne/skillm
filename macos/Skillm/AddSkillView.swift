@@ -3,7 +3,8 @@ import SkillmKit
 import SwiftUI
 
 /// The Add Skill window: a repository (or folder) and an optional ref →
-/// read its skills → choose some → Global or a project → install.
+/// read its skills → choose some → Continue → Global or a project →
+/// install.
 struct AddSkillView: View {
     @Bindable var add: AddSkillModel
 
@@ -13,10 +14,14 @@ struct AddSkillView: View {
         Form {
             // The form keeps what a running install was started with.
             Group {
-                sourceSection
-                if let inspection = add.inspection {
-                    skillsSection(inspection)
+                if add.step == .target, let inspection = add.inspection {
+                    chosenSection(inspection)
                     targetSection
+                } else {
+                    sourceSection
+                    if let inspection = add.inspection {
+                        skillsSection(inspection)
+                    }
                 }
             }
             .disabled(add.isInstalling)
@@ -52,7 +57,7 @@ struct AddSkillView: View {
     private var sourceSection: some View {
         Section {
             HStack {
-                TextField("Repository", text: $add.source, prompt: Text("https://github.com/owner/repo, owner/repo or a folder"))
+                TextField("Repository", text: $add.source, prompt: Text("GitHub link"))
                     .onSubmit { add.inspect() }
                 Button("Choose…") { chooseSourceFolder() }
                     .help("Use a skill folder on this Mac")
@@ -80,8 +85,26 @@ struct AddSkillView: View {
     // MARK: - Skills
 
     private func skillsSection(_ inspection: InspectData) -> some View {
-        Section {
-            ForEach(inspection.skills) { skill in
+        let shown = add.filteredSkills
+        return Section {
+            if inspection.skills.count > 1 {
+                HStack {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Filter", text: $add.filter, prompt: Text("Filter skills"))
+                        .labelsHidden()
+                        .textFieldStyle(.plain)
+                    if !add.filter.isEmpty {
+                        Button {
+                            add.filter = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear the filter")
+                    }
+                }
+            }
+            ForEach(shown) { skill in
                 Toggle(isOn: selectedBinding(skill.id)) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(skill.name.isEmpty ? skill.id : skill.name)
@@ -92,10 +115,17 @@ struct AddSkillView: View {
                 }
                 .toggleStyle(.checkbox)
             }
-            if inspection.skills.count > 1 {
+            if shown.isEmpty, !inspection.skills.isEmpty {
+                Text("No skills match “\(add.filter)”").foregroundStyle(.secondary)
+            }
+            if shown.count > 1 {
+                // With a filter, these act on the skills it shows.
                 HStack {
-                    Button("Select All") { add.selected = Set(inspection.skills.map(\.id)) }
-                    Button("Select None") { add.selected = [] }
+                    Button("Select All") { add.selected.formUnion(shown.map(\.id)) }
+                    Button("Select None") { add.selected.subtract(shown.map(\.id)) }
+                    Spacer()
+                    Text("\(add.selectedIDs.count) of \(inspection.skills.count) chosen")
+                        .foregroundStyle(.secondary)
                 }
             }
         } header: {
@@ -121,6 +151,19 @@ struct AddSkillView: View {
     }
 
     // MARK: - Target
+
+    private func chosenSection(_ inspection: InspectData) -> some View {
+        Section {
+            ForEach(add.selectedIDs, id: \.self) { id in
+                Text(inspection.skills.first { $0.id == id }.map { $0.name.isEmpty ? $0.id : $0.name } ?? id)
+            }
+        } header: {
+            Text("\(add.selectedIDs.count == 1 ? "1 skill" : "\(add.selectedIDs.count) skills") from \(inspection.source)"
+                + Self.revisionText(inspection))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
 
     private var targetSection: some View {
         Section("Install for") {
@@ -171,9 +214,17 @@ struct AddSkillView: View {
                 Text("Waiting: \(text)").foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Install") { add.install() }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!add.canInstall)
+            if add.step == .target {
+                Button("Back") { add.back() }
+                    .disabled(add.isInstalling)
+                Button("Install") { add.install() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!add.canInstall)
+            } else {
+                Button("Continue") { add.continueToTarget() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!add.canContinue)
+            }
         }
         .padding(12)
         .background(.bar)

@@ -55,6 +55,42 @@ final class AddSkillModelTests: XCTestCase {
         XCTAssertEqual(harness.commands(), [])
     }
 
+    func testContinueOpensTheTargetPageAndReadingAgainLeavesIt() async throws {
+        let m = try await started()
+        m.source = "acme/skills"
+        await m.inspect()?.value
+        XCTAssertFalse(m.canContinue)
+        m.continueToTarget()
+        XCTAssertEqual(m.step, .skills, "nothing chosen: no target page")
+        m.selected = ["notes"]
+        m.continueToTarget()
+        XCTAssertEqual(m.step, .target)
+        m.back()
+        XCTAssertEqual(m.step, .skills)
+        XCTAssertEqual(m.selected, ["notes"], "back keeps the choice")
+        m.continueToTarget()
+        await m.inspect()?.value
+        XCTAssertEqual(m.step, .skills)
+    }
+
+    func testFuzzyFilter() {
+        func skill(_ id: String, _ description: String = "") -> InspectedSkill {
+            InspectedSkill(id: id, name: id, description: description, path: id)
+        }
+        let skills = [
+            skill("notes", "Take notes"), skill("grill-with-docs"), skill("git-commit", "Write good commits"),
+            skill("docs-writer"),
+        ]
+        func ids(_ q: String) -> [String] { AddSkillModel.fuzzyFilter(skills, query: q).map(\.id) }
+        XCTAssertEqual(ids(""), skills.map(\.id))
+        XCTAssertEqual(ids("  "), skills.map(\.id))
+        XCTAssertEqual(ids("DOCS"), ["docs-writer", "grill-with-docs"], "a prefix beats a substring")
+        XCTAssertEqual(ids("gwd"), ["grill-with-docs"], "letters in order")
+        XCTAssertEqual(ids("good"), ["git-commit"], "the description counts")
+        XCTAssertEqual(ids("git commit"), ["git-commit"], "every word must match")
+        XCTAssertEqual(ids("zzz"), [])
+    }
+
     func testNormalizedSource() {
         func norm(_ s: String) -> String? { try? AddSkillModel.normalizedSource(s, home: "/Users/me").get() }
         XCTAssertEqual(norm(" owner/repo "), "owner/repo")

@@ -10,7 +10,9 @@ import AppKit
 /// bar's appearance too, and the dot stays red.
 @MainActor
 public enum StatusIcon {
-    /// The SF Symbol drawn as the glyph.
+    /// The app's menu bar glyph (a template image in its asset catalog).
+    public static let assetName = "MenuBarIcon"
+    /// The SF Symbol drawn when the asset is not there (in tests).
     public static let symbolName = "books.vertical"
 
     /// The glyph alone, as a template image.
@@ -23,7 +25,8 @@ public enum StatusIcon {
     static func make(badge: Bool) -> NSImage {
         let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
         guard
-            let glyph = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
+            let glyph = NSImage(named: assetName)
+                ?? NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
                 .withSymbolConfiguration(config)
         else {
             return NSImage(size: NSSize(width: 18, height: 18))

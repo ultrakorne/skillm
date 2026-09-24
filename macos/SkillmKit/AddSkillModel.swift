@@ -2,7 +2,8 @@ import Foundation
 import Observation
 
 /// The Add Skill window: a Source (and optional ref) → `source inspect` →
-/// the skills to install → Global or a project → `install --events`.
+/// the skills to install (Continue) → Global or a project →
+/// `install --events`.
 /// Every command goes through `AppModel`.
 @MainActor
 @Observable
@@ -61,6 +62,14 @@ public final class AddSkillModel {
         public var id: [String] { links }
     }
 
+    /// The window's two pages.
+    public enum Step: Equatable, Sendable {
+        /// The Source and the skills to tick.
+        case skills
+        /// Where to install the chosen skills, and Install.
+        case target
+    }
+
     public let app: AppModel
     /// A git URL, `owner/repo`, or an absolute local folder.
     public var source = ""
@@ -71,6 +80,9 @@ public final class AddSkillModel {
     public private(set) var inspection: InspectData?
     /// The chosen skill ids.
     public var selected: Set<String> = []
+    /// Narrows the skills listed (not the chosen ones) by a fuzzy match.
+    public var filter = ""
+    public var step: Step = .skills
     public var target: Target = .global
     public private(set) var isInspecting = false
     /// The outcome of the last inspect or install.
@@ -102,6 +114,29 @@ public final class AddSkillModel {
     /// The chosen skills, in the order `source inspect` listed them.
     public var selectedIDs: [String] {
         inspection?.skills.map(\.id).filter(selected.contains) ?? []
+    }
+
+    /// The inspected skills that match `filter`, best match first; all of
+    /// them, in inspect order, when it is empty.
+    public var filteredSkills: [InspectedSkill] {
+        Self.fuzzyFilter(inspection?.skills ?? [], query: filter)
+    }
+
+    /// Skills are chosen: the target page can open.
+    public var canContinue: Bool {
+        inspection != nil && !selectedIDs.isEmpty && !isInspecting
+    }
+
+    /// Opens the target page.
+    public func continueToTarget() {
+        guard canContinue else { return }
+        step = .target
+    }
+
+    /// Back to the skills, keeping the choice.
+    public func back() {
+        guard !isInstalling else { return }
+        step = .skills
     }
 
     /// The install can run: skills chosen and no command running.
@@ -142,6 +177,7 @@ public final class AddSkillModel {
 
         inspectTask?.cancel()
         inspectGeneration += 1
+        step = .skills
         message = notice
         installed = nil
         foreignFiles = nil
@@ -154,6 +190,7 @@ public final class AddSkillModel {
                 let data: InspectData = try await app.read(args)
                 guard !Task.isCancelled else { return }
                 let keep = selected.intersection(data.skills.map(\.id))
+                if data.source != inspection?.source { filter = "" }
                 inspection = data
                 selected = data.skills.count == 1 ? [data.skills[0].id] : keep
                 if data.skills.isEmpty {
@@ -283,6 +320,52 @@ public final class AddSkillModel {
     }
 
     // MARK: - Words and arguments
+
+    /// `skills` matching `query`, best first; ties keep their order. Every
+    /// word of `query` must match the id or name as a substring or, failing
+    /// that, as letters in order ("gwd" finds grill-with-docs), or the
+    /// description as a substring.
+    static func fuzzyFilter(_ skills: [InspectedSkill], query: String) -> [InspectedSkill] {
+        let words = query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return skills }
+        var scored: [(index: Int, score: Int, skill: InspectedSkill)] = []
+        for (index, skill) in skills.enumerated() {
+            var total = 0
+            for word in words {
+                guard let score = fuzzyScore(word, skill) else { total = -1; break }
+                total += score
+            }
+            if total >= 0 { scored.append((index, total, skill)) }
+        }
+        return scored.sorted { ($0.score, -$0.index) > ($1.score, -$1.index) }.map(\.skill)
+    }
+
+    /// How well one lowercased `word` matches `skill`; nil when it does not.
+    private static func fuzzyScore(_ word: String, _ skill: InspectedSkill) -> Int? {
+        let names = [skill.id.lowercased(), skill.name.lowercased()]
+        if names.contains(where: { $0.hasPrefix(word) }) { return 300 }
+        if names.contains(where: { $0.contains(word) }) { return 200 }
+        if let spread = names.compactMap({ subsequenceSpread(word, in: $0) }).min() {
+            // Letters close together beat letters strewn apart.
+            return max(1, 100 - spread)
+        }
+        if skill.description.lowercased().contains(word) { return 50 }
+        return nil
+    }
+
+    /// The characters `word`'s letters span in `text`, found in order; nil
+    /// when they are not all there.
+    private static func subsequenceSpread(_ word: String, in text: String) -> Int? {
+        var letters = word.makeIterator()
+        guard var want = letters.next() else { return 0 }
+        var first: Int?
+        for (i, c) in text.enumerated() where c == want {
+            if first == nil { first = i }
+            guard let next = letters.next() else { return i - first! + 1 - word.count }
+            want = next
+        }
+        return nil
+    }
 
     /// A problem with the Source field.
     public struct SourceProblem: Error, Equatable {

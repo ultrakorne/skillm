@@ -60,6 +60,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: games.starberry.skillm
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: skillm
+        # Skillm/Assets.xcassets: the app icon, and the menu bar glyph
+        # (MenuBarIcon, a template image StatusIcon loads).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         # A menu bar app: no Dock icon, no main window.
         INFOPLIST_KEY_LSUIElement: YES

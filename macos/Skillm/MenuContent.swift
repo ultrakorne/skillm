@@ -66,15 +66,15 @@ struct MenuContent: View {
             Button("Upgrade app and restart") { model.upgrade.upgrade() }
         }
         Divider()
-        Button("View skills…") { show(WindowID.skills) }
-        Button("Add skill…") { show(WindowID.addSkill) }
+        Button("View skills…") { show(WindowID.skills, title: "Skills") }
+        Button("Add skill…") { show(WindowID.addSkill, title: "Add Skill") }
         settingsButton
     }
 
     private var settingsButton: some View {
         Button("Settings…") {
-            NSApp.activate()
             openSettings()
+            bringToFront { $0.identifier?.rawValue.contains("Settings") == true || $0.title.hasSuffix("Settings") }
         }
         .keyboardShortcut(",")
     }
@@ -129,9 +129,24 @@ struct MenuContent: View {
     }
 
     /// Opens a window in front: a menu bar app is not active on its own.
-    private func show(_ id: String) {
-        NSApp.activate()
+    private func show(_ id: String, title: String) {
         openWindow(id: id)
+        bringToFront { $0.identifier?.rawValue.hasPrefix(id) == true || $0.title == title }
+    }
+
+    /// Activates the app and raises the window `matches` picks, once the
+    /// menu has closed: activation is cooperative since macOS 14, and asked
+    /// while the menu is still tracking it can be refused, leaving the
+    /// window (new, or open already) behind the others.
+    private func bringToFront(_ matches: @escaping (NSWindow) -> Bool) {
+        DispatchQueue.main.async {
+            NSApp.activate()
+            guard let window = NSApp.windows.first(where: matches) else { return }
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            // In front even if the activation above was refused.
+            window.orderFrontRegardless()
+        }
     }
 
     private var canStop: Bool { model.activity.canStop }
