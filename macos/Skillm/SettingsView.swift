@@ -167,10 +167,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("Command-line tool")
-        } footer: {
-            Text("Runs skillm's install script: downloads skillm into /usr/local/bin, or ~/.local/bin when that is not writable. Update it later with `skillm upgrade`.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
     }
 }
