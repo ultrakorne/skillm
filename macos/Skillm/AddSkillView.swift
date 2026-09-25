@@ -7,6 +7,7 @@ import SwiftUI
 /// install.
 struct AddSkillView: View {
     @Bindable var add: AddSkillModel
+    @Environment(\.dismissWindow) private var dismissWindow
 
     private var app: AppModel { add.app }
 
@@ -32,6 +33,10 @@ struct AddSkillView: View {
         .formStyle(.grouped)
         .safeAreaInset(edge: .bottom) { bottomBar }
         .frame(minWidth: 460, minHeight: 300)
+        // However the window closes after an install, it reopens empty.
+        .onDisappear {
+            if add.isDone { add.reset() }
+        }
         // A question closes once its retry has started; while another
         // command runs it stays, with its buttons greyed out.
         .sheet(item: $add.foreignFiles) { question in
@@ -59,7 +64,8 @@ struct AddSkillView: View {
             HStack {
                 TextField("Repository", text: $add.source, prompt: Text("GitHub link"))
                     .onSubmit { add.inspect() }
-                Button("Choose…") { chooseSourceFolder() }
+                Text("or").foregroundStyle(.secondary)
+                Button("Choose Folder…") { chooseSourceFolder() }
                     .help("Use a skill folder on this Mac")
             }
             TextField("Branch or tag", text: $add.ref, prompt: Text("default branch"))
@@ -217,9 +223,14 @@ struct AddSkillView: View {
             if add.step == .target {
                 Button("Back") { add.back() }
                     .disabled(add.isInstalling)
-                Button("Install") { add.install() }
+                if add.isDone {
+                    Button("Done") { dismissWindow(id: WindowID.addSkill) }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!add.canInstall)
+                } else {
+                    Button("Install") { add.install() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!add.canInstall)
+                }
             } else {
                 Button("Continue") { add.continueToTarget() }
                     .keyboardShortcut(.defaultAction)

@@ -114,6 +114,38 @@ final class AddSkillModelTests: XCTestCase {
         XCTAssertEqual(m.message, .init(text: "Installed alpha globally", isError: false))
         XCTAssertEqual(harness.app.installsVersion, version + 1)
         XCTAssertEqual(harness.app.activity, .idle)
+        XCTAssertTrue(m.isDone, "installed: Done replaces Install")
+        m.target = .global
+        XCTAssertTrue(m.isDone, "the same target stays done")
+        m.target = .project(URL(fileURLWithPath: "/Users/me/src/app"))
+        XCTAssertFalse(m.isDone, "another target offers Install again")
+        XCTAssertNil(m.message, "the summary was about the old target")
+    }
+
+    func testBackForgetsAFinishedInstall() async throws {
+        let m = try await inspected(["FAKE_SKILLM_NO_FOREIGN": "1"])
+        m.continueToTarget()
+        await m.install()?.value
+        XCTAssertTrue(m.isDone)
+        m.back()
+        XCTAssertFalse(m.isDone)
+        XCTAssertNil(m.message)
+        XCTAssertEqual(m.selected, ["grill-with-docs"], "back keeps the choice")
+    }
+
+    func testResetEmptiesTheForm() async throws {
+        let m = try await inspected(["FAKE_SKILLM_NO_FOREIGN": "1"])
+        m.continueToTarget()
+        await m.install()?.value
+        XCTAssertTrue(m.isDone)
+        m.reset()
+        XCTAssertFalse(m.isDone)
+        XCTAssertEqual(m.source, "")
+        XCTAssertNil(m.inspection)
+        XCTAssertEqual(m.selected, [])
+        XCTAssertEqual(m.step, .skills)
+        XCTAssertEqual(m.target, .global)
+        XCTAssertNil(m.message)
     }
 
     func testForeignFilesAreAskedThenAnswered() async throws {

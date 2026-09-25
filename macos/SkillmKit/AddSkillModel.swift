@@ -83,7 +83,10 @@ public final class AddSkillModel {
     /// Narrows the skills listed (not the chosen ones) by a fuzzy match.
     public var filter = ""
     public var step: Step = .skills
-    public var target: Target = .global
+    /// Changing it after an install offers Install again.
+    public var target: Target = .global {
+        didSet { if target != oldValue { forgetInstall() } }
+    }
     public private(set) var isInspecting = false
     /// The outcome of the last inspect or install.
     public private(set) var message: AppModel.Notice?
@@ -133,10 +136,45 @@ public final class AddSkillModel {
         step = .target
     }
 
-    /// Back to the skills, keeping the choice.
+    /// Back to the skills, keeping the choice; a finished install is
+    /// forgotten, so Continue offers Install again.
     public func back() {
         guard !isInstalling else { return }
+        forgetInstall()
         step = .skills
+    }
+
+    /// Drops a finished install and its summary once the form moves on.
+    private func forgetInstall() {
+        guard installed != nil else { return }
+        installed = nil
+        message = nil
+    }
+
+    /// The chosen skills were installed into `target`: the window offers
+    /// Done instead of Install.
+    public var isDone: Bool {
+        installed != nil && !isInstalling
+    }
+
+    /// An empty form for the next time the window opens. Does nothing
+    /// while an install runs.
+    public func reset() {
+        guard !isInstalling else { return }
+        cancelInspect()
+        inspectGeneration += 1
+        followUp = nil
+        source = ""
+        ref = ""
+        inspection = nil
+        selected = []
+        filter = ""
+        step = .skills
+        target = .global
+        message = nil
+        installed = nil
+        foreignFiles = nil
+        refusedLinks = nil
     }
 
     /// The install can run: skills chosen and no command running.
@@ -383,7 +421,7 @@ public final class AddSkillModel {
         if s == "~" { return .success(home) }
         if s.hasPrefix("~/") { return .success(home + "/" + s.dropFirst(2)) }
         if s == "." || s == ".." || s.hasPrefix("./") || s.hasPrefix("../") {
-            return .failure(SourceProblem(text: "Use the folder's full path (or Choose…)."))
+            return .failure(SourceProblem(text: "Use the folder's full path (or Choose Folder…)."))
         }
         return .success(s)
     }
