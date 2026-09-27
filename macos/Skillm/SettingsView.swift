@@ -3,7 +3,8 @@ import SkillmKit
 import SwiftUI
 
 /// The Settings window: Start at login, auto refresh and its interval, the
-/// enabled agents and the command-line tool the app drives.
+/// enabled agents, the command-line tool the app drives and the app's own
+/// version.
 struct SettingsView: View {
     @Bindable var settings: SettingsModel
 
@@ -15,6 +16,7 @@ struct SettingsView: View {
             refreshSection
             agentsSection
             toolSection
+            appSection
             if let message = settings.message {
                 Section { NoticeText(notice: message) }
             }
@@ -176,6 +178,20 @@ struct SettingsView: View {
         } header: {
             Text("Command-line tool")
         }
+    }
+
+    // MARK: - App
+
+    /// The app's version (CFBundleShortVersionString, MARKETING_VERSION in
+    /// project.yml), independent of the CLI's.
+    private var appSection: some View {
+        Section("App") {
+            Text(Self.appVersion.map { "skillm app \($0)" } ?? "skillm app")
+        }
+    }
+
+    static var appVersion: String? {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
     }
 }
 
