@@ -3,8 +3,13 @@ package core
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/state"
 )
 
@@ -42,5 +47,104 @@ func TestUninstallSkipMissing(t *testing.T) {
 	}
 	if _, ok := after.Get("demo"); ok {
 		t.Fatal("demo is still in the Registry")
+	}
+}
+
+func TestUninstallOneScope(t *testing.T) {
+	opts, base, insp := installSetup(t)
+	other := t.TempDir()
+	for _, req := range []InstallRequest{
+		{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Global},
+		{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Local, Base: base},
+		{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Local, Base: other},
+	} {
+		if _, err := InstallSkills(context.Background(), opts, nil, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	local, global := agentdir.Local, agentdir.Global
+	req := UninstallRequest{IDs: []string{"demo"}, Scope: &local, Base: base, CheckRoots: true, ConfirmedRoots: []string{base}}
+	res, err := Uninstall(context.Background(), opts, nil, req)
+	if err != nil || len(res.Skills) != 1 || !slices.Equal(res.Skills[0].RemovedCopies, []string{base}) {
+		t.Fatalf("local removal: res=%+v err=%v", res, err)
+	}
+	for _, path := range []string{demoSlot(base), claudeLink(base)} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("selected install still exists: %s: %v", path, err)
+		}
+	}
+	lf, err := lockfile.Load(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := lf.Skills["demo"]; ok {
+		t.Fatal("selected project's lock entry remains")
+	}
+	after, err := state.Load(opts.Home)
+	if err != nil || !after.IsGlobal("demo") || !slices.Equal(after.VendoredRoots("demo"), []string{other}) || slices.Contains(after.LocalRoots, base) {
+		t.Fatalf("remaining installs: state=%+v err=%v", after, err)
+	}
+	for _, path := range []string{demoSlot(other), claudeLink(other), agentdir.CanonicalSkillDirAt(global, "", "demo")} {
+		if _, err := os.Stat(filepath.Join(path, "SKILL.md")); err != nil {
+			t.Fatalf("other install was changed: %s: %v", path, err)
+		}
+	}
+	lf, err = lockfile.Load(other)
+	if err != nil || lf.Skills["demo"].Source == "" {
+		t.Fatalf("other project's lock entry was changed: %v", err)
+	}
+
+	// Global removal ignores the unrelated cwd's local copy and confirmations.
+	opts.Cwd = other
+	res, err = Uninstall(context.Background(), opts, nil, UninstallRequest{IDs: []string{"demo"}, Scope: &global, CheckRoots: true})
+	if err != nil || !slices.Equal(res.Skills[0].RemovedCopies, []string{"global"}) {
+		t.Fatalf("global removal: res=%+v err=%v", res, err)
+	}
+	after, _ = state.Load(opts.Home)
+	if after.IsGlobal("demo") || !slices.Equal(after.VendoredRoots("demo"), []string{other}) {
+		t.Fatalf("global removal changed local records: %+v", after)
+	}
+	if _, err := os.Stat(filepath.Join(claudeLink(other), "SKILL.md")); err != nil {
+		t.Fatalf("global removal changed local files: %v", err)
+	}
+	res, err = Uninstall(context.Background(), opts, nil, UninstallRequest{IDs: []string{"demo"}, Scope: &local, Base: other})
+	if err != nil || len(res.Skills) != 1 {
+		t.Fatalf("last install removal: %+v %v", res, err)
+	}
+	after, _ = state.Load(opts.Home)
+	if _, ok := after.Get("demo"); ok {
+		t.Fatal("registry entry remains after removing the last install")
+	}
+}
+
+func TestUninstallMissingScopeIsAtomic(t *testing.T) {
+	opts, base, insp := installSetup(t)
+	if _, err := InstallSkills(context.Background(), opts, nil, InstallRequest{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Local, Base: base}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := state.Load(opts.Home)
+	st.Upsert(state.SkillEntry{ID: "elsewhere", Global: true})
+	if err := state.Save(opts.Home, st); err != nil {
+		t.Fatal(err)
+	}
+	local := agentdir.Local
+	req := UninstallRequest{IDs: []string{"demo", "elsewhere"}, Scope: &local, Base: base}
+	_, err := Uninstall(context.Background(), opts, nil, req)
+	var missing *NotInstalledError
+	if !errors.As(err, &missing) || !slices.Equal(missing.IDs, []string{"elsewhere"}) {
+		t.Fatalf("missing scope: %v", err)
+	}
+	if _, err := os.Stat(demoSlot(base)); err != nil {
+		t.Fatalf("atomic refusal removed valid install: %v", err)
+	}
+	req.SkipMissing = true
+	res, err := Uninstall(context.Background(), opts, nil, req)
+	if err != nil || len(res.Skills) != 1 || res.Skills[0].ID != "demo" {
+		t.Fatalf("skip missing scope: %+v %v", res, err)
+	}
+	st, _ = state.Load(opts.Home)
+	if !st.IsGlobal("elsewhere") {
+		t.Fatal("skipping a missing local install removed its global entry")
 	}
 }

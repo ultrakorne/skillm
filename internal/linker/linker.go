@@ -399,6 +399,44 @@ func Unlink(home, id string, agents []agentdir.Agent, scope agentdir.Scope, cwd 
 	return res, nil
 }
 
+// LinkConflicts returns foreign entries Link would refuse, without writing.
+// Canonical agents and folders aliased to the canonical store need no takeover.
+func LinkConflicts(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string) ([]string, error) {
+	var paths []string
+	for _, a := range agents {
+		if agentdir.IsCanonicalAt(a, scope) {
+			continue
+		}
+		path, ok := agentdir.LinkPath(a, scope, base, id)
+		if !ok {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect %s: %w", path, err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			ours, _, err := ownedLink(home, base, scope, path)
+			if err != nil {
+				return nil, err
+			}
+			if ours {
+				continue
+			}
+		} else if real, err := filepath.EvalSymlinks(path); err == nil {
+			target, err := filepath.EvalSymlinks(agentdir.CanonicalSkillDirAt(scope, base, id))
+			if err == nil && real == target {
+				continue
+			}
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
 // ScanLinks reads the live link state of skill id across every supplied agent
 // at scope. It inspects each agent's skill folder for a symlink at <folder>/<id>
 // that skillm owns (resolving into the scope's canonical .agents/skills store,

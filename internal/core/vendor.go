@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/linker"
@@ -120,12 +121,11 @@ func VendorConflict(home, id string, scope agentdir.Scope, base string, recorded
 // entry at an agent's link path) are reported, never fatal: the copy is the
 // unit that is recorded, links are re-derivable from disk.
 //
-// forceLinks is deliberately separate from force: force may come from an
-// interactive "yes" to a prompt that only ever lists canonical-slot
-// conflicts, so it must not also authorize deleting unrelated foreign entries
-// at agent link paths that prompt never showed. Only an explicit --force
-// should set forceLinks.
-func VendorOne(rep Reporter, home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force, forceLinks bool, label string) (VendorAction, error) {
+// forceLinks is deliberately separate from force: force may come from a
+// canonical overwrite approval, which must not authorize deleting unrelated
+// foreign entries at agent paths. confirmedLinks permits only named agent
+// takeovers, while forceLinks permits every takeover.
+func VendorOne(rep Reporter, home, id, srcDir string, agents []agentdir.Agent, scope agentdir.Scope, base string, recorded, force, forceLinks bool, label string, confirmedLinks ...string) (VendorAction, error) {
 	slot := agentdir.CanonicalSkillDirAt(scope, base, id)
 
 	kind, _, err := linker.Classify(home, slot)
@@ -167,7 +167,7 @@ func VendorOne(rep Reporter, home, id, srcDir string, agents []agentdir.Agent, s
 		return VendorBlocked, fmt.Errorf("install copy of %s: %w", id, err)
 	}
 
-	LinkVendorAgents(rep, home, id, agents, scope, base, label, forceLinks)
+	LinkVendorAgents(rep, home, id, agents, scope, base, label, forceLinks, confirmedLinks...)
 	return action, nil
 }
 
@@ -179,13 +179,14 @@ func VendorOne(rep Reporter, home, id, srcDir string, agents []agentdir.Agent, s
 // code link_refused, which a caller may answer by retrying with force. Any
 // other link error (an I/O failure that force cannot fix) is reported as
 // link_failed. It reports whether any link was created or replaced.
-func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool) (linked bool) {
+func LinkVendorAgents(rep Reporter, home, id string, agents []agentdir.Agent, scope agentdir.Scope, base, label string, force bool, confirmedLinks ...string) (linked bool) {
 	rep = nopIfNil(rep)
-	link := linker.Link
-	if force {
-		link = linker.LinkForce
-	}
 	for _, a := range agents {
+		link := linker.Link
+		path, _ := agentdir.LinkPath(a, scope, base, id)
+		if force || slices.Contains(confirmedLinks, path) {
+			link = linker.LinkForce
+		}
 		res, err := link(home, id, []agentdir.Agent{a}, scope, base)
 		if err != nil {
 			if errors.Is(err, linker.ErrNotManaged) {

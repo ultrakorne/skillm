@@ -64,14 +64,13 @@ nothing installed succeeds with no skills. With `--events`: a `batch` of the fin
 `item_start` as each skill's content is staged and an `item_done` coded `installed`,
 `install_blocked` or `install_failed`.
 
-Files skillm did not create at the canonical slots fail the install with `foreign_files`, listing
-them in `paths`, before anything is written. The GUI asks, then retries the same command with
-`--yes` (overwrite the copies listed) or `--skip-foreign` (install the rest; each left-out skill
-is `skipped` with an `install_blocked` warning). An agent link path held by another tool is left
-alone and reported, once the copy landed, as a `link_refused` warning on the result, never with
-`foreign_files`; `--force` takes such links over as well. `--skip-foreign` together with `--yes`
-or `--force` is `usage`. Other refusals: `source_collision` (retry with `--as`), `as_multiple`,
-`local_scope_aliased` and `not_installed` for an unknown id.
+Foreign entries at canonical slots or agent link paths fail the install with `foreign_files`,
+listing them in `paths`, before anything is written. After confirming, the GUI retries with
+`--force` to take over both kinds of path, `--yes` for canonical overwrites only, or
+`--skip-foreign` to skip affected skills and install the rest. Skipped skills report
+`install_blocked`; `--yes` still refuses foreign agent paths. `--skip-foreign` together with
+`--yes` or `--force` is `usage`. Other refusals: `source_collision` (retry with `--as`),
+`as_multiple`, `local_scope_aliased` and `not_installed` for an unknown id.
 
 `--commit <sha>` installs from a git Source only if it is still at the commit `source inspect`
 reported (the full SHA or at least 7 hex characters of it); the GUI passes the same `--ref`, so
@@ -99,15 +98,19 @@ and the directory in `path`.
 
 ## `uninstall`
 
+`--global`, `--local` and `--project <dir>` are mutually exclusive target selectors. With none,
+uninstall removes all installs. A selected scope limits removals, skill selection and project
+confirmation checks; the Registry entry stays while another install remains.
+
 Needs `--yes` and skill ids (or `--all`), otherwise `usage`: the GUI confirms with the user
 first. Its confirmation names the projects whose committed copies will be deleted (the Local
 roots `list` reports for those skills), and it passes each with `--confirmed-root <dir>`
 (repeated; `--confirmed-root=` when it named none). If the skills meanwhile gained a Local install
 in a project not named, nothing is removed and the run fails with `needs_confirm`, `paths`
-holding the full new list to confirm and pass back. Without the flag, every recorded project
-is cleared unchecked.
+holding the full new list to confirm and pass back. Without the confirmation flag, targeted
+projects are cleared unchecked.
 
-The result lists each removed skill with `removed_copies` (`global` or a project root) and
+The result lists each affected skill with `removed_copies` (`global` or a project root) and
 `warnings`; a non-empty `warnings` is a partial success whose entries were left in place. A
 failure part-way leaves the skills before it removed: `needs_force` (another tool's entry is in
 the way; retry with `--force`), `uninstall_failed` (an I/O error; no force offer) or `cancelled`

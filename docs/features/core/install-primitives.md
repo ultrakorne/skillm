@@ -24,13 +24,15 @@ cannot fix. The split rests on `errors.Is(err, linker.ErrNotManaged)`: every ref
 `internal/linker/linker.go` wraps it, and `Unlink`'s refusals keep their original sentence, so a
 caller keyed on `Code` can offer "take over" only where it works while the CLI text stays the same.
 
-### An interactive "yes" never forces agent Links
+### Agent takeovers need their own approval
 
 `VendorOne` takes `force` (overwrite a foreign entry at the canonical slot) apart from
-`forceLinks` (replace a foreign entry at an agent's link path). The overwrite prompt lists only
-canonical-slot conflicts, so answering it must not delete entries it never showed; only an
-explicit `--force` sets `forceLinks`. A Link refusal is reported, never fatal: the copy is the
-recorded unit and Links are re-derived from disk. Likewise `VendorRemove` returns an unlink
+`forceLinks` (replace a foreign entry at an agent's link path). The overwrite prompt lists both
+canonical and agent paths. Answering yes approves only the named agent paths; `--yes` alone
+approves canonical overwrites, while `--force` permits every agent takeover. `InstallSkills`
+checks both kinds of path before writing; `--skip-foreign` skips the entire affected skill.
+The primitives report Link refusals as warnings: the copy is the recorded unit and Links
+are re-derived from disk. Likewise `VendorRemove` returns an unlink
 failure apart from a failure to remove the copy, and only the latter stops the removal.
 
 ### A recorded install's slot is skillm's own

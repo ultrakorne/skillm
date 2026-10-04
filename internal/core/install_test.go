@@ -61,8 +61,13 @@ func TestInstallYesDoesNotTakeOverAgentLinks(t *testing.T) {
 
 	yes := opts
 	yes.Yes = true
-	if _, err := InstallSkills(context.Background(), yes, nil, req); err != nil {
-		t.Fatalf("InstallSkills with Yes: %v", err)
+	_, err := InstallSkills(context.Background(), yes, nil, req)
+	var foreign *ForeignFilesError
+	if !errors.As(err, &foreign) || len(foreign.Paths) != 1 || foreign.Paths[0] != claudeLink(base) {
+		t.Fatalf("Yes: err=%v, want a foreign-files refusal naming the agent path", err)
+	}
+	if _, err := os.Stat(demoSlot(base)); !os.IsNotExist(err) {
+		t.Fatalf("must refuse before writing the canonical copy: %v", err)
 	}
 	if _, err := os.Stat(notes); err != nil {
 		t.Fatalf("Yes must not take over the agent link path: %v", err)
@@ -75,6 +80,55 @@ func TestInstallYesDoesNotTakeOverAgentLinks(t *testing.T) {
 	}
 	if fi, err := os.Lstat(claudeLink(base)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("Force must take over the agent link path (err=%v)", err)
+	}
+}
+
+func TestInstallConfirmedAgentTakeover(t *testing.T) {
+	opts, base, insp := installSetup(t)
+	writeSkill(t, filepath.Dir(claudeLink(base)), "demo", "old installer")
+	req := InstallRequest{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Local, Base: base}
+	_, err := InstallSkills(context.Background(), opts, nil, req)
+	var foreign *ForeignFilesError
+	if !errors.As(err, &foreign) || len(foreign.LinkPaths) != 1 || foreign.LinkPaths[0] != claudeLink(base) {
+		t.Fatalf("err=%v, want the agent directory in the confirmation", err)
+	}
+
+	skip := req
+	skip.SkipForeign = true
+	res, err := InstallSkills(context.Background(), opts, nil, skip)
+	if err != nil || res.InstalledAny() {
+		t.Fatalf("skip: res=%+v err=%v", res, err)
+	}
+	if _, err := os.Stat(demoSlot(base)); !os.IsNotExist(err) {
+		t.Fatalf("declining must leave no duplicate canonical copy: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(claudeLink(base), "SKILL.md"))
+	if err != nil || !strings.Contains(string(b), "old installer") {
+		t.Fatalf("declining changed the old skill: %q %v", b, err)
+	}
+
+	// Approvals are restricted to named paths; another project's conflict
+	// must still stop the install before writing anything there.
+	req.ConfirmedLinks = foreign.LinkPaths
+	other := t.TempDir()
+	writeSkill(t, filepath.Dir(claudeLink(other)), "demo", "other installer")
+	elsewhere := req
+	elsewhere.Base = other
+	_, err = InstallSkills(context.Background(), opts, nil, elsewhere)
+	if !errors.As(err, &foreign) {
+		t.Fatalf("an unconfirmed path must still refuse: %v", err)
+	}
+
+	res, err = InstallSkills(context.Background(), opts, nil, req)
+	if err != nil || !res.InstalledAny() {
+		t.Fatalf("confirmed takeover: res=%+v err=%v", res, err)
+	}
+	if fi, err := os.Lstat(claudeLink(base)); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("confirmed directory must become a link: %v", err)
+	}
+	b, err = os.ReadFile(filepath.Join(claudeLink(base), "SKILL.md"))
+	if err != nil || !strings.Contains(string(b), "demo body") {
+		t.Fatalf("agent must read selected source: %q %v", b, err)
 	}
 }
 

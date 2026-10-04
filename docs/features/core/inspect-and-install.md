@@ -32,20 +32,18 @@ inspection could ever match it and a GUI would re-inspect in a loop.
 ### The whole batch is checked before anything is written
 
 An unknown id, a different-Source collision (`*SourceCollisionError`), an id override on
-several skills (`ErrAsMultiple`), a commit mismatch and foreign entries at the canonical slots
+several skills (`ErrAsMultiple`), a commit mismatch and foreign entries at canonical slots or agent link paths
 (`*ForeignFilesError`) all stop the install first, so one bad skill never leaves half a batch.
 `ValidateSourceSelection` and `ValidateIDSelection` run the same selection checks without
 writing, so `cmd` reports them before asking where to install.
 
-### Force, Yes and SkipForeign are three different answers
+### Overwrite approval covers the paths the user saw
 
-`Options.Force` overwrites foreign canonical slots and takes over foreign agent link paths.
-`Options.Yes`, the terminal's "yes" to the overwrite question, overwrites the canonical slots
-only, because the question never listed link paths. `InstallRequest.SkipForeign`, the "no",
-installs the rest and reports each skipped skill as `install_blocked`; the CLI spells it
-`--skip-foreign` and refuses it together with `--yes` or `--force`, which would overwrite what it
-leaves alone. See [install-primitives.md](install-primitives.md) for the underlying
-`force`/`forceLinks` split.
+The terminal question lists canonical slots and agent paths. Its retry carries named agent
+approvals in `InstallRequest.ConfirmedLinks`; a new agent obstruction requires another
+confirmation. Declining sets `SkipForeign`, leaving every affected skill untouched and
+reporting `install_blocked`. See [the overwrite policy](install-primitives.md#agent-takeovers-need-their-own-approval)
+for the separate permissions on copies and Links.
 
 ### Items are reported only once the batch is accepted
 
