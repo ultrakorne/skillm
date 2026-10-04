@@ -253,3 +253,66 @@ func TestScopedUninstallRemainingScanFailure(t *testing.T) {
 		t.Fatal("uncertain remaining installs lost registry tracking")
 	}
 }
+
+func TestScopedUninstallDiscoversLegacyAfterScanFailure(t *testing.T) {
+	opts, recorded, insp := installSetup(t)
+	for _, scope := range []agentdir.Scope{agentdir.Global, agentdir.Local} {
+		if _, err := InstallSkills(context.Background(), opts, nil, InstallRequest{Inspection: insp, IDs: []string{"demo"}, Scope: scope, Base: recorded}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent := t.TempDir()
+	unreadable, legacyProject := filepath.Join(parent, "a"), filepath.Join(parent, "z")
+	if err := os.MkdirAll(unreadable, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	badAncestor := filepath.Join(unreadable, ".claude")
+	if err := os.WriteFile(badAncestor, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Load(opts.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.AddLocalRoot(unreadable)
+	if err := state.Save(opts.Home, st); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(legacyProject, ".claude", "skills", "demo")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(opts.Home, "skills", "demo"), link); err != nil {
+		t.Fatal(err)
+	}
+	opts.Cwd, opts.Force = legacyProject, true
+	global := agentdir.Global
+	if _, err := Uninstall(context.Background(), opts, nil, UninstallRequest{IDs: []string{"demo"}, Scope: &global}); err != nil {
+		t.Fatal(err)
+	}
+	st, err = state.Load(opts.Home)
+	if err != nil || !slices.Contains(st.LocalRoots, legacyProject) {
+		t.Fatalf("scan error prevented later legacy discovery: %+v %v", st, err)
+	}
+	if err := os.Remove(badAncestor); err != nil {
+		t.Fatal(err)
+	}
+	opts.Cwd, opts.Force = t.TempDir(), false
+	local := agentdir.Local
+	if _, err := Uninstall(context.Background(), opts, nil, UninstallRequest{IDs: []string{"demo"}, Scope: &local, Base: recorded}); err != nil {
+		t.Fatal(err)
+	}
+	st, err = state.Load(opts.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.Get("demo"); !ok {
+		t.Fatal("later removal lost the surviving legacy install's tracking")
+	}
+	if _, err := Uninstall(context.Background(), opts, nil, UninstallRequest{IDs: []string{"demo"}, Scope: &local, Base: legacyProject}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("last legacy link remains: %v", err)
+	}
+}

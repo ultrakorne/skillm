@@ -99,15 +99,12 @@ func managedLinksAt(home, id string, agents []agentdir.Agent, scope agentdir.Sco
 		agents, _ = SplitLocalAliased(agents, base)
 	}
 	res, err := linker.ScanLinks(home, id, agents, scope, base)
-	if err != nil {
-		return false, err
-	}
 	for _, a := range res.Agents {
 		if a.Action == linker.ActionFound {
-			return true, nil
+			return true, err
 		}
 	}
-	return false, nil
+	return false, err
 }
 
 // Roots returns only the projects the requested uninstall would change.
@@ -493,11 +490,12 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 // target. It discovers other installs without deleting them.
 func remainingInstalls(opts Options, agents []agentdir.Agent, st *state.State, id string, req UninstallRequest) (bool, error) {
 	remaining := false
+	var scanErrors []error
 	if *req.Scope != agentdir.Global {
 		remaining = st.IsGlobal(id)
 		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Global, "")
 		if err != nil {
-			return false, err
+			scanErrors = append(scanErrors, err)
 		}
 		remaining = remaining || found
 	}
@@ -512,14 +510,16 @@ func remainingInstalls(opts Options, agents []agentdir.Agent, st *state.State, i
 		}
 		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Local, root)
 		if err != nil {
-			return false, err
+			scanErrors = append(scanErrors, err)
 		}
-		if found {
+		if found || err != nil {
+			// A forced removal must remember unreadable roots too, so a
+			// later run can discover links hidden by the inspection failure.
 			st.AddLocalRoot(root)
 			remaining = true
 		}
 	}
-	return remaining, nil
+	return remaining, errors.Join(scanErrors...)
 }
 
 // sameProject accepts alternate paths to the same directory, while exact
