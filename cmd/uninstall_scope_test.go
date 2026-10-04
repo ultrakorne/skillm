@@ -77,6 +77,11 @@ func TestUninstallScopeTracksLegacyProject(t *testing.T) {
 	// recorded, so scoped removal must leave it alone.
 	foreign := filepath.Join(project, ".agents", "skills", "demo")
 	writeSkillMD(t, foreign, "demo", "foreign directory")
+	foreignLock := []byte(`{"version":1,"skills":{"demo":{"source":"other/installer","sourceType":"github","skillPath":"SKILL.md"}}}`)
+	lockPath := filepath.Join(project, "skills-lock.json")
+	if err := os.WriteFile(lockPath, foreignLock, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	e.run(t, "uninstall", "--all", "--project", project, "--yes")
 	assertNoLink(t, link, "--all must select and remove a legacy-only local install")
 	if _, ok := loadState(t, e).Get("demo"); ok {
@@ -84,6 +89,9 @@ func TestUninstallScopeTracksLegacyProject(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(foreign, "SKILL.md")); err != nil {
 		t.Fatalf("unrecorded canonical directory was removed: %v", err)
+	}
+	if got, err := os.ReadFile(lockPath); err != nil || string(got) != string(foreignLock) {
+		t.Fatalf("foreign lock entry changed: %q %v", got, err)
 	}
 }
 
@@ -120,5 +128,56 @@ func TestInstallForeignAgentDirectory(t *testing.T) {
 	b, err = os.ReadFile(filepath.Join(foreign, "SKILL.md"))
 	if err != nil || !strings.Contains(string(b), "selected source") {
 		t.Fatalf("agent must read selected source after takeover: %q %v", b, err)
+	}
+}
+
+func TestUninstallScopeDiscoversEveryLegacyProject(t *testing.T) {
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
+	src := filepath.Join(t.TempDir(), "demo")
+	writeSkillMD(t, src, "demo", "selected source")
+	e.run(t, "install", src, "--global")
+	recorded, legacyProject := t.TempDir(), t.TempDir()
+	e.runIn(t, recorded, "install", "demo", "--local")
+	legacy := filepath.Join(e.home, "skills", "demo")
+	writeSkillMD(t, legacy, "demo", "legacy copy")
+	link := filepath.Join(legacyProject, ".claude", "skills", "demo")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(legacy, link); err != nil {
+		t.Fatal(err)
+	}
+	e.runIn(t, legacyProject, "uninstall", "demo", "--global", "--yes")
+	if !slices.Contains(loadState(t, e).LocalRoots, legacyProject) {
+		t.Fatal("recorded remaining install prevented legacy project discovery")
+	}
+	e.run(t, "uninstall", "demo", "--project", recorded, "--yes")
+	if _, ok := loadState(t, e).Get("demo"); !ok {
+		t.Fatal("remaining legacy install lost registry tracking")
+	}
+	e.run(t, "uninstall", "demo", "--project", legacyProject, "--yes")
+	assertNoLink(t, link, "last legacy link must be removed")
+	if _, ok := loadState(t, e).Get("demo"); ok {
+		t.Fatal("registry remains after last legacy install")
+	}
+}
+
+func TestUninstallProjectSymlinkAlias(t *testing.T) {
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
+	src := filepath.Join(t.TempDir(), "demo")
+	writeSkillMD(t, src, "demo", "selected source")
+	project := t.TempDir()
+	e.runIn(t, project, "install", src, "--local")
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Fatal(err)
+	}
+	// Selection, confirmation and removal must agree on the physical project.
+	e.run(t, "uninstall", "--all", "--project", alias, "--yes", "--confirmed-root", alias)
+	assertNoLink(t, filepath.Join(project, ".agents", "skills", "demo"), "aliased copy must be removed")
+	assertNoLink(t, filepath.Join(project, ".claude", "skills", "demo"), "aliased link must be removed")
+	assertNoLink(t, filepath.Join(project, "skills-lock.json"), "aliased lock entry must be removed")
+	if _, ok := loadState(t, e).Get("demo"); ok {
+		t.Fatal("aliased install marker remains")
 	}
 }

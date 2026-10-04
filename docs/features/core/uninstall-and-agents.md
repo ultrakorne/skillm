@@ -21,7 +21,10 @@ project; `--global` selects no project. Skill selection, confirmation roots, cop
 and agent sweeps all honor that target. Only the selected install markers are cleared;
 the Registry entry and its Source and Revision remain while a recorded copy or managed
 legacy link exists elsewhere. Discovery includes disabled agents and remembers projects found
-through cwd; an unreadable location preserves tracking and fails the removal.
+through cwd. Unreadable locations block before target deletion; force can continue while
+retaining the Registry entry for uncertain installs. Project aliases match by filesystem
+identity. Lock entries are removed only for recorded copies, preserving foreign entries
+beside legacy links.
 
 ### A confirmation holds the uninstall to the projects it named
 

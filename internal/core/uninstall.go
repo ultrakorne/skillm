@@ -85,7 +85,7 @@ func (req UninstallRequest) Includes(opts Options, st *state.State, agents []age
 		}
 		return managedLinksAt(opts.Home, id, agents, agentdir.Global, "")
 	}
-	if slices.Contains(st.VendoredRoots(id), req.Base) {
+	if recordedProject(st, id, req.Base) {
 		return true, nil
 	}
 	return managedLinksAt(opts.Home, id, agents, agentdir.Local, req.Base)
@@ -117,7 +117,7 @@ func (req UninstallRequest) Roots(st *state.State) []string {
 	}
 	if *req.Scope == agentdir.Local {
 		for _, id := range req.IDs {
-			if slices.Contains(st.VendoredRoots(id), req.Base) {
+			if recordedProject(st, id, req.Base) {
 				return []string{req.Base}
 			}
 		}
@@ -164,8 +164,10 @@ func (e *UninstallScopeChangedError) Unwrap() error { return ErrNeedsConfirm }
 // error — so its Registry entry was kept. The skills before ID were
 // uninstalled and saved, and ID's removals up to the failure stay done (an
 // uninstall is safe to repeat). A retry with Options.Force reports such
-// failures as warnings, leaves the entries in place and drops the Registry
-// entry anyway. Only a foreign entry (Err matches linker.ErrNotManaged) makes
+// failures as warnings and leaves the failed entries in place. It clears the
+// selected install markers, retaining the Registry entry for other installs
+// or an unreadable remaining location. An unscoped retry drops the entry.
+// Only a foreign entry (Err matches linker.ErrNotManaged) makes
 // it match ErrNeedsForce; an I/O failure is a plain error, which Force still
 // steps past but which a caller should not offer "force" for.
 type UninstallBlockedError struct {
@@ -361,6 +363,20 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 		return nil
 	}
 
+	// Inspect other installs before deleting the selected target. Force can
+	// continue past an unreadable location, but uncertainty keeps tracking.
+	remaining := false
+	if req.Scope != nil {
+		var err error
+		remaining, err = remainingInstalls(opts, agents, st, id, req)
+		if err != nil {
+			if err := blocked(CodeUnlinkFailed, err); err != nil {
+				return done, err
+			}
+			remaining = true
+		}
+	}
+
 	// Delete the canonical copies FIRST — the Global one, then the committed
 	// Local ones in every recorded project — so a later symlink sweep over the
 	// same place sees an empty slot rather than refusing on a real directory.
@@ -400,7 +416,7 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 		label := ScopeLabel(agentdir.Local, dir, cwd)
 		// An unlink failure here is not recorded: the sweep below revisits
 		// the same link paths and blocks (or, under Force, warns) on it.
-		recorded := slices.Contains(st.VendoredRoots(id), dir)
+		recorded := recordedProject(st, id, dir)
 		removed, _, err := VendorRemove(rep, home, id, localAgents, agentdir.Local, dir, recorded, label)
 		if err != nil {
 			if err := blocked(CodeRemoveFailed, err); err != nil {
@@ -412,8 +428,10 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 			rep.Event(logEvent(LevelSuccess, id, CodeCopyRemoved,
 				fmt.Sprintf("deleted copy of %s in %s (%s)", id, agentdir.CanonicalLocalRel, label)))
 		}
-		if err := RemoveLockEntry(rep, id, dir); err != nil {
-			done.Warnings = append(done.Warnings, err)
+		if recorded {
+			if err := RemoveLockEntry(rep, id, dir); err != nil {
+				done.Warnings = append(done.Warnings, err)
+			}
 		}
 	}
 
@@ -455,16 +473,14 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 	if req.Scope == nil {
 		st.Remove(id)
 	} else {
-		// Check live links outside this target before changing the markers. A
-		// failed scan keeps tracking intact so the uninstall can be retried.
-		remaining, err := remainingInstalls(opts, agents, st, id, req)
-		if err != nil {
-			return done, &UninstallBlockedError{ID: id, Err: err}
-		}
 		if *req.Scope == agentdir.Global {
 			st.SetGlobal(id, false)
 		} else {
-			st.RemoveVendoredRoot(id, req.Base)
+			for _, root := range append([]string(nil), st.VendoredRoots(id)...) {
+				if sameProject(root, req.Base) {
+					st.RemoveVendoredRoot(id, root)
+				}
+			}
 		}
 		if !remaining {
 			st.Remove(id)
@@ -476,31 +492,52 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 // remainingInstalls checks recorded copies and live links outside the selected
 // target. It discovers other installs without deleting them.
 func remainingInstalls(opts Options, agents []agentdir.Agent, st *state.State, id string, req UninstallRequest) (bool, error) {
+	remaining := false
 	if *req.Scope != agentdir.Global {
-		if st.IsGlobal(id) {
-			return true, nil
-		}
+		remaining = st.IsGlobal(id)
 		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Global, "")
-		if found || err != nil {
-			return found, err
+		if err != nil {
+			return false, err
 		}
+		remaining = remaining || found
 	}
 	for _, root := range st.VendoredRoots(id) {
-		if *req.Scope != agentdir.Local || root != req.Base {
-			return true, nil
+		if *req.Scope != agentdir.Local || !sameProject(root, req.Base) {
+			remaining = true
 		}
 	}
 	for _, root := range localScanDirs(st.LocalRoots, opts.Cwd) {
-		if *req.Scope == agentdir.Local && root == req.Base {
+		if *req.Scope == agentdir.Local && sameProject(root, req.Base) {
 			continue
 		}
 		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Local, root)
+		if err != nil {
+			return false, err
+		}
 		if found {
 			st.AddLocalRoot(root)
-		}
-		if found || err != nil {
-			return found, err
+			remaining = true
 		}
 	}
-	return false, nil
+	return remaining, nil
+}
+
+// sameProject accepts alternate paths to the same directory, while exact
+// cleaned paths still match when a recorded project has been deleted.
+func sameProject(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(ai, bi)
+}
+
+func recordedProject(st *state.State, id, base string) bool {
+	for _, root := range st.VendoredRoots(id) {
+		if sameProject(root, base) {
+			return true
+		}
+	}
+	return false
 }

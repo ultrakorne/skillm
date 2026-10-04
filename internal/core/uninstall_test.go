@@ -214,3 +214,42 @@ func TestUninstallMissingScopeIsAtomic(t *testing.T) {
 		t.Fatal("skipping a missing local install removed its global entry")
 	}
 }
+
+func TestScopedUninstallRemainingScanFailure(t *testing.T) {
+	opts, base, insp := installSetup(t)
+	if _, err := InstallSkills(context.Background(), opts, nil, InstallRequest{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Global}); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated project's agent ancestor cannot be inspected.
+	if err := os.WriteFile(filepath.Join(base, ".claude"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts.Cwd = base
+	scope := agentdir.Global
+	req := UninstallRequest{IDs: []string{"demo"}, Scope: &scope}
+	if _, err := Uninstall(context.Background(), opts, nil, req); err == nil {
+		t.Fatal("unreadable remaining location must block before deletion")
+	}
+	if _, err := os.Stat(agentdir.CanonicalSkillDirAt(scope, "", "demo")); err != nil {
+		t.Fatalf("failed discovery deleted the selected copy: %v", err)
+	}
+	st, err := state.Load(opts.Home)
+	if err != nil || !st.IsGlobal("demo") {
+		t.Fatalf("failed discovery changed tracking: %+v %v", st, err)
+	}
+	opts.Force = true
+	res, err := Uninstall(context.Background(), opts, nil, req)
+	if err != nil || len(res.Skills) != 1 || len(res.Skills[0].Warnings) != 1 {
+		t.Fatalf("forced scoped uninstall: %+v %v", res, err)
+	}
+	if _, err := os.Lstat(agentdir.CanonicalSkillDirAt(scope, "", "demo")); !os.IsNotExist(err) {
+		t.Fatalf("forced removal kept the selected copy: %v", err)
+	}
+	st, err = state.Load(opts.Home)
+	if err != nil || st.IsGlobal("demo") {
+		t.Fatalf("forced removal retained selected marker: %+v %v", st, err)
+	}
+	if _, ok := st.Get("demo"); !ok {
+		t.Fatal("uncertain remaining installs lost registry tracking")
+	}
+}
