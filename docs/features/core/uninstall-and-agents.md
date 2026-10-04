@@ -19,7 +19,9 @@ whole call. Each returns what it did per skill or per agent: an `UninstalledSkil
 With no target flag, Uninstall removes every install. `--local` or `--project` selects one
 project; `--global` selects no project. Skill selection, confirmation roots, copy removal
 and agent sweeps all honor that target. Only the selected install markers are cleared;
-the Registry entry and its Source and Revision remain while another install exists.
+the Registry entry and its Source and Revision remain while a recorded copy or managed
+legacy link exists elsewhere. Discovery includes disabled agents and remembers projects found
+through cwd; an unreadable location preserves tracking and fails the removal.
 
 ### A confirmation holds the uninstall to the projects it named
 

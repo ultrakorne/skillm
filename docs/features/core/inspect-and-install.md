@@ -32,17 +32,17 @@ inspection could ever match it and a GUI would re-inspect in a loop.
 ### The whole batch is checked before anything is written
 
 An unknown id, a different-Source collision (`*SourceCollisionError`), an id override on
-several skills (`ErrAsMultiple`), a commit mismatch and foreign entries at canonical slots or agent link paths
+several skills (`ErrAsMultiple`), a commit mismatch and foreign entries at canonical slots
 (`*ForeignFilesError`) all stop the install first, so one bad skill never leaves half a batch.
 `ValidateSourceSelection` and `ValidateIDSelection` run the same selection checks without
 writing, so `cmd` reports them before asking where to install.
 
-### Overwrite approval covers the paths the user saw
+### Canonical conflicts ask; agent conflicts warn
 
-The terminal question lists canonical slots and agent paths. Its retry carries named agent
-approvals in `InstallRequest.ConfirmedLinks`; a new agent obstruction requires another
-confirmation. Declining sets `SkipForeign`, leaving every affected skill untouched and
-reporting `install_blocked`. See [the overwrite policy](install-primitives.md#agent-takeovers-need-their-own-approval)
+The overwrite question lists canonical slots only. Declining sets `SkipForeign`, leaving
+those skills untouched and reporting `install_blocked`. Agent-path conflicts are reported as
+`link_refused` warnings after the copy lands; the terminal explains that the agent keeps its
+existing skill and can be taken over by retrying with force. See [the overwrite policy](install-primitives.md#agent-takeovers-use-force)
 for the separate permissions on copies and Links.
 
 ### Items are reported only once the batch is accepted

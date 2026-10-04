@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -106,17 +107,21 @@ func runUninstall(ctx context.Context, args []string, all bool, confirmed core.U
 			return usageError("uninstall --json needs skill ids or --all")
 		}
 	}
-	// A scoped request already names its project explicitly and never sweeps
-	// cwd, so it works even when the process's working directory is gone.
+	// Scoped requests use cwd for discovery and labels, without requiring it
+	// to exist. They only remove entries in the explicitly selected target.
 	opts, err := coreOptions(confirmed.Scope == nil)
 	if err != nil {
 		return err
+	}
+	if confirmed.Scope != nil {
+		opts.Cwd, _ = os.Getwd()
 	}
 	// The picker and the confirmation run without Home's lock, so an open
 	// prompt never blocks another skillm process; core.Uninstall re-reads the
 	// Registry under the lock and refuses a skill that is gone by then. A
 	// broken config.toml is still reported before any question.
-	if _, err := config.Load(opts.Home); err != nil {
+	cfg, err := config.Load(opts.Home)
+	if err != nil {
 		return err
 	}
 	st, err := state.Load(opts.Home)
@@ -124,7 +129,7 @@ func runUninstall(ctx context.Context, args []string, all bool, confirmed core.U
 		return err
 	}
 
-	ids, err := selectUninstallIDs(st, args, all, confirmed)
+	ids, err := selectUninstallIDs(opts, cfg.AllAgents(), st, args, all, confirmed)
 	if err != nil {
 		return err
 	}
@@ -216,7 +221,7 @@ func uninstallLocked(ctx context.Context, opts core.Options, rep core.Reporter, 
 // registered skill; with no arguments an interactive multiselect is shown (which
 // refuses on a non-TTY). It returns an empty slice and no error when there is
 // nothing to do, having already told the user why.
-func selectUninstallIDs(st *state.State, args []string, all bool, req core.UninstallRequest) ([]string, error) {
+func selectUninstallIDs(opts core.Options, agents []agentdir.Agent, st *state.State, args []string, all bool, req core.UninstallRequest) ([]string, error) {
 	if len(args) > 0 {
 		if all {
 			return nil, errors.New("pass either skill ids or --all, not both")
@@ -229,7 +234,11 @@ func selectUninstallIDs(st *state.State, args []string, all bool, req core.Unins
 		}
 		var missing []string
 		for _, id := range args {
-			if !req.Includes(st, id) {
+			included, err := req.Includes(opts, st, agents, id)
+			if err != nil {
+				return nil, err
+			}
+			if !included {
 				missing = append(missing, id)
 			}
 		}
@@ -241,7 +250,11 @@ func selectUninstallIDs(st *state.State, args []string, all bool, req core.Unins
 
 	var registered []string
 	for _, id := range registeredIDs(st) {
-		if req.Includes(st, id) {
+		included, err := req.Includes(opts, st, agents, id)
+		if err != nil {
+			return nil, err
+		}
+		if included {
 			registered = append(registered, id)
 		}
 	}
@@ -255,11 +268,11 @@ func selectUninstallIDs(st *state.State, args []string, all bool, req core.Unins
 		return registered, nil
 	}
 
-	opts := make([]ui.Option, 0, len(registered))
+	choices := make([]ui.Option, 0, len(registered))
 	for _, id := range registered {
-		opts = append(opts, ui.Option{Label: id, Value: id})
+		choices = append(choices, ui.Option{Label: id, Value: id})
 	}
-	ids, err := ui.SelectSkills("Select skills to uninstall", opts)
+	ids, err := ui.SelectSkills("Select skills to uninstall", choices)
 	if err != nil {
 		return nil, err
 	}

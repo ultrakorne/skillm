@@ -12,7 +12,6 @@ import (
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
-	"github.com/ultrakorne/skillm/internal/linker"
 	"github.com/ultrakorne/skillm/internal/state"
 	"github.com/ultrakorne/skillm/internal/store"
 )
@@ -59,14 +58,11 @@ type InstallRequest struct {
 	// Base is the absolute project directory of a Local install. It is
 	// ignored for Global.
 	Base string
-	// SkipForeign installs skills with no foreign canonical or agent entries and skips
+	// SkipForeign installs the skills whose canonical slot is free and skips
 	// (with a CodeInstallBlocked event) those where a foreign entry is in the
 	// way, instead of returning a *ForeignFilesError. It is how a caller
 	// proceeds after the user declined to overwrite.
 	SkipForeign bool
-	// ConfirmedLinks permits taking over only the agent paths shown in the
-	// caller's overwrite question. Yes alone permits canonical copies only.
-	ConfirmedLinks []string
 }
 
 // InstalledSkill is what InstallSkills did for one skill.
@@ -119,10 +115,10 @@ type installItem struct {
 // Everything is checked before anything is written: an unknown id, a
 // different-source collision (*SourceCollisionError), an As on several skills
 // (ErrAsMultiple), an Inspection not at req.Commit (*CommitMismatchError),
-// and foreign entries at canonical slots or agent paths. The last is a
-// *ForeignFilesError unless opts.Force permits overwriting them, opts.Yes
-// permits canonical overwrites and req.ConfirmedLinks names agent takeovers,
-// or req.SkipForeign skips affected skills. The caller may ask and retry.
+// and foreign entries at the canonical slots. The last is a
+// *ForeignFilesError unless opts.Force or opts.Yes permits overwriting them, or
+// req.SkipForeign skips them; the caller may ask the user and call again.
+// opts.Force alone also takes over foreign entries at agent link paths.
 //
 // It reports progress to rep: once the selection is checked, an EventBatch
 // naming the skills (by their final ids), then an ItemStart as each skill's
@@ -187,12 +183,10 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 		return res, err
 	}
 
-	// Scan canonical slots and agent links first, so one question
+	// Scan every canonical slot for foreign entries first, so one question
 	// (or one refusal) covers the whole batch and nothing is written before.
 	recorded := make(map[string]bool, len(items))
 	var conflicts []string
-	var linkConflicts []string
-	blocked := make(map[string]bool)
 	for _, it := range items {
 		id := it.entry.ID
 		if req.Scope == agentdir.Local {
@@ -200,30 +194,18 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 		} else {
 			recorded[id] = st.IsGlobal(id)
 		}
-		if c := VendorConflict(home, id, req.Scope, req.Base, recorded[id]); c != "" && !opts.Force && !opts.Yes {
+		if c := VendorConflict(home, id, req.Scope, req.Base, recorded[id]); c != "" {
 			conflicts = append(conflicts, c)
-			blocked[id] = true
-		}
-		paths, err := linker.LinkConflicts(home, id, agents, req.Scope, req.Base)
-		if err != nil {
-			return res, err
-		}
-		for _, path := range paths {
-			if !opts.Force && !slices.Contains(req.ConfirmedLinks, path) {
-				conflicts = append(conflicts, path)
-				linkConflicts = append(linkConflicts, path)
-				blocked[id] = true
-			}
 		}
 	}
 	// force overwrites foreign entries at the canonical slots; forceLinks,
 	// deliberately separate, takes over foreign entries at agent link paths.
-	// Yes permits canonical overwrites; confirmed agent paths are passed
-	// separately so a new, unconfirmed agent entry is never forced.
+	// Yes answers the canonical-slot question only (which never listed the
+	// link paths), so only Force sets forceLinks.
 	force := opts.Force || opts.Yes
 	forceLinks := opts.Force
-	if len(conflicts) > 0 && !req.SkipForeign {
-		return res, &ForeignFilesError{Paths: conflicts, LinkPaths: linkConflicts}
+	if len(conflicts) > 0 && !force && !req.SkipForeign {
+		return res, &ForeignFilesError{Paths: conflicts}
 	}
 
 	ids := make([]string, len(items))
@@ -243,11 +225,7 @@ func InstallSkills(ctx context.Context, opts Options, rep Reporter, req InstallR
 	var runErr error
 	for i, it := range items {
 		id := it.entry.ID
-		action := VendorBlocked
-		var err error
-		if !blocked[id] {
-			action, err = VendorOne(rep, home, id, it.dir, agents, req.Scope, req.Base, recorded[id], force, forceLinks, label, req.ConfirmedLinks...)
-		}
+		action, err := VendorOne(rep, home, id, it.dir, agents, req.Scope, req.Base, recorded[id], force, forceLinks, label)
 		if err != nil {
 			rep.Event(itemDone(i, installFailed(id, err)))
 			runErr = err

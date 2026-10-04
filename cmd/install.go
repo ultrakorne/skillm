@@ -78,9 +78,7 @@ func newInstallCmd() *cobra.Command {
 			"skills-lock.json — all committable, so teammates get working skills on clone, " +
 			"and the lockfile is interoperable with vercel's `npx skills` CLI. Re-installing " +
 			"something already correct is a no-op; skillm refuses to overwrite anything it " +
-			"did not create and asks interactively before replacing existing copies or " +
-			"agent link paths. Declining skips the affected skills. Pass --force to " +
-			"overwrite them without asking, including taking over an " +
+			"did not create. Pass --force to overwrite it anyway, including taking over an " +
 			"agent link path occupied by a skill copied in by hand or by another tool, " +
 			"--yes to overwrite only the canonical copies, or --skip-foreign to leave " +
 			"those skills out and install the rest.\n\n" +
@@ -108,7 +106,7 @@ func newInstallCmd() *cobra.Command {
 	f.StringVar(&installFlagAs, "as", "", "override the Skill ID when installing from a source (resolves a collision; single skill only)")
 	f.StringVar(&installFlagRef, "ref", "", "pin a branch, tag, or commit when installing from a git source")
 	f.StringVar(&installFlagCommit, "commit", "", "install only if the git source is at this commit (as `source inspect` reported it); the ref stays recorded for updates")
-	f.BoolVar(&installFlagSkipForeign, "skip-foreign", false, "skip skills whose copy or agent links would overwrite foreign files (not with --yes or --force)")
+	f.BoolVar(&installFlagSkipForeign, "skip-foreign", false, "skip the skills whose copy would overwrite files skillm did not create, and install the rest (not with --yes or --force)")
 	c.MarkFlagsMutuallyExclusive("global", "local", "project")
 	return c
 }
@@ -283,32 +281,33 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 }
 
 // installConfirmingOverwrite runs core.InstallSkills. When it stops at files
-// skillm did not create, it asks for the whole batch on a TTY. Yes approves
-// canonical copies and only the named agent paths; No skips affected skills.
-// The lock is released during each question. New agent conflicts ask again.
+// skillm did not create, it asks once for the whole batch on a TTY — "yes"
+// retries with Yes (which, unlike --force, never takes over agent link paths:
+// the question only listed the canonical slots), "no" retries skipping those
+// skills — or refuses on a non-TTY. --force/--yes never get here. Home's lock
+// is held for each install attempt but not while the question is open.
 func installConfirmingOverwrite(ctx context.Context, opts core.Options, req core.InstallRequest) (core.InstallResult, error) {
-	var rep core.Reporter = termLog
-	for {
-		res, err := installLocked(ctx, opts, rep, req)
-		var foreign *core.ForeignFilesError
-		if !errors.As(err, &foreign) {
-			return res, err
-		}
-		if !ui.IsTTY() {
-			return res, fmt.Errorf("refusing to overwrite files skillm did not create:\n  %s\npass --force to overwrite them, or --skip-foreign to skip affected skills", strings.Join(foreign.Paths, "\n  "))
-		}
-		ok, err := ui.Confirm(confirmVendorOverwritePrompt(foreign.Paths))
-		if err != nil {
-			return res, err
-		}
-		if ok {
-			opts.Yes = true
-			req.ConfirmedLinks = append(req.ConfirmedLinks, foreign.LinkPaths...)
-		} else {
-			req.SkipForeign = true
-		}
-		rep = dropCodes{rep: termLog, codes: []string{core.CodeAgentSkipped}}
+	res, err := installLocked(ctx, opts, termLog, req)
+	var foreign *core.ForeignFilesError
+	if !errors.As(err, &foreign) {
+		return res, err
 	}
+	if !ui.IsTTY() {
+		return res, fmt.Errorf("refusing to overwrite files skillm did not create:\n  %s\npass --force to overwrite them", strings.Join(foreign.Paths, "\n  "))
+	}
+	ok, err := ui.Confirm(confirmVendorOverwritePrompt(foreign.Paths))
+	if err != nil {
+		return res, err
+	}
+	if ok {
+		opts.Yes = true
+	} else {
+		req.SkipForeign = true // leave foreign entries untouched, install the rest
+	}
+	// The skipped-agent notices were printed before the question. The retry
+	// re-scans the slots, so a change made while the question was open is
+	// caught.
+	return installLocked(ctx, opts, dropCodes{rep: termLog, codes: []string{core.CodeAgentSkipped}}, req)
 }
 
 // installLocked runs core.InstallSkills under Home's lock, so a concurrent
@@ -347,7 +346,7 @@ func installError(err error) error {
 // confirmVendorOverwritePrompt builds the one-shot confirmation shown before
 // an install overwrites files skillm did not create.
 func confirmVendorOverwritePrompt(paths []string) string {
-	return fmt.Sprintf("These paths exist and were not created by skillm:\n  %s\nReplace their contents with the selected source and link agents to the shared copy?",
+	return fmt.Sprintf("These paths exist and were not created by skillm:\n  %s\nOverwrite them with installed copies?",
 		strings.Join(paths, "\n  "))
 }
 

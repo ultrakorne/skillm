@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ultrakorne/skillm/internal/agentdir"
+	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/lockfile"
 	"github.com/ultrakorne/skillm/internal/state"
 )
@@ -47,6 +48,71 @@ func TestUninstallSkipMissing(t *testing.T) {
 	}
 	if _, ok := after.Get("demo"); ok {
 		t.Fatal("demo is still in the Registry")
+	}
+}
+
+func TestScopedUninstallLegacyInstalls(t *testing.T) {
+	for _, first := range []agentdir.Scope{agentdir.Global, agentdir.Local} {
+		t.Run(first.String(), func(t *testing.T) {
+			opts, base, insp := installSetup(t)
+			// One canonical install and one legacy link without its marker.
+			if _, err := InstallSkills(context.Background(), opts, nil, InstallRequest{Inspection: insp, IDs: []string{"demo"}, Scope: first, Base: base}); err != nil {
+				t.Fatal(err)
+			}
+			second := agentdir.Local
+			if first == agentdir.Local {
+				second = agentdir.Global
+			}
+			legacy := filepath.Join(opts.Home, "skills", "demo")
+			if err := os.MkdirAll(legacy, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			agents := config.Default().AllAgents()
+			path := linkPath(t, agents[1], second, base, "demo")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(legacy, path); err != nil {
+				t.Fatal(err)
+			}
+			// Disabled agents still count toward retaining and removing links.
+			cfg := config.Default()
+			def := cfg.Agents["claude"]
+			enabled := false
+			def.Enabled = &enabled
+			cfg.Agents["claude"] = def
+			if err := config.Save(opts.Home, cfg); err != nil {
+				t.Fatal(err)
+			}
+			res, err := Uninstall(context.Background(), opts, nil, UninstallRequest{IDs: []string{"demo"}, Scope: &first, Base: base})
+			if err != nil || len(res.Skills) != 1 {
+				t.Fatalf("first scope: %+v %v", res, err)
+			}
+			st, err := state.Load(opts.Home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := st.Get("demo"); !ok {
+				t.Fatal("remaining legacy install lost its registry entry")
+			}
+			if second == agentdir.Local && !slices.Contains(st.LocalRoots, base) {
+				t.Fatal("discovered project must remain tracked")
+			}
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("unselected legacy link was removed: %v", err)
+			}
+			res, err = Uninstall(context.Background(), opts, nil, UninstallRequest{IDs: []string{"demo"}, Scope: &second, Base: base})
+			if err != nil || len(res.Skills) != 1 {
+				t.Fatalf("legacy scope: %+v %v", res, err)
+			}
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("selected legacy link remains: %v", err)
+			}
+			st, _ = state.Load(opts.Home)
+			if _, ok := st.Get("demo"); ok {
+				t.Fatal("registry remains after the last legacy install")
+			}
+		})
 	}
 }
 

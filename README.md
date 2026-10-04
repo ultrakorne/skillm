@@ -72,12 +72,12 @@ Note the split: `skillm update` pulls new revisions of your installed **skills**
 upgrade` replaces the **skillm binary** itself. A binary built from source (`go build`, or an
 unstamped version) matches no published release, so `upgrade` reports that and leaves it alone.
 
-Install asks before replacing skills installed by another tool, listing both canonical copies
-and agent paths. Declining skips the affected skills; `--force` takes them over without asking,
-and `--skip-foreign` skips them without asking.
+When another tool already installed a skill in an agent folder, skillm keeps that directory
+and warns that the agent still uses its existing copy. Retry the command with `--force` to
+replace it with a link to the shared copy. Canonical-copy conflicts retain their overwrite prompt.
 
 Global flags: `--force` / `--yes` (`--yes` approves canonical overwrites and uninstall;
-agent path takeovers need confirmation or `--force`), `--home <path>` (override Home,
+agent path takeovers require `--force`), `--home <path>` (override Home,
 default `~/.skillm`).
 
 ## License

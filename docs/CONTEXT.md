@@ -121,7 +121,7 @@ Local copy and a Global install can coexist for the same skill.
 ### Foreign entry
 A file, directory or link at a canonical slot or agent's link path that skillm did not create,
 such as a skill installed by another tool. Replacing it requires approval; see
-[Install's overwrite policy](features/core/install-primitives.md#agent-takeovers-need-their-own-approval).
+[Install's overwrite policy](features/core/install-primitives.md#agent-takeovers-use-force).
 _Avoid_: conflict, unmanaged file
 
 ### Lockfile
@@ -154,7 +154,8 @@ folders for skillm-owned symlinks, so they never drift; only the Canonical copie
 An Install at either Scope is a **Canonical copy** plus agent Links (a Local one adds a Lockfile
 entry); re-installing over a recorded copy refreshes it in place, a legacy absolute symlink into
 the old Home skills subtree at the canonical slot is converted to a copy, and a **Foreign
-entry** in the way stops the install until the user decides what to do with it.
+entry** at the canonical slot stops the install until the user decides what to do with it. A
+Foreign entry at an agent path is kept and reported while the Canonical copy is installed.
 
 ### Uninstall
 Remove a skill's Installs everywhere, only at Global Scope, or in one Local project: the

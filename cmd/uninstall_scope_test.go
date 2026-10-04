@@ -48,6 +48,45 @@ func TestUninstallScopeFlags(t *testing.T) {
 	}
 }
 
+func TestUninstallScopeTracksLegacyProject(t *testing.T) {
+	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
+	src := filepath.Join(t.TempDir(), "demo")
+	writeSkillMD(t, src, "demo", "selected source")
+	e.run(t, "install", src, "--global")
+	project := t.TempDir()
+	legacy := filepath.Join(e.home, "skills", "demo")
+	writeSkillMD(t, legacy, "demo", "legacy copy")
+	link := filepath.Join(project, ".claude", "skills", "demo")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(legacy, link); err != nil {
+		t.Fatal(err)
+	}
+	// The project is discovered through cwd, despite having no copy marker
+	// or tracked root. Removing Global must keep its legacy install usable.
+	e.runIn(t, project, "uninstall", "demo", "--global", "--yes")
+	st := loadState(t, e)
+	if _, ok := st.Get("demo"); !ok || !slices.Contains(st.LocalRoots, project) {
+		t.Fatalf("remaining project must be tracked: %+v", st)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("global uninstall removed the local link: %v", err)
+	}
+	// A foreign canonical directory at the legacy project's slot is not
+	// recorded, so scoped removal must leave it alone.
+	foreign := filepath.Join(project, ".agents", "skills", "demo")
+	writeSkillMD(t, foreign, "demo", "foreign directory")
+	e.run(t, "uninstall", "--all", "--project", project, "--yes")
+	assertNoLink(t, link, "--all must select and remove a legacy-only local install")
+	if _, ok := loadState(t, e).Get("demo"); ok {
+		t.Fatal("last legacy install's registry entry remains")
+	}
+	if _, err := os.Stat(filepath.Join(foreign, "SKILL.md")); err != nil {
+		t.Fatalf("unrecorded canonical directory was removed: %v", err)
+	}
+}
+
 func TestInstallForeignAgentDirectory(t *testing.T) {
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
 	src := filepath.Join(t.TempDir(), "demo")
@@ -55,24 +94,24 @@ func TestInstallForeignAgentDirectory(t *testing.T) {
 	foreign := claudeGlobalLink(e, "demo")
 	writeSkillMD(t, foreign, "demo", "old installer")
 
-	out, err := e.tryRun(t, "install", src, "--global")
-	if err == nil || !strings.Contains(out, foreign) || !strings.Contains(out, "--force") {
-		t.Fatalf("non-interactive install must explain takeover: err=%v out=%s", err, out)
+	out := e.run(t, "install", src, "--global")
+	if !strings.Contains(out, foreign) || !strings.Contains(out, "this agent keeps its existing skill; retry with --force") {
+		t.Fatalf("install must explain the partial result and how to take over: %s", out)
 	}
-	assertNoLink(t, agentsGlobalCopy(e, "demo"), "refusal must happen before installing a duplicate")
-	perr := e.jsonFail(t, e.userDir, "install", src, "demo", "--global", "--json", "--yes")
-	if perr.Code != protocol.CodeForeignFiles || !slices.Equal(perr.Paths, []string{foreign}) {
-		t.Fatalf("foreign agent path must be included in JSON refusal: %+v", perr)
+	if _, err := os.Stat(filepath.Join(agentsGlobalCopy(e, "demo"), "SKILL.md")); err != nil {
+		t.Fatalf("canonical install must succeed despite the refused link: %v", err)
 	}
-	var installed protocol.InstallData
-	e.jsonOK(t, e.userDir, &installed, "install", src, "demo", "--global", "--json", "--skip-foreign")
-	if len(installed.Skills) != 1 || installed.Skills[0].Action != protocol.ActionSkipped {
-		t.Fatalf("skip result: %+v", installed)
+	stdout, stderr, ok := e.runJSON(t, e.userDir, nil, "install", src, "demo", "--global", "--json", "--yes")
+	if !ok || stderr != "" {
+		t.Fatalf("JSON install must retain its warning contract: ok=%v stderr=%s stdout=%s", ok, stderr, stdout)
 	}
-	assertNoLink(t, agentsGlobalCopy(e, "demo"), "skipping must leave no duplicate")
+	doc := decodeDoc(t, stdout)
+	if doc.Error != nil || len(doc.Warnings) != 1 || doc.Warnings[0].Code != "link_refused" {
+		t.Fatalf("JSON must report link_refused instead of a foreign-files error: %s", stdout)
+	}
 	b, err := os.ReadFile(filepath.Join(foreign, "SKILL.md"))
 	if err != nil || !strings.Contains(string(b), "old installer") {
-		t.Fatalf("skipping changed the old skill: %q %v", b, err)
+		t.Fatalf("refusing must leave the old skill intact: %q %v", b, err)
 	}
 	e.run(t, "install", src, "--global", "--force")
 	if info, err := os.Lstat(foreign); err != nil || info.Mode()&os.ModeSymlink == 0 {

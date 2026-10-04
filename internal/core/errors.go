@@ -15,8 +15,6 @@ import (
 // Options.Force overwrites them.
 type ForeignFilesError struct {
 	Paths []string
-	// LinkPaths is the subset requiring a takeover of an agent's link path.
-	LinkPaths []string
 }
 
 func (e *ForeignFilesError) Error() string {

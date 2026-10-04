@@ -64,13 +64,12 @@ nothing installed succeeds with no skills. With `--events`: a `batch` of the fin
 `item_start` as each skill's content is staged and an `item_done` coded `installed`,
 `install_blocked` or `install_failed`.
 
-Foreign entries at canonical slots or agent link paths fail the install with `foreign_files`,
-listing them in `paths`, before anything is written. After confirming, the GUI retries with
-`--force` to take over both kinds of path, `--yes` for canonical overwrites only, or
-`--skip-foreign` to skip affected skills and install the rest. Skipped skills report
-`install_blocked`; `--yes` still refuses foreign agent paths. `--skip-foreign` together with
-`--yes` or `--force` is `usage`. Other refusals: `source_collision` (retry with `--as`),
-`as_multiple`, `local_scope_aliased` and `not_installed` for an unknown id.
+Foreign canonical slots return `foreign_files` with `paths` before writing. The GUI can retry
+with `--yes` to overwrite those copies or `--skip-foreign` to skip those skills. Foreign agent
+paths keep their existing entries and report `link_refused` warnings once the copy lands;
+retrying with `--force` takes them over. `--yes` alone leaves agent entries untouched.
+`--skip-foreign` together with `--yes` or `--force` is `usage`. Other refusals:
+`source_collision` (retry with `--as`), `as_multiple`, `local_scope_aliased` and `not_installed`.
 
 `--commit <sha>` installs from a git Source only if it is still at the commit `source inspect`
 reported (the full SHA or at least 7 hex characters of it); the GUI passes the same `--ref`, so

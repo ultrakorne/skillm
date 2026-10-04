@@ -72,17 +72,42 @@ type UninstallRequest struct {
 }
 
 // Includes reports whether id has an install in the requested scope.
-func (req UninstallRequest) Includes(st *state.State, id string) bool {
+func (req UninstallRequest) Includes(opts Options, st *state.State, agents []agentdir.Agent, id string) (bool, error) {
 	if _, ok := st.Get(id); !ok {
-		return false
+		return false, nil
 	}
 	if req.Scope == nil {
-		return true
+		return true, nil
 	}
 	if *req.Scope == agentdir.Global {
-		return st.IsGlobal(id)
+		if st.IsGlobal(id) {
+			return true, nil
+		}
+		return managedLinksAt(opts.Home, id, agents, agentdir.Global, "")
 	}
-	return slices.Contains(st.VendoredRoots(id), req.Base)
+	if slices.Contains(st.VendoredRoots(id), req.Base) {
+		return true, nil
+	}
+	return managedLinksAt(opts.Home, id, agents, agentdir.Local, req.Base)
+}
+
+// managedLinksAt discovers legacy installs without canonical-copy markers.
+// Inspection errors are propagated so callers never mistake an unreadable
+// installation for an absent one.
+func managedLinksAt(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string) (bool, error) {
+	if scope == agentdir.Local {
+		agents, _ = SplitLocalAliased(agents, base)
+	}
+	res, err := linker.ScanLinks(home, id, agents, scope, base)
+	if err != nil {
+		return false, err
+	}
+	for _, a := range res.Agents {
+		if a.Action == linker.ActionFound {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Roots returns only the projects the requested uninstall would change.
@@ -92,7 +117,7 @@ func (req UninstallRequest) Roots(st *state.State) []string {
 	}
 	if *req.Scope == agentdir.Local {
 		for _, id := range req.IDs {
-			if req.Includes(st, id) {
+			if slices.Contains(st.VendoredRoots(id), req.Base) {
 				return []string{req.Base}
 			}
 		}
@@ -237,11 +262,16 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 	if err != nil {
 		return res, err
 	}
+	agents := cfg.AllAgents()
 	ids := req.IDs
 	if req.SkipMissing {
 		present := make([]string, 0, len(ids))
 		for _, id := range ids {
-			if !req.Includes(st, id) {
+			included, err := req.Includes(opts, st, agents, id)
+			if err != nil {
+				return res, err
+			}
+			if !included {
 				rep.Event(logEvent(LevelWarn, id, CodeNotInstalled, id+" is not installed in the requested scope; skipped"))
 				continue
 			}
@@ -251,7 +281,11 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 	} else {
 		var missing []string
 		for _, id := range ids {
-			if !req.Includes(st, id) {
+			included, err := req.Includes(opts, st, agents, id)
+			if err != nil {
+				return res, err
+			}
+			if !included {
 				missing = append(missing, id)
 			}
 		}
@@ -280,7 +314,6 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 	// Clear links for EVERY defined agent (not just the enabled ones): a link
 	// made while an agent was enabled must not be left dangling just because it
 	// is disabled now.
-	agents := cfg.AllAgents()
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			return res, err
@@ -367,7 +400,8 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 		label := ScopeLabel(agentdir.Local, dir, cwd)
 		// An unlink failure here is not recorded: the sweep below revisits
 		// the same link paths and blocks (or, under Force, warns) on it.
-		removed, _, err := VendorRemove(rep, home, id, localAgents, agentdir.Local, dir, true, label)
+		recorded := slices.Contains(st.VendoredRoots(id), dir)
+		removed, _, err := VendorRemove(rep, home, id, localAgents, agentdir.Local, dir, recorded, label)
 		if err != nil {
 			if err := blocked(CodeRemoveFailed, err); err != nil {
 				return done, err
@@ -421,14 +455,52 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 	if req.Scope == nil {
 		st.Remove(id)
 	} else {
+		// Check live links outside this target before changing the markers. A
+		// failed scan keeps tracking intact so the uninstall can be retried.
+		remaining, err := remainingInstalls(opts, agents, st, id, req)
+		if err != nil {
+			return done, &UninstallBlockedError{ID: id, Err: err}
+		}
 		if *req.Scope == agentdir.Global {
 			st.SetGlobal(id, false)
 		} else {
 			st.RemoveVendoredRoot(id, req.Base)
 		}
-		if !st.IsGlobal(id) && len(st.VendoredRoots(id)) == 0 {
+		if !remaining {
 			st.Remove(id)
 		}
 	}
 	return done, nil
+}
+
+// remainingInstalls checks recorded copies and live links outside the selected
+// target. It discovers other installs without deleting them.
+func remainingInstalls(opts Options, agents []agentdir.Agent, st *state.State, id string, req UninstallRequest) (bool, error) {
+	if *req.Scope != agentdir.Global {
+		if st.IsGlobal(id) {
+			return true, nil
+		}
+		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Global, "")
+		if found || err != nil {
+			return found, err
+		}
+	}
+	for _, root := range st.VendoredRoots(id) {
+		if *req.Scope != agentdir.Local || root != req.Base {
+			return true, nil
+		}
+	}
+	for _, root := range localScanDirs(st.LocalRoots, opts.Cwd) {
+		if *req.Scope == agentdir.Local && root == req.Base {
+			continue
+		}
+		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Local, root)
+		if found {
+			st.AddLocalRoot(root)
+		}
+		if found || err != nil {
+			return found, err
+		}
+	}
+	return false, nil
 }
