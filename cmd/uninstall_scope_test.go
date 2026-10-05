@@ -14,7 +14,7 @@ func TestUninstallScopeFlags(t *testing.T) {
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
 	src := filepath.Join(t.TempDir(), "demo")
 	writeSkillMD(t, src, "demo", "selected source")
-	project, other := t.TempDir(), t.TempDir()
+	project, other := evalProject(t, t.TempDir()), evalProject(t, t.TempDir())
 	e.run(t, "install", src, "--global")
 	e.runIn(t, project, "install", "demo", "--local")
 	e.runIn(t, other, "install", "demo", "--local")
@@ -53,7 +53,7 @@ func TestUninstallScopeTracksLegacyProject(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "demo")
 	writeSkillMD(t, src, "demo", "selected source")
 	e.run(t, "install", src, "--global")
-	project := t.TempDir()
+	project := evalProject(t, t.TempDir())
 	legacy := filepath.Join(e.home, "skills", "demo")
 	writeSkillMD(t, legacy, "demo", "legacy copy")
 	link := filepath.Join(project, ".claude", "skills", "demo")
@@ -136,7 +136,7 @@ func TestUninstallScopeDiscoversEveryLegacyProject(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "demo")
 	writeSkillMD(t, src, "demo", "selected source")
 	e.run(t, "install", src, "--global")
-	recorded, legacyProject := t.TempDir(), t.TempDir()
+	recorded, legacyProject := evalProject(t, t.TempDir()), evalProject(t, t.TempDir())
 	e.runIn(t, recorded, "install", "demo", "--local")
 	legacy := filepath.Join(e.home, "skills", "demo")
 	writeSkillMD(t, legacy, "demo", "legacy copy")
@@ -166,7 +166,7 @@ func TestUninstallProjectSymlinkAlias(t *testing.T) {
 	e := env{home: t.TempDir(), userDir: t.TempDir(), bin: skillmBinary(t)}
 	src := filepath.Join(t.TempDir(), "demo")
 	writeSkillMD(t, src, "demo", "selected source")
-	project := t.TempDir()
+	project := evalProject(t, t.TempDir())
 	e.runIn(t, project, "install", src, "--local")
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(project, alias); err != nil {
