@@ -119,10 +119,9 @@ roots per skill, and the Global flag) so Update can refresh it and Uninstall can
 Local copy and a Global install can coexist for the same skill.
 
 ### Foreign entry
-A file, directory or link at a path skillm would write (a canonical slot or an agent's link
-path) that skillm did not create: a skill copied in by hand or by another tool. skillm never
-overwrites one silently; the user overwrites it (**yes**, canonical slots only), takes it over
-(**force**, link paths too) or skips that skill (**skip foreign**).
+A file, directory or link at a canonical slot or agent's link path that skillm did not create,
+such as a skill installed by another tool. Replacing it requires approval; see
+[Install's overwrite policy](features/core/install-primitives.md#agent-takeovers-use-force).
 _Avoid_: conflict, unmanaged file
 
 ### Lockfile
@@ -155,19 +154,14 @@ folders for skillm-owned symlinks, so they never drift; only the Canonical copie
 An Install at either Scope is a **Canonical copy** plus agent Links (a Local one adds a Lockfile
 entry); re-installing over a recorded copy refreshes it in place, a legacy absolute symlink into
 the old Home skills subtree at the canonical slot is converted to a copy, and a **Foreign
-entry** in the way stops the install until the user decides what to do with it.
+entry** at the canonical slot stops the install until the user decides what to do with it. A
+Foreign entry at an agent path is kept and reported while the Canonical copy is installed.
 
 ### Uninstall
-Remove a skill entirely. Uninstall removes the skill's Global install (agent links and the
-`~/.agents/skills` Canonical copy) and its Local installs from every tracked project (**agent
-links, the Canonical copy, and the Lockfile entry** — committed files in the user's repos, so
-the confirmation names those projects) — the only copies there are — sweeping every Agent and
-Scope across all defined Agents (even ones now disabled, so nothing is left dangling), then
-drops its Registry entry. There is **no per-scope uninstall**: it always clears every reference.
-Safe by default — on a terminal it confirms first (skip with `--yes`/`--force`), and asks again
-if another process added a project to delete from while the question was open; a GUI asks its
-own question and names the projects it confirmed. Acts on one or more named skills, or
-interactively on a multiselect of every installed skill.
+Remove a skill's Installs everywhere, only at Global Scope, or in one Local project: the
+selected Canonical copies, agent Links and Local Lockfile entries. A skill remains in the
+Registry while it has another Install. See [Uninstall](features/core/uninstall-and-agents.md)
+for target selection and confirmation rules.
 
 ### Import
 Adopt a project's **Lockfile** into skillm's tracking — the bridge from a repo someone else

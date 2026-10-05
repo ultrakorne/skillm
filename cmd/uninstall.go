@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/ultrakorne/skillm/internal/agentdir"
 	"github.com/ultrakorne/skillm/internal/config"
 	"github.com/ultrakorne/skillm/internal/core"
 	"github.com/ultrakorne/skillm/internal/protocol"
@@ -27,15 +30,19 @@ func init() {
 }
 
 func newUninstallCmd() *cobra.Command {
+	var global, local bool
+	var project string
 	c := &cobra.Command{
 		Use:   "uninstall [skill_id...]",
-		Short: "Remove skills from Home, unlinking them from every agent first",
-		Long: "uninstall removes skills entirely. For each skill it removes its Global " +
+		Short: "Remove skills everywhere or from one scope or project",
+		Long: "uninstall removes skills' selected installs. Without a target flag it removes their Global " +
 			"install (the ~/.agents/skills copy and every agent's symlink) and its Local " +
 			"installs in every recorded project (copy, links, and skills-lock.json entry, " +
 			"tracked in state.toml) — the only copies there are — then drops its registry " +
-			"entry so no dangling symlinks are left behind. There is no per-scope uninstall " +
-			"— it always clears every reference. Pass one or more skill ids, --all to remove " +
+			"entry when no installs remain. By default it clears every reference. " +
+			"Use --local to remove only this project's install, --project <dir> for " +
+			"another project, or --global to remove only the global install. " +
+			"Pass one or more skill ids, --all to remove " +
 			"every installed skill, or no arguments to pick interactively. On a terminal it " +
 			"confirms first unless --yes or --force is given.\n\n" +
 			"A caller that asked its own question passes each project it named with " +
@@ -50,6 +57,25 @@ func newUninstallCmd() *cobra.Command {
 		Annotations: map[string]string{annotationJSON: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := core.UninstallRequest{CheckRoots: cmd.Flags().Changed("confirmed-root")}
+			if global {
+				scope := agentdir.Global
+				req.Scope = &scope
+			} else if local || cmd.Flags().Changed("project") {
+				opts, err := coreOptions(local || !filepath.IsAbs(project))
+				if err != nil {
+					return err
+				}
+				dir := project
+				if local {
+					dir = opts.Cwd
+				}
+				base, err := projectDir(dir, opts.Cwd)
+				if err != nil {
+					return err
+				}
+				scope := agentdir.Local
+				req.Scope, req.Base = &scope, base
+			}
 			for _, r := range uninstallFlagConfirmedRoots {
 				if r != "" {
 					req.ConfirmedRoots = append(req.ConfirmedRoots, r)
@@ -58,7 +84,11 @@ func newUninstallCmd() *cobra.Command {
 			return runUninstall(cmd.Context(), args, uninstallFlagAll, req)
 		},
 	}
-	c.Flags().BoolVar(&uninstallFlagAll, "all", false, "remove every skill in Home")
+	c.Flags().BoolVar(&uninstallFlagAll, "all", false, "remove every skill in the selected scope (everywhere by default)")
+	c.Flags().BoolVar(&global, "global", false, "remove only global installs")
+	c.Flags().BoolVar(&local, "local", false, "remove only installs in the current project")
+	c.Flags().StringVar(&project, "project", "", "remove only installs in this existing project directory")
+	c.MarkFlagsMutuallyExclusive("global", "local", "project")
 	c.Flags().StringArrayVar(&uninstallFlagConfirmedRoots, "confirmed-root", nil,
 		"a project whose committed copies the caller confirmed deleting (repeat it; an empty value confirms none)")
 	return c
@@ -77,15 +107,21 @@ func runUninstall(ctx context.Context, args []string, all bool, confirmed core.U
 			return usageError("uninstall --json needs skill ids or --all")
 		}
 	}
-	opts, err := coreOptions(true)
+	// Scoped requests use cwd for discovery and labels, without requiring it
+	// to exist. They only remove entries in the explicitly selected target.
+	opts, err := coreOptions(confirmed.Scope == nil)
 	if err != nil {
 		return err
+	}
+	if confirmed.Scope != nil {
+		opts.Cwd, _ = os.Getwd()
 	}
 	// The picker and the confirmation run without Home's lock, so an open
 	// prompt never blocks another skillm process; core.Uninstall re-reads the
 	// Registry under the lock and refuses a skill that is gone by then. A
 	// broken config.toml is still reported before any question.
-	if _, err := config.Load(opts.Home); err != nil {
+	cfg, err := config.Load(opts.Home)
+	if err != nil {
 		return err
 	}
 	st, err := state.Load(opts.Home)
@@ -93,7 +129,7 @@ func runUninstall(ctx context.Context, args []string, all bool, confirmed core.U
 		return err
 	}
 
-	ids, err := selectUninstallIDs(st, args, all)
+	ids, err := selectUninstallIDs(opts, cfg.AllAgents(), st, args, all, confirmed)
 	if err != nil {
 		return err
 	}
@@ -115,10 +151,17 @@ func runUninstall(ctx context.Context, args []string, all bool, confirmed core.U
 	req.IDs = ids
 	req.SkipMissing = flagJSON
 	ask := !flagJSON && ui.IsTTY() && !opts.Yes && !opts.Force
-	roots := core.UninstallRoots(st, ids)
+	roots := req.Roots(st)
 	for {
 		if ask {
-			ok, err := ui.Confirm(confirmUninstallPrompt(ids, roots))
+			prompt := confirmUninstallPrompt(ids, roots)
+			if req.Scope != nil {
+				prompt = fmt.Sprintf("Remove %s from %s?", strings.Join(ids, ", "), scopeLabel(*req.Scope, req.Base, opts.Cwd))
+				if len(roots) > 0 {
+					prompt += "\nThis DELETES committed copies in: " + strings.Join(roots, ", ")
+				}
+			}
+			ok, err := ui.Confirm(prompt)
 			if err != nil {
 				return err
 			}
@@ -178,7 +221,7 @@ func uninstallLocked(ctx context.Context, opts core.Options, rep core.Reporter, 
 // registered skill; with no arguments an interactive multiselect is shown (which
 // refuses on a non-TTY). It returns an empty slice and no error when there is
 // nothing to do, having already told the user why.
-func selectUninstallIDs(st *state.State, args []string, all bool) ([]string, error) {
+func selectUninstallIDs(opts core.Options, agents []agentdir.Agent, st *state.State, args []string, all bool, req core.UninstallRequest) ([]string, error) {
 	if len(args) > 0 {
 		if all {
 			return nil, errors.New("pass either skill ids or --all, not both")
@@ -189,16 +232,35 @@ func selectUninstallIDs(st *state.State, args []string, all bool) ([]string, err
 		if flagJSON {
 			return args, nil
 		}
-		if err := core.CheckInstalled(st, args); err != nil {
-			return nil, err
+		var missing []string
+		for _, id := range args {
+			included, err := req.Includes(opts, st, agents, id)
+			if err != nil {
+				return nil, err
+			}
+			if !included {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			return nil, &core.NotInstalledError{IDs: missing}
 		}
 		return args, nil
 	}
 
-	registered := registeredIDs(st)
+	var registered []string
+	for _, id := range registeredIDs(st) {
+		included, err := req.Includes(opts, st, agents, id)
+		if err != nil {
+			return nil, err
+		}
+		if included {
+			registered = append(registered, id)
+		}
+	}
 	if len(registered) == 0 {
 		if !flagJSON {
-			ui.Warnf("no skills in Home; nothing to uninstall")
+			ui.Warnf("no skills in the requested scope; nothing to uninstall")
 		}
 		return nil, nil
 	}
@@ -206,11 +268,11 @@ func selectUninstallIDs(st *state.State, args []string, all bool) ([]string, err
 		return registered, nil
 	}
 
-	opts := make([]ui.Option, 0, len(registered))
+	choices := make([]ui.Option, 0, len(registered))
 	for _, id := range registered {
-		opts = append(opts, ui.Option{Label: id, Value: id})
+		choices = append(choices, ui.Option{Label: id, Value: id})
 	}
-	ids, err := ui.SelectSkills("Select skills to uninstall", opts)
+	ids, err := ui.SelectSkills("Select skills to uninstall", choices)
 	if err != nil {
 		return nil, err
 	}

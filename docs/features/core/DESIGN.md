@@ -2,10 +2,9 @@
 
 ## Overview
 
-The core is the skillm program behind every command: it owns Home (Config and the Registry)
-and every skill install on the machine, and each command is one operation on that state. Its
-shaping idea: several skillm processes can run at once (two terminals, a background script)
-and must never corrupt Home or each other's installs.
+The core owns Home (Config and the Registry) and every skill install on the machine; each
+command is one operation on that state. Several skillm processes can run at once (two terminals,
+a background script) and must never corrupt Home or each other's installs.
 
 ## Surface
 
@@ -21,7 +20,7 @@ and must never corrupt Home or each other's installs.
 | `list`, `check`, `status`, `version`, `source inspect`, `agent ls`, `config get` | no | no |
 | `upgrade` | replaces the skillm binary; `status.json` when a refresh ran | only for `status.json` |
 
-`--home` or `$SKILLM_HOME` points any command at a different Home; the default is `~/.skillm`.
+`--home` or `$SKILLM_HOME` points at another Home; the default is `~/.skillm`.
 
 ## Flows
 
@@ -33,9 +32,10 @@ and must never corrupt Home or each other's installs.
 - **Installing from a Source** — skillm reads the Source and asks which skills, where, and any
   overwrite question with Home free. Locked, it re-reads Home, re-checks the choice and installs
   the commit it read (with `--commit`, the one `source inspect` showed, refusing a moved Source).
-- **Uninstalling** — the confirmation names every project whose committed copies are deleted. If
-  another skillm process installs one of the skills into a new project meanwhile, skillm asks
-  again with the new list. Ctrl-C stops between skills; those already removed stay removed.
+- **Uninstalling** — remove skills everywhere, only globally, or in one project (`--local` /
+  `--project`). The confirmation names the targeted projects whose committed copies are deleted.
+  A new targeted project requires confirmation again. The Registry entry stays while another
+  install remains; Ctrl-C stops between skills.
 - **Home is busy** — the second command prints `waiting for another skillm operation (pid …:
   skillm install) to finish…`, runs as soon as the first ends, or gives up after 30 seconds
   with an error naming the holder. Ctrl-C stops the wait.
