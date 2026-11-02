@@ -78,6 +78,30 @@ func TestInstallYesDoesNotTakeOverAgentLinks(t *testing.T) {
 	}
 }
 
+func TestInstallContinuesAfterAgentPathError(t *testing.T) {
+	for _, mode := range []string{"plain", "force", "skip-foreign"} {
+		t.Run(mode, func(t *testing.T) {
+			opts, base, insp := installSetup(t)
+			if err := os.WriteFile(filepath.Join(base, ".claude"), []byte("not a directory"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			opts.Force = mode == "force"
+			req := InstallRequest{Inspection: insp, IDs: []string{"demo"}, Scope: agentdir.Local, Base: base, SkipForeign: mode == "skip-foreign"}
+			rep := &recorder{}
+			res, err := InstallSkills(context.Background(), opts, rep, req)
+			if err != nil || !res.InstalledAny() {
+				t.Fatalf("usable agents must still get the skill: %+v %v", res, err)
+			}
+			if _, err := os.Stat(filepath.Join(demoSlot(base), "SKILL.md")); err != nil {
+				t.Fatalf("canonical copy did not land: %v", err)
+			}
+			if len(eventsWith(rep, CodeLinkFailed)) != 1 || len(eventsWith(rep, CodeLinkRefused)) != 0 {
+				t.Fatalf("agent I/O failure must remain a warning: %+v", rep.events)
+			}
+		})
+	}
+}
+
 // TestInstallForeignFiles: a foreign directory at the canonical slot stops the
 // install with a *ForeignFilesError before anything is written; SkipForeign
 // skips that skill with an install_blocked event; Yes overwrites it.

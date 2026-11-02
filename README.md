@@ -33,6 +33,8 @@ skillm import                                                   # adopt a repo's
 skillm check                                                    # see what has updates
 skillm update                                                   # pull the updates in, everywhere on this machine
 skillm update --force                                           # also take over agent-folder copies skillm didn't create
+skillm uninstall grill-with-docs --local                        # remove only this project's install
+skillm uninstall grill-with-docs --project /path/to/project      # remove only another project's install
 ```
 
 A **global** install writes a real copy into the canonical `~/.agents/skills` folder —
@@ -55,7 +57,7 @@ lockfile entries as it goes) — the one-command whole-machine update per-repo t
 | ------------------------------------ | ----------------------------------------------------- |
 | `install [<url\|owner/repo\|path>] [id...] [--all] [--as <name>] [--ref <ref>] [--global\|--local]` | Install into every enabled agent — straight from a repo URL, a GitHub `owner/repo` shorthand, or a path (fetch + pick + install in one step), or by the id of an already-installed skill to add another scope/project. Local scope writes the committable project install; interactive pickers if no id. |
 | `import [dir]`                       | Adopt a project's `skills-lock.json` into skillm's tracking: fetch the sources and write any missing copies/links. |
-| `uninstall [id...] [--all]`           | Unlink everywhere and delete the global and project copies + lock entries + registry entry (interactive picker if no id). |
+| `uninstall [id...] [--all] [--global\|--local\|--project <dir>]` | Remove copies, agent links and lock entries everywhere, or only globally / in one project. Keep the registry entry while another install remains; interactive skill picker if no id. |
 | `list`                               | Show every installed skill and where it is installed (global or the project path). |
 | `check`                              | Report which git skills have upstream updates.        |
 | `update [id]`                        | Pull updates for outdated git skills (all, or one), writing the new content into every install — the global copy and every tracked project's copies and lock entries — and adopt teammate-added lockfile entries. |
@@ -70,7 +72,13 @@ Note the split: `skillm update` pulls new revisions of your installed **skills**
 upgrade` replaces the **skillm binary** itself. A binary built from source (`go build`, or an
 unstamped version) matches no published release, so `upgrade` reports that and leaves it alone.
 
-Global flags: `--force` / `--yes` (skip confirmations), `--home <path>` (override Home, default `~/.skillm`).
+When another tool already installed a skill in an agent folder, skillm keeps that directory
+and warns that the agent still uses its existing copy. Retry the command with `--force` to
+replace it with a link to the shared copy. Canonical-copy conflicts retain their overwrite prompt.
+
+Global flags: `--force` / `--yes` (`--yes` approves canonical overwrites and uninstall;
+agent path takeovers require `--force`), `--home <path>` (override Home,
+default `~/.skillm`).
 
 ## License
 

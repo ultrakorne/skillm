@@ -88,7 +88,7 @@ func printLog(ev core.Event) {
 // command resolves. Core's Text never names a flag or a command; the
 // terminal adds which one to use.
 var flagAdvice = map[string]string{
-	core.CodeLinkRefused:       " (pass --force to take it over)",
+	core.CodeLinkRefused:       " (this agent keeps its existing skill; retry with --force to replace it)",
 	core.CodeInstallBlocked:    " (pass --force)",
 	core.CodeAgentEnabledEmpty: " (run `skillm install`)",
 	core.CodeCopiesKept:        "; use `skillm uninstall` to remove skills entirely",

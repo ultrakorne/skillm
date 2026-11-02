@@ -14,6 +14,18 @@ whole call. Each returns what it did per skill or per agent: an `UninstalledSkil
 
 ## Noteworthy
 
+### Scope bounds deletion and tracking
+
+With no target flag, Uninstall removes every install. `--local` or `--project` selects one
+project; `--global` selects no project. Skill selection, confirmation roots, copy removal
+and agent sweeps all honor that target. Only the selected install markers are cleared;
+the Registry entry and its Source and Revision remain while a recorded copy or managed
+legacy link exists elsewhere. Discovery includes disabled agents and remembers projects found
+through cwd. Unreadable locations block before target deletion; force can continue while
+retaining the Registry entry for uncertain installs. Project aliases match by filesystem
+identity. Lock entries are removed only for recorded copies, preserving foreign entries
+beside legacy links.
+
 ### A confirmation holds the uninstall to the projects it named
 
 The question names every project whose committed copies the uninstall deletes
@@ -23,12 +35,13 @@ in a project the confirmation did not name, because another process installed or
 while the question was open. `cmd` releases the lock, asks again with the new list and
 retries. A caller that asked its own question passes the projects it named with
 `--confirmed-root`, which sets both fields. A run that asked nothing (`--yes`, `--force`, no
-terminal, and no `--confirmed-root`) clears every recorded project.
+terminal, and no `--confirmed-root`) clears its targeted installs without a confirmation-root
+check.
 
 ### Missing ids refuse the batch, unless the caller asks to skip them
 
-An id that is not installed (any more) is a `*NotInstalledError` before anything is removed, so a
-typo removes nothing. With `UninstallRequest.SkipMissing`, which JSON mode sets, each such id is
+An id missing from the requested target is a `*NotInstalledError` before anything is removed,
+so a typo removes nothing. With `UninstallRequest.SkipMissing`, which JSON mode sets, each such id is
 a `not_installed` warning instead and the rest are removed, so a batch that stopped part-way can
 be retried with the same ids.
 

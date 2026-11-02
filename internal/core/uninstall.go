@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -22,7 +24,7 @@ const (
 	// CodeRemoveFailed: a canonical copy (or a legacy symlink in its slot)
 	// could not be removed, and Options.Force stepped past it.
 	CodeRemoveFailed = "remove_failed"
-	// CodeUninstalled: the skill's Registry entry was dropped.
+	// CodeUninstalled: the requested installs were removed.
 	CodeUninstalled = "uninstalled"
 	// CodeNotInstalled: a skill asked for is not installed (any more), and
 	// UninstallRequest.SkipMissing skipped it.
@@ -48,6 +50,10 @@ type UninstalledSkill struct {
 type UninstallRequest struct {
 	// IDs are the skills to uninstall, in the order to report them.
 	IDs []string
+	// Scope limits removal to Global or to the Local install at Base. Nil
+	// removes every install. Base must be absolute for Local.
+	Scope *agentdir.Scope
+	Base  string
 	// CheckRoots holds the uninstall to the projects the caller's
 	// confirmation named: when set, Uninstall refuses with an
 	// *UninstallScopeChangedError, before removing anything, if the skills
@@ -63,6 +69,57 @@ type UninstallRequest struct {
 	// part-way can be retried with the same ids: the ones it already removed
 	// are then skipped.
 	SkipMissing bool
+}
+
+// Includes reports whether id has an install in the requested scope.
+func (req UninstallRequest) Includes(opts Options, st *state.State, agents []agentdir.Agent, id string) (bool, error) {
+	if _, ok := st.Get(id); !ok {
+		return false, nil
+	}
+	if req.Scope == nil {
+		return true, nil
+	}
+	if *req.Scope == agentdir.Global {
+		if st.IsGlobal(id) {
+			return true, nil
+		}
+		return managedLinksAt(opts.Home, id, agents, agentdir.Global, "")
+	}
+	if recordedProject(st, id, req.Base) {
+		return true, nil
+	}
+	return managedLinksAt(opts.Home, id, agents, agentdir.Local, req.Base)
+}
+
+// managedLinksAt discovers legacy installs without canonical-copy markers.
+// Inspection errors are propagated so callers never mistake an unreadable
+// installation for an absent one.
+func managedLinksAt(home, id string, agents []agentdir.Agent, scope agentdir.Scope, base string) (bool, error) {
+	if scope == agentdir.Local {
+		agents, _ = SplitLocalAliased(agents, base)
+	}
+	res, err := linker.ScanLinks(home, id, agents, scope, base)
+	for _, a := range res.Agents {
+		if a.Action == linker.ActionFound {
+			return true, err
+		}
+	}
+	return false, err
+}
+
+// Roots returns only the projects the requested uninstall would change.
+func (req UninstallRequest) Roots(st *state.State) []string {
+	if req.Scope == nil {
+		return UninstallRoots(st, req.IDs)
+	}
+	if *req.Scope == agentdir.Local {
+		for _, id := range req.IDs {
+			if recordedProject(st, id, req.Base) {
+				return []string{req.Base}
+			}
+		}
+	}
+	return nil
 }
 
 // UninstallResult is Uninstall's outcome: one entry per uninstalled skill, in
@@ -104,8 +161,10 @@ func (e *UninstallScopeChangedError) Unwrap() error { return ErrNeedsConfirm }
 // error — so its Registry entry was kept. The skills before ID were
 // uninstalled and saved, and ID's removals up to the failure stay done (an
 // uninstall is safe to repeat). A retry with Options.Force reports such
-// failures as warnings, leaves the entries in place and drops the Registry
-// entry anyway. Only a foreign entry (Err matches linker.ErrNotManaged) makes
+// failures as warnings and leaves the failed entries in place. It clears the
+// selected install markers, retaining the Registry entry for other installs
+// or an unreadable remaining location. An unscoped retry drops the entry.
+// Only a foreign entry (Err matches linker.ErrNotManaged) makes
 // it match ErrNeedsForce; an I/O failure is a plain error, which Force still
 // steps past but which a caller should not offer "force" for.
 type UninstallBlockedError struct {
@@ -156,11 +215,10 @@ func CheckInstalled(st *state.State, ids []string) error {
 	return nil
 }
 
-// Uninstall removes each skill in req.IDs entirely: its Global install (agent
-// links and the ~/.agents/skills copy) and its Local installs in every
-// recorded project (agent links, canonical copy and skills-lock.json entry),
-// sweeping every defined agent (enabled or not, so nothing is left dangling),
-// then drops its Registry entry. The Registry is saved after each skill, so
+// Uninstall removes each skill's requested installs: all of them by default,
+// or only req.Scope (with req.Base for Local). It sweeps every defined agent,
+// disabled ones included, and drops the Registry entry only when no installs
+// remain. The Registry is saved after each skill, so
 // disk and Registry never drift if a later skill fails. Finally a tracked
 // local root that no longer holds anything is forgotten.
 //
@@ -177,6 +235,24 @@ func CheckInstalled(st *state.State, ids []string) error {
 func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallRequest) (UninstallResult, error) {
 	rep = nopIfNil(rep)
 	var res UninstallResult
+	if req.Scope != nil {
+		if *req.Scope != agentdir.Global && *req.Scope != agentdir.Local {
+			return res, fmt.Errorf("invalid uninstall scope %v", *req.Scope)
+		}
+		if *req.Scope == agentdir.Local {
+			if !filepath.IsAbs(req.Base) {
+				return res, fmt.Errorf("a local uninstall needs an absolute project directory, got %q", req.Base)
+			}
+			if filepath.Clean(agentdir.CanonicalLocalDir(req.Base)) == filepath.Clean(agentdir.CanonicalGlobalDir()) {
+				return res, &LocalScopeAliasedError{Base: req.Base}
+			}
+			local, lerr := os.Stat(agentdir.CanonicalLocalDir(req.Base))
+			global, gerr := os.Stat(agentdir.CanonicalGlobalDir())
+			if lerr == nil && gerr == nil && os.SameFile(local, global) {
+				return res, &LocalScopeAliasedError{Base: req.Base}
+			}
+		}
+	}
 	cfg, err := config.Load(opts.Home)
 	if err != nil {
 		return res, err
@@ -185,22 +261,40 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 	if err != nil {
 		return res, err
 	}
+	agents := cfg.AllAgents()
 	ids := req.IDs
 	if req.SkipMissing {
 		present := make([]string, 0, len(ids))
 		for _, id := range ids {
-			if _, ok := st.Get(id); !ok {
-				rep.Event(logEvent(LevelWarn, id, CodeNotInstalled, id+" is not installed; skipped"))
+			included, err := req.Includes(opts, st, agents, id)
+			if err != nil {
+				return res, err
+			}
+			if !included {
+				rep.Event(logEvent(LevelWarn, id, CodeNotInstalled, id+" is not installed in the requested scope; skipped"))
 				continue
 			}
 			present = append(present, id)
 		}
 		ids = present
-	} else if err := CheckInstalled(st, ids); err != nil {
-		return res, err
+	} else {
+		var missing []string
+		for _, id := range ids {
+			included, err := req.Includes(opts, st, agents, id)
+			if err != nil {
+				return res, err
+			}
+			if !included {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			return res, &NotInstalledError{IDs: missing}
+		}
 	}
+	req.IDs = ids
 	if req.CheckRoots {
-		roots := UninstallRoots(st, ids)
+		roots := req.Roots(st)
 		for _, r := range roots {
 			if !slices.Contains(req.ConfirmedRoots, r) {
 				return res, &UninstallScopeChangedError{Roots: roots}
@@ -219,12 +313,11 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 	// Clear links for EVERY defined agent (not just the enabled ones): a link
 	// made while an agent was enabled must not be left dangling just because it
 	// is disabled now.
-	agents := cfg.AllAgents()
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			return res, err
 		}
-		done, err := uninstallOne(opts, rep, agents, st, id)
+		done, err := uninstallOne(opts, rep, agents, st, id, req)
 		if err != nil {
 			return res, err
 		}
@@ -247,16 +340,13 @@ func Uninstall(ctx context.Context, opts Options, rep Reporter, req UninstallReq
 	return res, nil
 }
 
-// uninstallOne removes a single skill: it removes its Global install (agent
-// links and the ~/.agents/skills copy) and its Local installs (agent links,
-// canonical copy, and skills-lock.json entry) from every recorded project,
-// unlinks it from every tracked local folder, and drops the registry entry from
-// st (in memory — the caller persists). Those canonical copies are the skill's
-// only copies; there is no separate Home library to delete. linker.Unlink is
+// uninstallOne removes one skill's requested copies, links and lock entries,
+// clearing only their install markers in st (the caller persists). An entry
+// with remaining installs is kept. linker.Unlink is
 // idempotent for absent links and refuses to touch foreign symlinks or real
 // files; under opts.Force such refusals are downgraded to warnings so the entry
 // can still be dropped (the foreign entry stays put).
-func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state.State, id string) (UninstalledSkill, error) {
+func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state.State, id string, req UninstallRequest) (UninstalledSkill, error) {
 	home, cwd := opts.Home, opts.Cwd
 	done := UninstalledSkill{ID: id}
 	// blocked reports err as a warning under Force, and otherwise turns it
@@ -270,6 +360,20 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 		return nil
 	}
 
+	// Inspect other installs before deleting the selected target. Force can
+	// continue past an unreadable location, but uncertainty keeps tracking.
+	remaining := false
+	if req.Scope != nil {
+		var err error
+		remaining, err = remainingInstalls(opts, agents, st, id, req)
+		if err != nil {
+			if err := blocked(CodeUnlinkFailed, err); err != nil {
+				return done, err
+			}
+			remaining = true
+		}
+	}
+
 	// Delete the canonical copies FIRST — the Global one, then the committed
 	// Local ones in every recorded project — so a later symlink sweep over the
 	// same place sees an empty slot rather than refusing on a real directory.
@@ -278,29 +382,39 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 	// edit the user's git working tree; the caller's confirmation already
 	// named those directories. A missing copy (project moved/deleted) is
 	// silently skipped.
-	removedGlobal, unlinkErr, err := VendorRemove(rep, home, id, agents, agentdir.Global, cwd, st.IsGlobal(id), agentdir.Global.String())
-	if unlinkErr != nil {
-		// Nothing revisits the global link paths, so a link left behind is
-		// recorded here. It never blocked the uninstall, and still does not.
-		done.Warnings = append(done.Warnings, unlinkErr)
-	}
-	if err != nil {
-		if err := blocked(CodeRemoveFailed, err); err != nil {
-			return done, err
+	if req.Scope == nil || *req.Scope == agentdir.Global {
+		removedGlobal, unlinkErr, err := VendorRemove(rep, home, id, agents, agentdir.Global, cwd, st.IsGlobal(id), agentdir.Global.String())
+		if unlinkErr != nil {
+			// Nothing revisits the global link paths, so a link left behind is
+			// recorded here. It never blocked the uninstall, and still does not.
+			done.Warnings = append(done.Warnings, unlinkErr)
+		}
+		if err != nil {
+			if err := blocked(CodeRemoveFailed, err); err != nil {
+				return done, err
+			}
+		}
+		if removedGlobal {
+			done.RemovedCopies = append(done.RemovedCopies, agentdir.Global.String())
+			rep.Event(logEvent(LevelSuccess, id, CodeCopyRemoved,
+				fmt.Sprintf("deleted copy of %s in %s (global)", id, CanonicalDisplay(agentdir.Global))))
 		}
 	}
-	if removedGlobal {
-		done.RemovedCopies = append(done.RemovedCopies, agentdir.Global.String())
-		rep.Event(logEvent(LevelSuccess, id, CodeCopyRemoved,
-			fmt.Sprintf("deleted copy of %s in %s (global)", id, CanonicalDisplay(agentdir.Global))))
-	}
 
-	for _, dir := range st.VendoredRoots(id) {
+	roots := append([]string(nil), st.VendoredRoots(id)...)
+	if req.Scope != nil {
+		roots = nil
+		if *req.Scope == agentdir.Local {
+			roots = []string{req.Base}
+		}
+	}
+	for _, dir := range roots {
 		localAgents, _ := SplitLocalAliased(agents, dir)
 		label := ScopeLabel(agentdir.Local, dir, cwd)
 		// An unlink failure here is not recorded: the sweep below revisits
 		// the same link paths and blocks (or, under Force, warns) on it.
-		removed, _, err := VendorRemove(rep, home, id, localAgents, agentdir.Local, dir, true, label)
+		recorded := recordedProject(st, id, dir)
+		removed, _, err := VendorRemove(rep, home, id, localAgents, agentdir.Local, dir, recorded, label)
 		if err != nil {
 			if err := blocked(CodeRemoveFailed, err); err != nil {
 				return done, err
@@ -311,15 +425,21 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 			rep.Event(logEvent(LevelSuccess, id, CodeCopyRemoved,
 				fmt.Sprintf("deleted copy of %s in %s (%s)", id, agentdir.CanonicalLocalRel, label)))
 		}
-		if err := RemoveLockEntry(rep, id, dir); err != nil {
-			done.Warnings = append(done.Warnings, err)
+		if recorded {
+			if err := RemoveLockEntry(rep, id, dir); err != nil {
+				done.Warnings = append(done.Warnings, err)
+			}
 		}
 	}
 
 	// Sweep tracked local roots AND vendored roots for stray symlinks: a
 	// vendored root may also hold one, and need not be in LocalRoots.
 	sweepDirs := append(append([]string{}, st.LocalRoots...), st.VendoredRoots(id)...)
-	for _, dir := range localScanDirs(sweepDirs, cwd) {
+	sweepDirs = localScanDirs(sweepDirs, cwd)
+	if req.Scope != nil {
+		sweepDirs = roots
+	}
+	for _, dir := range sweepDirs {
 		// Skip a local dir where every agent's local folder is its global one
 		// (e.g. home): the global pass above already removed those links, so a
 		// local pass would only repeat the work and double-report it.
@@ -345,9 +465,79 @@ func uninstallOne(opts Options, rep Reporter, agents []agentdir.Agent, st *state
 		}
 	}
 
-	// There is no Home copy to delete — the canonical install copies removed
-	// above were the only ones. Drop the registry entry so, per the model, an
-	// entry exists only while the skill is installed somewhere.
-	st.Remove(id) // drops the entry, including its VendoredAt/Global records
+	// Keep the entry, including its Source and Revision, while another install
+	// remains so it can still be updated or installed in another project.
+	if req.Scope == nil {
+		st.Remove(id)
+	} else {
+		if *req.Scope == agentdir.Global {
+			st.SetGlobal(id, false)
+		} else {
+			for _, root := range append([]string(nil), st.VendoredRoots(id)...) {
+				if sameProject(root, req.Base) {
+					st.RemoveVendoredRoot(id, root)
+				}
+			}
+		}
+		if !remaining {
+			st.Remove(id)
+		}
+	}
 	return done, nil
+}
+
+// remainingInstalls checks recorded copies and live links outside the selected
+// target. It discovers other installs without deleting them.
+func remainingInstalls(opts Options, agents []agentdir.Agent, st *state.State, id string, req UninstallRequest) (bool, error) {
+	remaining := false
+	var scanErrors []error
+	if *req.Scope != agentdir.Global {
+		remaining = st.IsGlobal(id)
+		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Global, "")
+		if err != nil {
+			scanErrors = append(scanErrors, err)
+		}
+		remaining = remaining || found
+	}
+	for _, root := range st.VendoredRoots(id) {
+		if *req.Scope != agentdir.Local || !sameProject(root, req.Base) {
+			remaining = true
+		}
+	}
+	for _, root := range localScanDirs(st.LocalRoots, opts.Cwd) {
+		if *req.Scope == agentdir.Local && sameProject(root, req.Base) {
+			continue
+		}
+		found, err := managedLinksAt(opts.Home, id, agents, agentdir.Local, root)
+		if err != nil {
+			scanErrors = append(scanErrors, err)
+		}
+		if found || err != nil {
+			// A forced removal must remember unreadable roots too, so a
+			// later run can discover links hidden by the inspection failure.
+			st.AddLocalRoot(root)
+			remaining = true
+		}
+	}
+	return remaining, errors.Join(scanErrors...)
+}
+
+// sameProject accepts alternate paths to the same directory, while exact
+// cleaned paths still match when a recorded project has been deleted.
+func sameProject(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(ai, bi)
+}
+
+func recordedProject(st *state.State, id, base string) bool {
+	for _, root := range st.VendoredRoots(id) {
+		if sameProject(root, base) {
+			return true
+		}
+	}
+	return false
 }
