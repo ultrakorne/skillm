@@ -23,7 +23,9 @@ not be checked is an `error` row, not a failed command, and `--events` streams o
 as it resolves.
 
 **`source inspect <src> [--ref R]`** reads a Source once and returns `{source, kind, ref, commit,
-skills: [{id, name, description, path}]}`, the data of the Add Skill picker. `ref` is the branch
+skills: [{id, name, description, path}], skipped: [{id, path, error}]}`, the data of the Add Skill
+picker. `skipped` lists skill directories whose `SKILL.md` could not be loaded; they are not
+installable, and the rest of the Source still is. `ref` is the branch
 or tag an install records (`--ref`, or the default branch) and `commit` the full SHA read; both
 are omitted for a local Source, where `--ref` is `usage`. A GUI passes a local Source absolute.
 **`agent ls`** returns every defined agent, sorted by name, with `enabled` and its `global` and

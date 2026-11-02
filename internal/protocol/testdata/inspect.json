@@ -18,6 +18,13 @@
         "description": "",
         "path": "notes"
       }
+    ],
+    "skipped": [
+      {
+        "id": "draft",
+        "path": "skills/draft",
+        "error": "parse frontmatter in skills/draft/SKILL.md: unexpected key"
+      }
     ]
   },
   "warnings": [],

@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 )
@@ -105,7 +107,13 @@ func ParseSKILLMD(path string) (*Skill, error) {
 	if len(bytes.TrimSpace(front)) > 0 {
 		var fm yaml.MapSlice
 		if err := yaml.Unmarshal(front, &fm); err != nil {
-			return nil, fmt.Errorf("parse frontmatter in %s: %w", path, err)
+			loose, ok := parseLooseFrontmatter(front)
+			if !ok {
+				// Without the YAML source excerpt the library adds by
+				// default, so the error fits on one line.
+				return nil, fmt.Errorf("parse frontmatter in %s: %s", path, yaml.FormatError(err, false, false))
+			}
+			fm = loose
 		}
 		s.Frontmatter = fm
 	}
@@ -114,6 +122,63 @@ func ParseSKILLMD(path string) (*Skill, error) {
 	s.Description = stringValue(s.Frontmatter, "description")
 
 	return s, nil
+}
+
+// topLevelKey matches a frontmatter line that starts a top-level key: an
+// unindented key followed by ":" and then a space or the end of the line.
+var topLevelKey = regexp.MustCompile(`^([A-Za-z0-9_][A-Za-z0-9_.-]*)[ \t]*:(?:[ \t]|$)`)
+
+// parseLooseFrontmatter reads frontmatter that is not valid YAML the way agents
+// such as Claude Code do: as top-level "key: value" lines. Hand-written
+// SKILL.md files often hold an unquoted value with a ": " in it
+// ("description: Do X: then Y"), which strict YAML rejects.
+//
+// Each top-level key, with its indented continuation lines, is parsed as YAML
+// on its own, so keys that are valid keep their types (booleans, lists, maps).
+// A key that still fails becomes the raw text after its first ":", with
+// continuation lines folded in by single spaces. ok is false when some
+// unindented line does not start a key, as the block is then not a simple
+// mapping and guessing its meaning would be worse than reporting the error.
+func parseLooseFrontmatter(front []byte) (fm yaml.MapSlice, ok bool) {
+	type chunk struct {
+		key   string
+		lines []string
+	}
+	var chunks []chunk
+	for _, line := range strings.Split(string(front), "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if m := topLevelKey.FindStringSubmatch(line); m != nil {
+			chunks = append(chunks, chunk{key: m[1], lines: []string{line}})
+			continue
+		}
+		if len(chunks) == 0 || line == trimmed {
+			return nil, false // unindented, not a key: not a plain mapping
+		}
+		last := &chunks[len(chunks)-1]
+		last.lines = append(last.lines, line)
+	}
+	if len(chunks) == 0 {
+		return nil, false
+	}
+
+	fm = make(yaml.MapSlice, 0, len(chunks))
+	for _, c := range chunks {
+		var one yaml.MapSlice
+		if err := yaml.Unmarshal([]byte(strings.Join(c.lines, "\n")), &one); err == nil && len(one) == 1 {
+			fm = append(fm, one[0])
+			continue
+		}
+		parts := []string{strings.TrimSpace(c.lines[0][strings.Index(c.lines[0], ":")+1:])}
+		for _, l := range c.lines[1:] {
+			parts = append(parts, strings.TrimSpace(l))
+		}
+		fm = append(fm, yaml.MapItem{Key: c.key, Value: strings.TrimSpace(strings.Join(parts, " "))})
+	}
+	return fm, true
 }
 
 // splitFrontmatter separates a YAML frontmatter block from the Markdown body.

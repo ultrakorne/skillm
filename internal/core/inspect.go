@@ -35,6 +35,10 @@ type Inspection struct {
 	Commit string
 	// Skills are the skills found, in discovery order.
 	Skills []InspectedSkill
+	// Skipped are the directories holding a SKILL.md that could not be
+	// loaded (e.g. unparseable frontmatter), in discovery order. They are
+	// not installable; callers should tell the user they were left out.
+	Skipped []SkippedSkill
 
 	// root is the clone's worktree (git) or the local Source directory.
 	root string
@@ -56,6 +60,16 @@ type InspectedSkill struct {
 	// Duplicates are the other copies of the skill the Source holds (e.g. one
 	// per agent folder), in Path's form; discovery kept Path and dropped them.
 	Duplicates []string
+}
+
+// SkippedSkill is a skill directory Inspect found but could not load.
+type SkippedSkill struct {
+	// ID is the directory name the skill would have had.
+	ID string
+	// Path locates it in its Source, in the same form as InspectedSkill.Path.
+	Path string
+	// Err says why it could not be loaded.
+	Err error
 }
 
 // Close removes the clone behind the Inspection, including any content staged
@@ -202,12 +216,15 @@ func inspectGit(ctx context.Context, url, ref string) (*Inspection, error) {
 		return fail(err)
 	}
 
-	found, err := source.DiscoverSkills(repoDir)
+	found, skipped, err := source.DiscoverSkills(repoDir)
 	if err != nil {
 		return fail(err)
 	}
+	for _, u := range skipped {
+		insp.Skipped = append(insp.Skipped, SkippedSkill{ID: u.Id, Path: RepoRelSubpath(repoDir, u.Dir), Err: u.Err})
+	}
 	if len(found) == 0 {
-		return fail(fmt.Errorf("no skills found in %s: expected at least one directory containing %s", url, skill.SkillFile))
+		return fail(noSkillsError(fmt.Sprintf("no skills found in %s: expected at least one directory containing %s", url, skill.SkillFile), skipped))
 	}
 	for _, f := range found {
 		s := inspected(f, RepoRelSubpath(repoDir, f.Dir))
@@ -222,20 +239,37 @@ func inspectGit(ctx context.Context, url, ref string) (*Inspection, error) {
 // inspectLocal discovers the skills under the absolute directory dir. display
 // is the Source as the caller spelled it, for the error message.
 func inspectLocal(dir, display string) (*Inspection, error) {
-	found, err := source.DiscoverSkills(dir)
+	found, skipped, err := source.DiscoverSkills(dir)
 	if err != nil {
 		return nil, err
 	}
 	if len(found) == 0 {
-		return nil, fmt.Errorf("no skills found in %s: expected a directory containing %s", display, skill.SkillFile)
+		return nil, noSkillsError(fmt.Sprintf("no skills found in %s: expected a directory containing %s", display, skill.SkillFile), skipped)
 	}
 	insp := &Inspection{Source: dir, Kind: state.KindLocal, root: dir}
+	for _, u := range skipped {
+		insp.Skipped = append(insp.Skipped, SkippedSkill{ID: u.Id, Path: u.Dir, Err: u.Err})
+	}
 	for _, f := range found {
 		s := inspected(f, f.Dir)
 		s.Duplicates = f.Duplicates
 		insp.Skills = append(insp.Skills, s)
 	}
 	return insp, nil
+}
+
+// noSkillsError is the error for a Source with no loadable skill. When every
+// skill was skipped, a bare "no skills found" would mislead, so the skipped
+// skills' load errors are returned instead.
+func noSkillsError(msg string, skipped []source.Unloadable) error {
+	if len(skipped) == 0 {
+		return errors.New(msg)
+	}
+	errs := make([]error, 0, len(skipped))
+	for _, u := range skipped {
+		errs = append(errs, fmt.Errorf("skill %s could not be loaded: %w", u.Id, u.Err))
+	}
+	return errors.Join(errs...)
 }
 
 // inspected builds the InspectedSkill for a discovered skill at path.

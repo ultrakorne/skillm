@@ -86,5 +86,6 @@ func runSourceInspect(cmd *cobra.Command, src, ref string) error {
 		}
 		fmt.Fprintln(w, line)
 	}
+	warnSkipped(insp)
 	return nil
 }

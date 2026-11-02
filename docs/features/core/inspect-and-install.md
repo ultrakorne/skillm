@@ -88,6 +88,14 @@ Core returns typed errors and event codes; `installError` in `cmd/install.go` an
 in `cmd/reporter.go` add the `--as`, `--force` and `--global` advice. A GUI maps the same codes
 to its own wording.
 
+### Unloadable skills
+
+A `SKILL.md` whose frontmatter is not valid YAML is first read leniently, as agents do: one
+top-level `key: value` per line, so an unquoted value holding `: ` still loads
+(`parseLooseFrontmatter` in `internal/skill/skill.go`). A skill that still cannot be loaded does
+not fail the Source: discovery skips it into `Inspection.Skipped`, the CLI warns about it, and
+the rest install. Only when every skill is skipped does Inspect fail, with their load errors.
+
 ### Path edge cases
 
 Discovery follows a symlinked Source root, with or without a trailing separator, but not

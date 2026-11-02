@@ -26,6 +26,19 @@ type InspectData struct {
 	Commit string `json:"commit,omitempty"`
 	// Skills are the skills found, in discovery order.
 	Skills []InspectedSkill `json:"skills"`
+	// Skipped are skill directories whose SKILL.md could not be loaded;
+	// they cannot be installed.
+	Skipped []SkippedSkill `json:"skipped"`
+}
+
+// SkippedSkill is a skill directory in a Source that could not be loaded.
+type SkippedSkill struct {
+	// ID is the directory name the skill would have had.
+	ID string `json:"id"`
+	// Path locates it in the Source, as InspectedSkill.Path does.
+	Path string `json:"path"`
+	// Error says why it could not be loaded.
+	Error string `json:"error"`
 }
 
 // InspectedSkill is one skill found in a Source.
@@ -45,14 +58,18 @@ type InspectedSkill struct {
 // NewInspectData converts core.Inspect's result.
 func NewInspectData(insp *core.Inspection) InspectData {
 	out := InspectData{
-		Source: insp.Source,
-		Kind:   insp.Kind,
-		Ref:    insp.Ref,
-		Commit: insp.Commit,
-		Skills: make([]InspectedSkill, 0, len(insp.Skills)),
+		Source:  insp.Source,
+		Kind:    insp.Kind,
+		Ref:     insp.Ref,
+		Commit:  insp.Commit,
+		Skills:  make([]InspectedSkill, 0, len(insp.Skills)),
+		Skipped: make([]SkippedSkill, 0, len(insp.Skipped)),
 	}
 	for _, s := range insp.Skills {
 		out.Skills = append(out.Skills, InspectedSkill{ID: s.ID, Name: s.Name, Description: s.Description, Path: s.Path})
+	}
+	for _, s := range insp.Skipped {
+		out.Skipped = append(out.Skipped, SkippedSkill{ID: s.ID, Path: s.Path, Error: s.Err.Error()})
 	}
 	return out
 }

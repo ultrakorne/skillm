@@ -10,7 +10,8 @@
         "description": "Take notes",
         "path": "/Users/me/skills/notes"
       }
-    ]
+    ],
+    "skipped": []
   },
   "warnings": [],
   "error": null

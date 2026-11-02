@@ -3,7 +3,10 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/goccy/go-yaml"
 )
 
 func TestParseSKILLMD_WithFrontmatter(t *testing.T) {
@@ -161,5 +164,71 @@ func TestLoad_NameFromFrontmatterWins(t *testing.T) {
 func TestLoad_MissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Fatal("expected error for missing SKILL.md")
+	}
+}
+
+// writeSKILLMD writes content to a SKILL.md in a fresh temp dir and returns
+// its path.
+func writeSKILLMD(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), SkillFile)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestParseSKILLMD_LooseFrontmatter(t *testing.T) {
+	// An unquoted value holding ": " is not valid YAML, but agents read it as
+	// plain "key: value" lines. Valid keys around it keep their YAML types.
+	path := writeSKILLMD(t, "---\n"+
+		"name: software-factory\n"+
+		"description: Shared language for designing a software factory: the tasks it runs\n"+
+		"  and the services it plugs into.\n"+
+		"disable-model-invocation: true\n"+
+		"metadata:\n"+
+		"  author: someone\n"+
+		"---\n"+
+		"body\n")
+
+	s, err := ParseSKILLMD(path)
+	if err != nil {
+		t.Fatalf("ParseSKILLMD: %v", err)
+	}
+	if s.Name != "software-factory" {
+		t.Errorf("Name = %q", s.Name)
+	}
+	if want := "Shared language for designing a software factory: the tasks it runs and the services it plugs into."; s.Description != want {
+		t.Errorf("Description = %q, want %q", s.Description, want)
+	}
+	var keys []string
+	for _, item := range s.Frontmatter {
+		keys = append(keys, item.Key.(string))
+		switch item.Key {
+		case "disable-model-invocation":
+			if item.Value != true {
+				t.Errorf("disable-model-invocation = %#v, want bool true", item.Value)
+			}
+		case "metadata":
+			if _, ok := item.Value.(map[string]any); !ok {
+				if _, ok := item.Value.(yaml.MapSlice); !ok {
+					t.Errorf("metadata = %#v, want a mapping", item.Value)
+				}
+			}
+		}
+	}
+	if got, want := strings.Join(keys, ","), "name,description,disable-model-invocation,metadata"; got != want {
+		t.Errorf("keys = %s, want %s (document order)", got, want)
+	}
+	if s.Body != "body\n" {
+		t.Errorf("Body = %q", s.Body)
+	}
+}
+
+func TestParseSKILLMD_UnparseableFrontmatter(t *testing.T) {
+	// An unindented line that is not a key cannot be read even leniently.
+	path := writeSKILLMD(t, "---\nname: x\njust some prose\n---\nbody\n")
+	if _, err := ParseSKILLMD(path); err == nil || !strings.Contains(err.Error(), "parse frontmatter") {
+		t.Fatalf("err = %v, want a parse frontmatter error", err)
 	}
 }
