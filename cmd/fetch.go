@@ -71,6 +71,23 @@ func hintDuplicates(insp *core.Inspection, ids []string) {
 	}
 }
 
+// warnSkipped tells the terminal about skills in the Source that could not be
+// loaded and so are not offered for install.
+func warnSkipped(insp *core.Inspection) {
+	for _, s := range insp.Skipped {
+		where := s.Path
+		if insp.Kind == state.KindLocal {
+			if rel, err := filepath.Rel(insp.Source, s.Path); err == nil {
+				where = filepath.ToSlash(rel)
+			}
+		}
+		if where == "" {
+			where = "."
+		}
+		ui.Warnf("skipped %s (%s): %v", s.ID, where, s.Err)
+	}
+}
+
 // inspectedIDs returns the ids of skills, in order.
 func inspectedIDs(skills []core.InspectedSkill) []string {
 	ids := make([]string, 0, len(skills))

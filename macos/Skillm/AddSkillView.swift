@@ -138,6 +138,17 @@ struct AddSkillView: View {
             Text("Skills in \(inspection.source)" + Self.revisionText(inspection))
                 .lineLimit(1)
                 .truncationMode(.middle)
+        } footer: {
+            if !inspection.skipped.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(inspection.skipped) { skipped in
+                        Label("Skipped \(skipped.id): \(skipped.error)", systemImage: "exclamationmark.triangle")
+                            .help(skipped.path)
+                    }
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
         }
     }
 

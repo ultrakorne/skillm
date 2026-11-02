@@ -237,7 +237,7 @@ func TestDiscoverSkills_Zero(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	found, err := DiscoverSkills(root)
+	found, _, err := DiscoverSkills(root)
 	if err != nil {
 		t.Fatalf("DiscoverSkills: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestDiscoverSkills_One(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "grill-with-docs"), "grill-with-docs")
 
-	found, err := DiscoverSkills(root)
+	found, _, err := DiscoverSkills(root)
 	if err != nil {
 		t.Fatalf("DiscoverSkills: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestDiscoverSkills_Many(t *testing.T) {
 	// A .git directory should be skipped entirely.
 	writeSkill(t, filepath.Join(root, ".git", "evil"), "evil")
 
-	found, err := DiscoverSkills(root)
+	found, _, err := DiscoverSkills(root)
 	if err != nil {
 		t.Fatalf("DiscoverSkills: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestDiscoverSkills_DedupesPerAgentCopies(t *testing.T) {
 			}
 			writeSkill(t, filepath.Join(root, "other"), "other")
 
-			found, err := DiscoverSkills(root)
+			found, _, err := DiscoverSkills(root)
 			if err != nil {
 				t.Fatalf("DiscoverSkills: %v", err)
 			}
@@ -424,7 +424,7 @@ func TestDiscoverSkills_DedupeKeepsWalkOrder(t *testing.T) {
 	writeSkill(t, filepath.Join(root, "aaa"), "aaa")
 	writeSkill(t, filepath.Join(root, "skills", "foo"), "foo")
 
-	found, err := DiscoverSkills(root)
+	found, _, err := DiscoverSkills(root)
 	if err != nil {
 		t.Fatalf("DiscoverSkills: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestDiscoverSkills_RootIsSkill(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, "root-skill")
 
-	found, err := DiscoverSkills(root)
+	found, _, err := DiscoverSkills(root)
 	if err != nil {
 		t.Fatalf("DiscoverSkills: %v", err)
 	}
@@ -464,10 +464,10 @@ func TestDiscoverSkills_NotADir(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, err := DiscoverSkills(file); err == nil {
+	if _, _, err := DiscoverSkills(file); err == nil {
 		t.Fatal("expected error for non-directory rootDir")
 	}
-	if _, err := DiscoverSkills(filepath.Join(root, "missing")); err == nil {
+	if _, _, err := DiscoverSkills(filepath.Join(root, "missing")); err == nil {
 		t.Fatal("expected error for missing rootDir")
 	}
 }
@@ -484,7 +484,7 @@ func TestDiscoverSkills_SymlinkedRoot(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	for _, root := range []string{link, link + string(filepath.Separator)} {
-		found, err := DiscoverSkills(root)
+		found, _, err := DiscoverSkills(root)
 		if err != nil {
 			t.Fatalf("DiscoverSkills(%q): %v", root, err)
 		}
@@ -501,7 +501,7 @@ func TestDiscoverSkills_SymlinkedRoot(t *testing.T) {
 	if err := os.Symlink(filepath.Join(real, "alpha"), skillLink); err != nil {
 		t.Fatal(err)
 	}
-	found, err := DiscoverSkills(skillLink + string(filepath.Separator))
+	found, _, err := DiscoverSkills(skillLink + string(filepath.Separator))
 	if err != nil || len(found) != 1 || found[0].Dir != skillLink || found[0].Id != "alpha" {
 		t.Fatalf("root skill through a symlink: found=%+v err=%v", found, err)
 	}
@@ -522,5 +522,59 @@ func TestIsPathRemote(t *testing.T) {
 		if got := IsPathRemote(arg); got != want {
 			t.Errorf("IsPathRemote(%q) = %v, want %v", arg, got, want)
 		}
+	}
+}
+
+// writeBrokenSkill creates dir/SKILL.md whose frontmatter cannot be parsed.
+func writeBrokenSkill(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	content := "---\nname: broken\njust some prose\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write SKILL.md in %s: %v", dir, err)
+	}
+}
+
+func TestDiscoverSkills_SkipsUnloadable(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "skills", "good"), "good")
+	writeBrokenSkill(t, filepath.Join(root, "skills", "in-progress", "broken"))
+	// A nested SKILL.md under the broken skill is not a skill of its own.
+	writeSkill(t, filepath.Join(root, "skills", "in-progress", "broken", "example"), "example")
+
+	found, skipped, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatalf("DiscoverSkills: %v", err)
+	}
+	if got := ids(found); len(got) != 1 || got[0] != "good" {
+		t.Fatalf("found = %v, want [good]", got)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("skipped = %v, want one entry", skipped)
+	}
+	u := skipped[0]
+	if u.Id != "broken" || u.Dir != filepath.Join(root, "skills", "in-progress", "broken") || u.Err == nil {
+		t.Errorf("skipped[0] = %+v", u)
+	}
+}
+
+func TestDiscoverSkills_SkippedCopyOfLoadedID(t *testing.T) {
+	// A broken copy of a skill that also loads elsewhere is not reported: its
+	// ID still resolves to the working copy.
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "skills", "dup"), "dup")
+	writeBrokenSkill(t, filepath.Join(root, ".cursor", "skills", "dup"))
+
+	found, skipped, err := DiscoverSkills(root)
+	if err != nil {
+		t.Fatalf("DiscoverSkills: %v", err)
+	}
+	if got := ids(found); len(got) != 1 || got[0] != "dup" {
+		t.Fatalf("found = %v, want [dup]", got)
+	}
+	if len(skipped) != 0 {
+		t.Errorf("skipped = %v, want none", skipped)
 	}
 }

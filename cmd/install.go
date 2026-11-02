@@ -197,6 +197,9 @@ func runInstall(cmd *cobra.Command, args []string, global, local, all bool) erro
 			return err
 		}
 		defer insp.Close()
+		if !flagJSON {
+			warnSkipped(insp)
+		}
 		if installFlagCommit != "" && insp.Kind != state.KindGit {
 			return usageError("the --commit flag only applies when installing from a git source")
 		}

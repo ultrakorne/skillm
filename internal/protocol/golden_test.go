@@ -176,6 +176,9 @@ func TestGoldenFixtures(t *testing.T) {
 					{ID: "grill-with-docs", Name: "grill-with-docs", Description: "Interview the user against the docs", Path: "skills/grill-with-docs"},
 					{ID: "notes", Path: "notes"},
 				},
+				Skipped: []core.SkippedSkill{
+					{ID: "draft", Path: "skills/draft", Err: errors.New("parse frontmatter in skills/draft/SKILL.md: unexpected key")},
+				},
 			}))
 		}},
 		{"inspect_local.json", func(w *Writer) error {

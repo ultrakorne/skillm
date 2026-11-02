@@ -289,6 +289,17 @@ type Found struct {
 	Duplicates []string
 }
 
+// Unloadable is a directory holding a SKILL.md that could not be loaded (for
+// example, frontmatter that cannot be parsed even leniently).
+type Unloadable struct {
+	// Id is the directory base name the skill would have had.
+	Id string
+	// Dir is the skill directory, cleaned, as for Found.Dir.
+	Dir string
+	// Err says why it could not be loaded.
+	Err error
+}
+
 // DiscoverSkills walks rootDir and returns one Found per skill ID, each from a
 // directory that directly contains a SKILL.md file.
 //
@@ -303,13 +314,18 @@ type Found struct {
 // (.claude/skills/x, .cursor/skills/x, plugin/skills/x, ...). Those copies share
 // an ID and would install over each other, so only one directory per ID is
 // kept: see preferFound. Results are returned in lexical walk order.
-func DiscoverSkills(rootDir string) ([]Found, error) {
+//
+// A SKILL.md that cannot be loaded does not stop discovery: its directory is
+// reported in skipped instead, so one broken skill in a catalog does not hide
+// the rest. A skipped directory whose ID was also found loadable elsewhere is
+// not reported, since that ID still resolves to a working copy.
+func DiscoverSkills(rootDir string) (found []Found, skipped []Unloadable, err error) {
 	info, err := os.Stat(rootDir)
 	if err != nil {
-		return nil, fmt.Errorf("discover skills in %q: %w", rootDir, err)
+		return nil, nil, fmt.Errorf("discover skills in %q: %w", rootDir, err)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("discover skills: %q is not a directory", rootDir)
+		return nil, nil, fmt.Errorf("discover skills: %q is not a directory", rootDir)
 	}
 
 	// WalkDir reads its root with Lstat, so a symlinked root would count as a
@@ -320,7 +336,6 @@ func DiscoverSkills(rootDir string) ([]Found, error) {
 		walkRoot = rootDir + string(filepath.Separator)
 	}
 
-	var found []Found
 	walkErr := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -342,7 +357,8 @@ func DiscoverSkills(rootDir string) ([]Found, error) {
 		dir := filepath.Clean(path)
 		sk, loadErr := skill.Load(dir)
 		if loadErr != nil {
-			return fmt.Errorf("load skill in %q: %w", dir, loadErr)
+			skipped = append(skipped, Unloadable{Id: filepath.Base(dir), Dir: dir, Err: loadErr})
+			return fs.SkipDir
 		}
 		found = append(found, Found{Id: sk.ID, Dir: dir, Skill: sk})
 
@@ -350,9 +366,20 @@ func DiscoverSkills(rootDir string) ([]Found, error) {
 		return fs.SkipDir
 	})
 	if walkErr != nil {
-		return nil, walkErr
+		return nil, nil, walkErr
 	}
-	return dedupeByID(rootDir, found), nil
+	found = dedupeByID(rootDir, found)
+	loaded := make(map[string]bool, len(found))
+	for _, f := range found {
+		loaded[f.Id] = true
+	}
+	kept := skipped[:0]
+	for _, u := range skipped {
+		if !loaded[u.Id] {
+			kept = append(kept, u)
+		}
+	}
+	return found, kept, nil
 }
 
 // dedupeByID keeps one Found per ID — the one preferFound ranks best — at the

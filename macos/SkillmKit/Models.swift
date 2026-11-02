@@ -220,6 +220,14 @@ public struct InspectData: Codable, Sendable, Equatable {
     /// Pass it to install as `--commit`.
     public var commit: String?
     public var skills: [InspectedSkill]
+    /// Skill directories whose SKILL.md could not be loaded; not installable.
+    public var skipped: [SkippedSkill] = []
+}
+
+public struct SkippedSkill: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var path: String
+    public var error: String
 }
 
 public struct InspectedSkill: Codable, Sendable, Equatable, Identifiable {
